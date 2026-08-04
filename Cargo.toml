@@ -4,6 +4,11 @@ version = "0.1.0"
 authors = ["Köpcke <bastian.koepcke@uni-muenster.de>"]
 edition = "2021"
 
+[[bin]]
+name = "descendc"
+path = "src/main.rs"
+
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
