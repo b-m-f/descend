@@ -21,5 +21,11 @@ features = ["color"]
 [dependencies.descend_derive]
 path = "./descend_derive"
 
+[dependencies.libloading]
+version = "0.8"
+
+[dev-dependencies.descend_macros]
+path = "./descend_macros"
+
 [workspace]
-members = ["descend_derive"]
+members = ["descend_derive", "descend_macros"]
