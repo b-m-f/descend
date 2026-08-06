@@ -51,12 +51,12 @@ pub fn descend(input: TokenStream) -> TokenStream {
     let full_descend = synthesize_main_program(&source_str, &info);
     //
     let code = format!("\"{}\"", full_descend);
-    code.parse().expect("invalid rust syntax");
+    return code.parse().expect("invalid rust syntax");
 
     // // Compile to PTX bytecode via compiler module
-    let ptx_lib_path_str = compile_to_ptx(&full_descend, &info.fn_name);
+    // let ptx_lib_path_str = compile_to_ptx(&full_descend, &info.fn_name);
     //
     // // Generate the launcher wrapper with the embedded PTX
-    let output = generate_host_wrapper(&info, &ptx_lib_path_str);
+    // let output = generate_host_wrapper(&info, &ptx_lib_path_str);
     // TokenStream::from_str(full_descend).expect("invalid rust syntax");
 }
