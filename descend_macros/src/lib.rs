@@ -8,6 +8,7 @@ mod main_workaround;
 mod sanitizer;
 
 use compiler::compile_to_ptx;
+use descend::parser::parse;
 use host_api::generate_host_wrapper;
 use kernel_info::KernelInfo;
 use main_workaround::synthesize_main_program;
@@ -28,9 +29,8 @@ pub fn descend(input: TokenStream) -> TokenStream {
                 "Failed to parse descend macro input. Ensure syntax is valid.\nSource string:\n{}",
                 source_str
             );
-            return TokenStream::from(
-                syn::Error::new(proc_macro2::Span::call_site(), msg).to_compile_error(),
-            );
+            // TODO: no unwrap
+            return format!("compile_error!({:?});", msg).parse().unwrap();
         }
     };
 
@@ -39,9 +39,8 @@ pub fn descend(input: TokenStream) -> TokenStream {
     let info = match KernelInfo::extract(&compilation_unit) {
         Ok(i) => i,
         Err(err) => {
-            return TokenStream::from(
-                syn::Error::new(proc_macro2::Span::call_site(), err).to_compile_error(),
-            );
+            // TODO: no unwrap
+            return format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
 
@@ -52,12 +51,12 @@ pub fn descend(input: TokenStream) -> TokenStream {
     let full_descend = synthesize_main_program(&source_str, &info);
     //
     let code = format!("\"{}\"", full_descend);
-    code.parse().expect("invalid rust syntax")
+    code.parse().expect("invalid rust syntax");
 
     // // Compile to PTX bytecode via compiler module
-    // let ptx_lib_path_str = compile_to_ptx(&full_descend, &info.fn_name);
+    let ptx_lib_path_str = compile_to_ptx(&full_descend, &info.fn_name);
     //
     // // Generate the launcher wrapper with the embedded PTX
-    // let output = generate_host_wrapper(&info, &ptx_lib_path_str);
-    // TokenStream::from_str(full_descend).expect("invalid rust syntax")
+    let output = generate_host_wrapper(&info, &ptx_lib_path_str);
+    // TokenStream::from_str(full_descend).expect("invalid rust syntax");
 }
