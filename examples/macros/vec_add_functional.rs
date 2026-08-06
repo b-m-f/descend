@@ -1,6 +1,9 @@
 use descend_macros::descend;
 
 fn main() {
+    // let a_h = [];
+    // let a = GPU::init(type,size)
+
     let s = descend! {
         fn gpu_vec_add<r: prv>(
             a_array: &r uniq gpu.global [i32; 16384],
@@ -14,5 +17,6 @@ fn main() {
             }
         }
     };
+    // kernel_call(gpu_vec_add, a_array: , b_array: ,
     println!("{}", s);
 }
