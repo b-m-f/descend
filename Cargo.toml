@@ -8,6 +8,11 @@ edition = "2021"
 name = "descendc"
 path = "src/main.rs"
 
+[[example]]
+name = "vec_add"
+path = "examples/macros/vec_add_functional.rs"
+
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
