@@ -8,9 +8,6 @@ edition = "2021"
 name = "descendc"
 path = "src/main.rs"
 
-[[example]]
-name = "vec_add"
-path = "examples/macros/vec_add_functional.rs"
 
 
 [dependencies]
@@ -55,6 +52,9 @@ git = "https://github.com/NVlabs/cuda-oxide.git"
 
 [dev-dependencies.cuda-bindings]
 git = "https://github.com/NVlabs/cuda-oxide.git"
+
+[dev-dependencies.trybuild]
+version = "1.0"
 
 [workspace]
 members = ["descend_derive"]
