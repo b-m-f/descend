@@ -44,3 +44,34 @@ pub fn extract_size_from_ty(ty: &Ty) -> String {
     }
     "1".to_string()
 }
+
+pub fn extract_call_args(source_str: &mut String) -> Vec<String> {
+    let mut call_args = Vec::new();
+    if let Some(call_idx) = source_str.find("call(") {
+        let rest = &source_str[call_idx + 5..];
+        if let Some(close_idx) = rest.find(')') {
+            let args_str = &rest[..close_idx];
+            for arg in args_str.split(',') {
+                let trimmed = arg.trim();
+                if !trimmed.is_empty() {
+                    call_args.push(trimmed.to_string());
+                }
+            }
+        }
+        source_str.truncate(call_idx);
+    }
+    call_args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_call_args() {
+        let mut source = "fn foo() {} call(a_array, b_array);".to_string();
+        let args = extract_call_args(&mut source);
+        assert_eq!(source, "fn foo() {} ");
+        assert_eq!(args, vec!["a_array", "b_array"]);
+    }
+}

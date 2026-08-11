@@ -1,10 +1,10 @@
-use descend_macros::descend;
+use descend_macros::descend_kernel;
 
 fn main() {
     // let a_h = [];
     // let a = GPU::init(type,size)
 
-    let s = descend! {
+    let s = descend_kernel! {
         fn gpu_vec_add<r: prv>(
             a_array: &r uniq gpu.global [i32; 16384],
             b_array: &r shrd gpu.global [i32; 16384]
