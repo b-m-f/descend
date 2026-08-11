@@ -47,5 +47,14 @@ version = "0.4.27"
 [dependencies.env_logger]
 version = "0.11.7"
 
+[dev-dependencies.descend_host]
+path = "./descend_host"
+
+[dev-dependencies.cuda-core]
+git = "https://github.com/NVlabs/cuda-oxide.git"
+
+[dev-dependencies.cuda-bindings]
+git = "https://github.com/NVlabs/cuda-oxide.git"
+
 [workspace]
 members = ["descend_derive"]

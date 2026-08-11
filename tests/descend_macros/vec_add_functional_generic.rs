@@ -1,11 +1,10 @@
+use cuda_core::CudaContext;
+use descend_host::{CpuShrd, CpuUniq, GpuShrd, GpuUniq};
 use descend_macros::{descend_kernel, descend_launch};
+use std::sync::Arc;
 
 #[test]
-fn test_vec_add_generic() {
-    // Host-side arrays defined in Rust code before macro invocation.
-    let mut a_array = [20i32; 16384];
-    let b_array = [10i32; 16384];
-
+fn test_vec_add_functional_generic() {
     let s = descend_kernel! {
         fn gpu_vec_add<N: nat, r: prv>(
             a_array: &r uniq gpu.global [i32; N],
@@ -19,10 +18,18 @@ fn test_vec_add_generic() {
             }
         }
     };
-
     println!("{}", s);
 
-    // Launch the kernel directly using the descend_launch! macro
-    descend_launch!(gpu_vec_add<N: 16384>, &mut a_array, &b_array);
-    assert_eq!(a_array, [30i32; 16384])
+    let ctx = Arc::new(CudaContext::new(0).expect("Failed to create CUDA context"));
+
+    let a_array = CpuUniq::new(Box::new([20i32; 16384]));
+    let b_array = CpuShrd::new(Box::new([10i32; 16384]));
+
+    let mut a_gpu: GpuUniq<i32, 16384> = a_array.to_gpu(&ctx);
+    let b_gpu: GpuShrd<i32, 16384> = b_array.to_gpu(&ctx);
+
+    descend_launch!(gpu_vec_add<N: 16384>, &mut a_gpu, &b_gpu);
+
+    let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu(&ctx);
+    assert_eq!(*a_cpu_back, [30i32; 16384]);
 }
