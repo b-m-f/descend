@@ -10,7 +10,7 @@ mod sanitizer;
 use compiler::compile_to_ptx;
 use descend::parser::parse;
 use host_api::generate_host_wrapper;
-use kernel_info::KernelInfo;
+use kernel_info::Kernel;
 use main_workaround::synthesize_main_program;
 use proc_macro::TokenStream;
 use sanitizer::extract_source_str;
@@ -36,19 +36,21 @@ pub fn descend(input: TokenStream) -> TokenStream {
 
     // TODO: describe the KernelInfo object
     // why is it needed? Kind of an IR
-    let info = match KernelInfo::extract(&compilation_unit) {
+    let kernel = match Kernel::extract(&compilation_unit) {
         Ok(i) => i,
         Err(err) => {
             // TODO: no unwrap
             return format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
+    // TODO: turn into debug
+    println!("{}", kernel);
 
     // TODO: find a better way to achieve this
     // or describe why this workaround is necessary
     //
     // Synthesize full valid Descend program (workaround for ty_check requiring fn main)
-    let full_descend = synthesize_main_program(&source_str, &info);
+    let full_descend = synthesize_main_program(&source_str, &kernel);
     //
     let code = format!("\"{}\"", full_descend);
     return code.parse().expect("invalid rust syntax");

@@ -1,89 +1,67 @@
 use descend::ast::*;
-use quote::quote;
 
-pub struct KernelInfo {
-    pub fn_name: String,
-    pub grid_dim_str: String,
-    pub gen_params_str: String,
-    pub main_vars: Vec<String>,
-    pub main_args: Vec<String>,
-    pub main_params: Vec<String>,
-    pub rust_params: Vec<proc_macro2::TokenStream>,
-    pub rust_args: Vec<proc_macro2::TokenStream>,
-    pub arg_idents: Vec<syn::Ident>,
+#[derive(Debug, Clone)]
+pub struct KernelParam {
+    pub name: String,
+    pub is_uniq: bool,
+    pub size_str: String,
 }
 
-impl KernelInfo {
+#[derive(Debug, Clone)]
+pub struct Kernel {
+    pub function_name: String,
+    pub grid_dim_str: String,
+    pub generic_params_str: String,
+    pub params: Vec<KernelParam>,
+}
+
+impl Kernel {
     pub fn extract(compil_unit: &CompilUnit) -> Result<Self, String> {
         for item in &compil_unit.items {
             match item {
                 Item::FunDef(f) => {
-                    let fn_name = f.ident.name.to_string();
-                    let grid_dim_str = parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
+                    let function_name = f.ident.name.to_string();
+                    // TODO: rethink the default 1,1?
+                    let grid_dim_str =
+                        parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
 
-                    let mut gen_args = Vec::new();
+                    let mut generic_args = Vec::new();
                     for param in &f.generic_params {
                         if let IdentKinded {
                             kind: Kind::Nat,
                             ident,
                         } = param
                         {
-                            gen_args.push(ident.name.to_string());
+                            generic_args.push(ident.name.to_string());
                         }
                     }
-                    let gen_params_str = if !gen_args.is_empty() {
-                        format!("::<{}>", gen_args.join(", "))
+                    let generic_params_str = if !generic_args.is_empty() {
+                        format!("::<{}>", generic_args.join(", "))
                     } else {
                         String::new()
                     };
+                    // TODO: turn into debug
+                    println!("Kernel: generic_params = {}", generic_params_str);
 
-                    let mut main_vars = Vec::new();
-                    let mut main_args = Vec::new();
-                    let mut main_params = Vec::new();
-                    let mut rust_params = Vec::new();
-                    let mut rust_args = Vec::new();
-                    let mut arg_idents = Vec::new();
+                    let mut params = Vec::new();
 
                     for param in &f.param_decls {
                         let p_name = &param.ident.name;
-                        let arg_ident = syn::Ident::new(p_name, proc_macro2::Span::call_site());
                         let size_str = extract_size_from_ty(param.ty.as_ref().unwrap());
-
                         let is_uniq = format!("{:?}", param.ty).contains("Uniq");
-                        let (rgn, qual, c_qual) = if is_uniq {
-                            ("uniq", "&mut", "*mut")
-                        } else {
-                            ("shrd", "&", "*const")
-                        };
 
-                        main_params.push(format!(
-                            "h_{}: &'a {} cpu.mem [i32; {}]",
-                            p_name, rgn, size_str
-                        ));
-                        main_vars.push(format!(
-                            "let mut {} = gpu_alloc_copy(&uniq gpu, &shrd *h_{});",
-                            p_name, p_name
-                        ));
-                        main_args.push(format!("&{} {}", rgn, p_name));
-
-                        let rust_type: syn::Type =
-                            syn::parse_str(&format!("{} gpu::GpuBuffer<i32>", qual)).unwrap();
-                        let c_type: syn::Type = syn::parse_str(&format!("{} i32", c_qual)).unwrap();
-                        rust_params.push(quote! { #arg_ident: #rust_type });
-                        rust_args.push(quote! { #arg_ident.device_ptr as #c_type });
-                        arg_idents.push(arg_ident.clone());
+                        params.push(KernelParam {
+                            name: p_name.to_string(),
+                            is_uniq,
+                            size_str,
+                        });
                     }
 
-                    return Ok(KernelInfo {
-                        fn_name,
+                    return Ok(Kernel {
+                        function_name,
                         grid_dim_str,
-                        gen_params_str,
-                        main_vars,
-                        main_args,
-                        main_params,
-                        rust_params,
-                        rust_args,
-                        arg_idents,
+                        generic_params_str,
+                        params,
                     });
                 }
                 Item::FunDecl(_) | Item::StructDecl(_) => {}
@@ -130,4 +108,65 @@ fn extract_size_from_ty(ty: &Ty) -> String {
         }
     }
     "1".to_string()
+}
+
+impl std::fmt::Display for KernelParam {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let qual = if self.is_uniq { "uniq" } else { "shrd" };
+        write!(f, "{}: {} [{}]", self.name, qual, self.size_str)
+    }
+}
+
+impl std::fmt::Display for Kernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "Kernel: {}{}",
+            self.function_name, self.generic_params_str
+        )?;
+        writeln!(f, "  Grid Dimensions: {}", self.grid_dim_str)?;
+        writeln!(f, "  Parameters:")?;
+        for param in &self.params {
+            writeln!(f, "    - {}", param)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kernel_info_extraction() {
+        let source_str = r#"
+fn test_gpu_vec_add<r: prv>(
+    a_array: &r uniq gpu.global [i32; 16384],
+    b_array: &r shrd gpu.global [i32; 16384]
+) -[grid: gpu.grid<X<64>, X<256>>]-> () {
+    sched block in grid {
+        sched thread in block {
+            let a_ref = &uniq  (*a_array).to_view.grp::<256>[[block]][[thread]];
+            *a_ref = *a_ref + (*b_array).to_view.grp::<256>[[block]][[thread]]
+        }
+    }
+}
+        "#;
+        let source = descend::parser::SourceCode::new(source_str.to_string());
+        let compilation_unit = descend::parser::parse(&source).unwrap();
+        let kernel = Kernel::extract(&compilation_unit).unwrap();
+
+        assert_eq!(kernel.function_name, "test_gpu_vec_add");
+        assert_eq!(kernel.grid_dim_str, "X<64>, X<256>");
+        assert_eq!(kernel.generic_params_str, "");
+        assert_eq!(kernel.params.len(), 2);
+
+        assert_eq!(kernel.params[0].name, "a_array");
+        assert_eq!(kernel.params[0].is_uniq, true);
+        assert_eq!(kernel.params[0].size_str, "16384");
+
+        assert_eq!(kernel.params[1].name, "b_array");
+        assert_eq!(kernel.params[1].is_uniq, false);
+        assert_eq!(kernel.params[1].size_str, "16384");
+    }
 }
