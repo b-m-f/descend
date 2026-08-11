@@ -36,5 +36,14 @@ version = "0.8"
 [dev-dependencies.descend_macros]
 path = "./descend_macros"
 
+[dev-dependencies.descend_host]
+path = "./descend_host"
+
+[dev-dependencies.cuda-core]
+git = "https://github.com/NVlabs/cuda-oxide.git"
+
+[dev-dependencies.cuda-bindings]
+git = "https://github.com/NVlabs/cuda-oxide.git"
+
 [workspace]
-members = ["descend_derive", "descend_macros"]
+members = ["descend_derive", "descend_macros", "descend_host"]
