@@ -2,6 +2,8 @@
 extern crate proc_macro;
 
 mod compiler;
+#[macro_use]
+mod helper;
 mod host_api;
 mod kernel_ir;
 mod main_workaround;
@@ -39,8 +41,7 @@ pub fn descend(input: TokenStream) -> TokenStream {
             return format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
-    // TODO: turn into debug
-    println!("{}", kernel);
+    debug!("{}", kernel);
 
     // TODO: find a better way to achieve this
     // or describe why this workaround is necessary
