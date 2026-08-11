@@ -1,4 +1,4 @@
-use crate::kernel_info::Kernel;
+use crate::kernel_ir::Kernel;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
