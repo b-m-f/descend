@@ -15,6 +15,7 @@ pub struct Kernel {
     pub generic_params_str: String,
     pub params: Vec<KernelParam>,
     pub generic_size_bindings: Vec<(String, String)>,
+    pub call_args: Vec<String>,
 }
 
 impl Kernel {
@@ -50,6 +51,7 @@ impl Kernel {
                         let p_name = &param.ident.name;
                         let size_str = extract_size_from_ty(param.ty.as_ref().unwrap());
                         let is_uniq = format!("{:?}", param.ty).contains("Uniq");
+                        println!("param {} ty: {:?}", p_name, param.ty);
 
                         params.push(KernelParam {
                             name: p_name.to_string(),
@@ -74,6 +76,7 @@ impl Kernel {
                         generic_params_str,
                         params,
                         generic_size_bindings,
+                        call_args: Vec::new(),
                     });
                 }
                 Item::FunDecl(_) | Item::StructDecl(_) => {}
@@ -81,6 +84,27 @@ impl Kernel {
         }
 
         Err("No function definition found in descend! macro".to_string())
+    }
+
+    pub fn grid_total_size(&self) -> String {
+        let mut product = 1usize;
+        let mut found_any = false;
+
+        for part in self.grid_dim_str.split(',') {
+            let s = part.trim();
+            if let Some(inner) = s.strip_prefix("X<").and_then(|s| s.strip_suffix('>')) {
+                if let Ok(val) = inner.parse::<usize>() {
+                    product *= val;
+                    found_any = true;
+                }
+            }
+        }
+
+        if found_any {
+            product.to_string()
+        } else {
+            "16384".to_string()
+        }
     }
 }
 
@@ -108,6 +132,9 @@ impl std::fmt::Display for Kernel {
             for (gen, param_name) in &self.generic_size_bindings {
                 writeln!(f, "    - {} inferred from {}", gen, param_name)?;
             }
+        }
+        if !self.call_args.is_empty() {
+            writeln!(f, "  Call Args: call({})", self.call_args.join(", "))?;
         }
         Ok(())
     }

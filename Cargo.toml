@@ -13,6 +13,10 @@ name = "vec_add"
 path = "examples/macros/vec_add_functional.rs"
 
 
+[dependencies]
+syn = { version = "3.0.3", features = ["full"] }
+
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
