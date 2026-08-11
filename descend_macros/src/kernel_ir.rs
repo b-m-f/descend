@@ -1,3 +1,4 @@
+use crate::parser::*;
 use descend::ast::*;
 
 #[derive(Debug, Clone)]
@@ -62,7 +63,8 @@ impl Kernel {
                     for generic_arg in &generic_args {
                         for param in &params {
                             if param.size_str == *generic_arg {
-                                generic_size_bindings.push((generic_arg.clone(), param.name.clone()));
+                                generic_size_bindings
+                                    .push((generic_arg.clone(), param.name.clone()));
                             }
                         }
                     }
@@ -81,44 +83,6 @@ impl Kernel {
 
         Err("No function definition found in descend! macro".to_string())
     }
-}
-
-fn get_dim_size(d: &Dim) -> String {
-    if let Dim::X(d1) = d {
-        if let Nat::Lit(v) = &d1.0 {
-            return v.to_string();
-        } else if let Nat::Ident(id) = &d1.0 {
-            return id.name.to_string();
-        }
-    }
-    "1".to_string()
-}
-
-fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
-    if let BaseExec::GpuGrid(dim_x, dim_y) = &exec_kind.base {
-        let x_str = get_dim_size(dim_x);
-        let y_str = get_dim_size(dim_y);
-        return Some(format!("X<{}>, X<{}>", x_str, y_str));
-    }
-    None
-}
-
-fn extract_size_from_ty(ty: &Ty) -> String {
-    if let TyKind::Data(dty) = &ty.ty {
-        let inner_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
-            &ref_dty.dty.dty
-        } else {
-            &dty.dty
-        };
-        if let DataTyKind::Array(_, nat) = inner_dty {
-            if let Nat::Lit(v) = nat {
-                return v.to_string();
-            } else if let Nat::Ident(id) = nat {
-                return id.name.to_string();
-            }
-        }
-    }
-    "1".to_string()
 }
 
 impl std::fmt::Display for KernelParam {
@@ -155,7 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kernel_info_extraction() {
+    fn test_kernel_ir_extraction() {
         let source_str = r#"
 fn test_gpu_vec_add<r: prv>(
     a_array: &r uniq gpu.global [i64; 16384],
@@ -170,7 +134,7 @@ fn test_gpu_vec_add<r: prv>(
 }
         "#;
         let source = descend::parser::SourceCode::new(source_str.to_string());
-        let compilation_unit = descend::parser::parse(&source).unwrap();
+        let compilation_unit = parse_descend_source(&source).unwrap();
         let kernel = Kernel::extract(&compilation_unit).unwrap();
 
         assert_eq!(kernel.function_name, "test_gpu_vec_add");
@@ -189,7 +153,7 @@ fn test_gpu_vec_add<r: prv>(
         assert_eq!(kernel.generic_size_bindings.len(), 0);
     }
     #[test]
-    fn test_kernel_info_extraction_generic() {
+    fn test_kernel_ir_extraction_generic() {
         let source_str = r#"
 fn test_gpu_vec_add<N: nat, r: prv>(
     a_array: &r uniq gpu.global [i32; N],
@@ -204,7 +168,7 @@ fn test_gpu_vec_add<N: nat, r: prv>(
 }
         "#;
         let source = descend::parser::SourceCode::new(source_str.to_string());
-        let compilation_unit = descend::parser::parse(&source).unwrap();
+        let compilation_unit = parse_descend_source(&source).unwrap();
         let kernel = Kernel::extract(&compilation_unit).unwrap();
 
         assert_eq!(kernel.function_name, "test_gpu_vec_add");
