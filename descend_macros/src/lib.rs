@@ -3,14 +3,14 @@ extern crate proc_macro;
 
 mod compiler;
 mod host_api;
-mod kernel_info;
+mod kernel_ir;
 mod main_workaround;
+mod parser;
 mod sanitizer;
 
 use compiler::compile_to_ptx;
-use descend::parser::parse;
 use host_api::generate_host_wrapper;
-use kernel_info::Kernel;
+use kernel_ir::Kernel;
 use main_workaround::synthesize_main_program;
 use proc_macro::TokenStream;
 use sanitizer::extract_source_str;
@@ -20,17 +20,13 @@ pub fn descend(input: TokenStream) -> TokenStream {
     // TODO: describe nightly extraction and fallback
     let source_str = extract_source_str(&input);
 
-    // Parse the input string using descend's parser
+    // Parse the input string using the parser module
     let source = descend::parser::SourceCode::new(source_str.clone());
-    let compilation_unit = match descend::parser::parse(&source) {
+    let compilation_unit = match crate::parser::parse_descend_source(&source) {
         Ok(c) => c,
-        Err(_) => {
-            let msg = format!(
-                "Failed to parse descend macro input. Ensure syntax is valid.\nSource string:\n{}",
-                source_str
-            );
+        Err(err) => {
             // TODO: no unwrap
-            return format!("compile_error!({:?});", msg).parse().unwrap();
+            return format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
 

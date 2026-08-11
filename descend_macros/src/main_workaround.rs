@@ -1,4 +1,4 @@
-use crate::kernel_info::Kernel;
+use crate::kernel_ir::Kernel;
 
 /// Synthesizes a valid full Descend program by appending a dummy `main` function wrapper.
 /// This satisfies `descend::ty_check`, which currently hardcodes a requirement for a `main` entry point.
