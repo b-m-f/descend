@@ -42,8 +42,7 @@ impl Kernel {
                     } else {
                         String::new()
                     };
-                    // TODO: turn into debug
-                    println!("Kernel: generic_params = {}", generic_params_str);
+                    debug!("Kernel: generic_params = {}", generic_params_str);
 
                     let mut params = Vec::new();
 
