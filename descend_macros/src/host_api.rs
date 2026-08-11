@@ -1,14 +1,32 @@
-use crate::kernel_info::KernelInfo;
+use crate::kernel_info::Kernel;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 /// Generates the mock host launcher wrapper that embeds the compiled PTX
 /// and dispatches the GPU kernel using the CUDA driver API.
-pub fn generate_host_wrapper(info: &KernelInfo, ptx_lib_path_str: &str) -> TokenStream2 {
-    let fn_name = &info.fn_name;
-    let rust_params = &info.rust_params;
-    let rust_args = &info.rust_args;
-    let arg_idents = &info.arg_idents;
+pub fn generate_host_wrapper(kernel: &Kernel, ptx_lib_path_str: &str) -> TokenStream2 {
+    let fn_name = &kernel.function_name;
+
+    let mut rust_params = Vec::new();
+    let mut rust_args = Vec::new();
+    let mut arg_idents = Vec::new();
+
+    for param in &kernel.params {
+        let arg_ident = syn::Ident::new(&param.name, proc_macro2::Span::call_site());
+        let (qual, c_qual) = if param.is_uniq {
+            ("&mut", "*mut")
+        } else {
+            ("&", "*const")
+        };
+
+        let rust_type: syn::Type =
+            syn::parse_str(&format!("{} gpu::GpuBuffer<i32>", qual)).unwrap();
+        let c_type: syn::Type = syn::parse_str(&format!("{} i32", c_qual)).unwrap();
+
+        rust_params.push(quote! { #arg_ident: #rust_type });
+        rust_args.push(quote! { #arg_ident.device_ptr as #c_type });
+        arg_idents.push(arg_ident.clone());
+    }
 
     let fn_ident = syn::Ident::new(fn_name, proc_macro2::Span::call_site());
     let ptx_ident = syn::Ident::new(
@@ -39,7 +57,7 @@ pub fn generate_host_wrapper(info: &KernelInfo, ptx_lib_path_str: &str) -> Token
                 let cu_init = _cuda_lib.get::<unsafe extern "C" fn(u32) -> i32>(b"cuInit").unwrap();
                 let cu_device_get = _cuda_lib.get::<unsafe extern "C" fn(*mut i32, i32) -> i32>(b"cuDeviceGet").unwrap();
                 let cu_ctx_create = _cuda_lib.get::<unsafe extern "C" fn(*mut *mut std::ffi::c_void, u32, i32) -> i32>(b"cuCtxCreate_v2").unwrap();
-                
+
                 let cu_module_load_data = _cuda_lib.get::<unsafe extern "C" fn(*mut *mut std::ffi::c_void, *const std::ffi::c_void) -> i32>(b"cuModuleLoadData").unwrap();
                 let cu_module_get_function = _cuda_lib.get::<unsafe extern "C" fn(*mut *mut std::ffi::c_void, *mut std::ffi::c_void, *const i8) -> i32>(b"cuModuleGetFunction").unwrap();
                 let cu_launch_kernel = _cuda_lib.get::<unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32, u32, u32, u32, u32, u32, *mut std::ffi::c_void, *mut *mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> i32>(b"cuLaunchKernel").unwrap();
