@@ -1,5 +1,62 @@
 use descend::ast::*;
+use std::collections::HashMap;
 
+use syn::parse::{Parse, ParseStream};
+use syn::{Expr, Ident, LitInt, Token};
+
+pub struct LaunchConfig {
+    pub kernel_name: String,
+    pub generic_to_size: HashMap<String, String>,
+    pub array_args: Vec<Expr>,
+}
+
+impl Parse for LaunchConfig {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let kernel_ident: Ident = input.parse()?;
+        let kernel_name = kernel_ident.to_string();
+
+        let mut generic_to_size = HashMap::new();
+
+        // Parse optional generics: `<N: 16384, M = 10>`
+        if input.peek(Token![<]) {
+            input.parse::<Token![<]>()?;
+            while !input.is_empty() && !input.peek(Token![>]) {
+                let gen_ident: Ident = input.parse()?;
+
+                if input.peek(Token![:]) {
+                    input.parse::<Token![:]>()?;
+                } else {
+                    return Err(input.error("Expected ':' in generic argument"));
+                }
+
+                let val: LitInt = input.parse()?;
+                generic_to_size.insert(gen_ident.to_string(), val.base10_digits().to_string());
+
+                if input.peek(Token![,]) {
+                    input.parse::<Token![,]>()?;
+                }
+            }
+            input.parse::<Token![>]>()?;
+        }
+
+        // Parse args
+        let mut args = Vec::new();
+        while input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            let expr: Expr = input.parse()?;
+            args.push(expr);
+        }
+
+        Ok(LaunchConfig {
+            kernel_name,
+            generic_to_size,
+            array_args: args,
+        })
+    }
+}
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<CompilUnit<'a>, String> {
