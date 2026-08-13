@@ -33,6 +33,3 @@ fn test_vec_add_functional_generic() {
     let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu(&ctx);
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }
-
-
-

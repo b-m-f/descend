@@ -7,7 +7,7 @@ use quote::quote;
 pub fn generate_host_wrapper(
     kernel: &Kernel,
     ptx_lib_path_str: &str,
-    args: Vec<String>,
+    args: Vec<syn::Expr>,
     mangled_name: &str,
     generic_to_size: &std::collections::HashMap<String, String>,
 ) -> TokenStream2 {
@@ -18,10 +18,7 @@ pub fn generate_host_wrapper(
         if i >= args.len() {
             break;
         }
-        let arg_expr_str = &args[i];
-        let arg_expr: syn::Expr = syn::parse_str(arg_expr_str).unwrap_or_else(|_| {
-            syn::parse_str("()").unwrap()
-        });
+        let arg_expr = &args[i];
         
         let expected_size_str = generic_to_size.get(&param.size_str).unwrap_or(&param.size_str);
         let expected_size: syn::Expr = syn::parse_str(expected_size_str).unwrap_or_else(|_| {

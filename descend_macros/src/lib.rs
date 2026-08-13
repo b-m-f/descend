@@ -17,9 +17,9 @@ use main_workaround::synthesize_main_program;
 use proc_macro::TokenStream;
 use sanitizer::extract_source_str;
 
-use std::sync::Mutex;
-use std::collections::HashMap;
 use lazy_static::lazy_static;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 lazy_static! {
     static ref KERNELS: Mutex<HashMap<String, Kernel>> = Mutex::new(HashMap::new());
@@ -48,8 +48,14 @@ pub fn descend_kernel(input: TokenStream) -> TokenStream {
     };
     kernel.call_args = call_args;
 
-    KERNELS.lock().unwrap_or_else(|e| e.into_inner()).insert(kernel.function_name.clone(), kernel.clone());
-    KERNEL_SOURCES.lock().unwrap_or_else(|e| e.into_inner()).insert(kernel.function_name.clone(), source_str.clone());
+    KERNELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(kernel.function_name.clone(), kernel.clone());
+    KERNEL_SOURCES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(kernel.function_name.clone(), source_str.clone());
 
     eprintln!(">>> descend_kernel END");
     // Return a dummy string literal for the kernel definition since it's just meant for registration
@@ -59,48 +65,23 @@ pub fn descend_kernel(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn descend_launch(input: TokenStream) -> TokenStream {
     eprintln!(">>> descend_launch START");
-    let input_str = input.to_string();
-
-    let parts: Vec<&str> = input_str.split(',').collect();
-    if parts.is_empty() {
-        return "compile_error!(\"descend_launch! expects kernel name and arguments\");"
-            .parse()
-            .unwrap();
-    }
-
-    let kernel_part = parts[0].trim();
-    let mut kernel_name = kernel_part;
-    let mut generic_to_size = HashMap::new();
-
-    if let Some(start_idx) = kernel_part.find('<') {
-        if let Some(end_idx) = kernel_part.rfind('>') {
-            kernel_name = &kernel_part[0..start_idx].trim();
-            let generics_str = &kernel_part[start_idx + 1..end_idx];
-            let gen_parts: Vec<&str> = generics_str.split(',').collect();
-            for gen_part in gen_parts {
-                let kv: Vec<&str> = gen_part.split(':').collect();
-                if kv.len() == 2 {
-                    let k = kv[0].trim().to_string();
-                    let v = kv[1].trim().to_string();
-                    generic_to_size.insert(k, v);
-                } else {
-                    let kv: Vec<&str> = gen_part.split('=').collect();
-                    if kv.len() == 2 {
-                        let k = kv[0].trim().to_string();
-                        let v = kv[1].trim().to_string();
-                        generic_to_size.insert(k, v);
-                    }
-                }
-            }
+    let launch_config = match syn::parse::<crate::parser::LaunchConfig>(input) {
+        Ok(c) => c,
+        Err(err) => {
+            return err.to_compile_error().into();
         }
-    }
+    };
+
+    let kernel_name = &launch_config.kernel_name;
+    let generic_to_size = launch_config.generic_to_size;
+    let arrays = launch_config.array_args;
 
     let kernel_lock = KERNELS.lock().unwrap_or_else(|e| e.into_inner());
     let kernel = match kernel_lock.get(kernel_name) {
         Some(k) => k,
         None => {
             if kernel_lock.is_empty() {
-                // If no kernels are registered at all, this is likely rust-analyzer evaluating 
+                // If no kernels are registered at all, this is likely rust-analyzer evaluating
                 // macros out of order. We return a runtime panic to avoid a false-positive red squiggly.
                 return format!("{{ panic!(\"Kernel '{}' not found. Ensure it was defined with descend_kernel! earlier in the same file.\"); }}", kernel_name)
                     .parse()
@@ -108,23 +89,19 @@ pub fn descend_launch(input: TokenStream) -> TokenStream {
             } else {
                 // If some kernels are registered but this one isn't, the user made a typo!
                 let available: Vec<_> = kernel_lock.keys().collect();
-                let err_msg = format!("Kernel '{}' not found. Available kernels: {:?}", kernel_name, available);
-                return format!("compile_error!({:?});", err_msg)
-                    .parse()
-                    .unwrap();
+                let err_msg = format!(
+                    "Kernel '{}' not found. Available kernels: {:?}",
+                    kernel_name, available
+                );
+                return format!("compile_error!({:?});", err_msg).parse().unwrap();
             }
         }
     };
 
     let source_lock = KERNEL_SOURCES.lock().unwrap_or_else(|e| e.into_inner());
-    let source_str = source_lock.get(kernel_name).expect("KERNEL_SOURCES missing");
-    
-    let mut args = Vec::new();
-
-    for i in 1..parts.len() {
-        let arg_str = parts[i].trim();
-        args.push(arg_str.to_string());
-    }
+    let source_str = source_lock
+        .get(kernel_name)
+        .expect("KERNEL_SOURCES missing");
 
     let full_descend = synthesize_main_program(source_str, kernel, &generic_to_size);
 
@@ -135,12 +112,21 @@ pub fn descend_launch(input: TokenStream) -> TokenStream {
             return format!("compile_error!({:?});", e).parse().unwrap();
         }
     };
-    
+
     // Generate the launcher wrapper with the embedded PTX
-    let output = generate_host_wrapper(kernel, &ptx_lib_path_str, args, &mangled_name, &generic_to_size);
-    
-    eprintln!(">>> descend_launch END
+    let output = generate_host_wrapper(
+        kernel,
+        &ptx_lib_path_str,
+        arrays,
+        &mangled_name,
+        &generic_to_size,
+    );
+
+    eprintln!(
+        ">>> descend_launch END
 OUTPUT:
-{}", output);
+{}",
+        output
+    );
     TokenStream::from(output)
 }
