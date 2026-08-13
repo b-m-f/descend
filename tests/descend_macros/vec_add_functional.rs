@@ -1,9 +1,10 @@
-use descend_macros::descend_kernel;
+use cuda_core::CudaContext;
+use descend_host::{CpuShrd, CpuUniq, GpuShrd, GpuUniq};
+use descend_macros::{descend_kernel, descend_launch};
+use std::sync::Arc;
 
-fn main() {
-    // let a_h = [];
-    // let a = GPU::init(type,size)
-
+#[test]
+fn test_vec_add_functional_generic() {
     let s = descend_kernel! {
         fn gpu_vec_add<r: prv>(
             a_array: &r uniq gpu.global [i32; 16384],
@@ -17,6 +18,18 @@ fn main() {
             }
         }
     };
-    // kernel_call(gpu_vec_add, a_array: , b_array: ,
     println!("{}", s);
+
+    let ctx = Arc::new(CudaContext::new(0).expect("Failed to create CUDA context"));
+
+    let a_array = CpuUniq::new(Box::new([20i32; 16384]));
+    let b_array = CpuShrd::new(Box::new([10i32; 16384]));
+
+    let mut a_gpu: GpuUniq<i32, 16384> = a_array.to_gpu(&ctx);
+    let b_gpu: GpuShrd<i32, 16384> = b_array.to_gpu(&ctx);
+
+    descend_launch!(gpu_vec_add, &mut a_gpu, &b_gpu);
+
+    let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu(&ctx);
+    assert_eq!(*a_cpu_back, [30i32; 16384]);
 }
