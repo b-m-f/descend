@@ -1,7 +1,5 @@
-use cuda_core::CudaContext;
-use descend_host::{CpuShrd, CpuUniq, GpuShrd, GpuUniq};
+use descend_host::{CpuShrd, CpuUniq, DescendContext, GpuShrd, GpuUniq};
 use descend_macros::{descend_kernel, descend_launch};
-use std::sync::Arc;
 
 // Note: This file is run via trybuild to ensure it fails to compile.
 fn main() {
@@ -20,7 +18,7 @@ fn main() {
     };
     println!("{}", s);
 
-    let ctx = Arc::new(CudaContext::new(0).expect("Failed to create CUDA context"));
+    let ctx = DescendContext::new(0);
 
     let a_array = CpuUniq::new(Box::new([20i32; 1024]));
     let b_array = CpuShrd::new(Box::new([10i32; 1024]));
