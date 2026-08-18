@@ -3,7 +3,7 @@ use descend_macros::{descend_kernel, descend_launch};
 
 #[test]
 fn test_vec_add_functional_generic() {
-    let s = descend_kernel! {
+    descend_kernel! {
         fn gpu_vec_add<r: prv>(
             a_array: &r uniq gpu.global [i32; 16384],
             b_array: &r shrd gpu.global [i32; 16384]
@@ -16,7 +16,6 @@ fn test_vec_add_functional_generic() {
             }
         }
     };
-    println!("{}", s);
 
     let ctx = DescendContext::new(0);
 
