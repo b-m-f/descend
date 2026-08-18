@@ -3,10 +3,12 @@ use std::path::PathBuf;
 /// Compiles synthesized Descend source code down to PTX bytecode via descend library + nvcc.
 /// Returns the path string to the generated PTX file for embedding via include_bytes!.
 pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, String), String> {
-    let workspace_root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    // CARGO_MANIFEST_DIR is set to the caller's directory. For trybuild, it is in target/tests/trybuild/descend.
+    // However, the `descend_macros` crate itself was compiled from `descend/descend_macros`.
+    // We can use env!("CARGO_MANIFEST_DIR") which is evaluated when `descend_macros` is compiled.
+    let macro_crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = macro_crate_dir.parent().unwrap().to_path_buf();
+    
     std::fs::create_dir_all(workspace_root.join("output"))
         .map_err(|e| format!("Failed to create output dir: {}", e))?;
 
@@ -41,7 +43,7 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
     let macro_ptx_path = workspace_root.join(&ptx_file_name);
     let ptx_lib_path_str = macro_ptx_path.to_string_lossy().into_owned();
 
-    let ptx_status = std::process::Command::new("nix")
+    let ptx_output = std::process::Command::new("nix")
         .arg("shell")
         .arg("--impure")
         .arg("nixpkgs#cudaPackages.cudatoolkit")
@@ -49,16 +51,18 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
         .arg("sh")
         .arg("-c")
         .arg(&format!(
-            "nvcc -ptx -arch=compute_75 -I$(dirname $(which nvcc))/../include -Idescend/cuda-examples {} -o {}",
-            cu_file_name, ptx_file_name
+            "nvcc -ptx -arch=compute_75 -I$(dirname $(which nvcc))/../include -I{}/cuda-examples {} -o {}",
+            workspace_root.display(), cu_file_name, ptx_file_name
         ))
         .env("NIXPKGS_ALLOW_UNFREE", "1")
         .current_dir(&workspace_root)
-        .status()
+        .output()
         .map_err(|e| format!("Failed to run nvcc compilation: {}", e))?;
 
-    if !ptx_status.success() {
-        return Err("nvcc PTX compilation failed".to_string());
+    if !ptx_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ptx_output.stderr);
+        let stdout = String::from_utf8_lossy(&ptx_output.stdout);
+        return Err(format!("nvcc PTX compilation failed. stdout: {} stderr: {}", stdout, stderr));
     }
 
     // Downgrade PTX version string to bypass CUDA_ERROR_UNSUPPORTED_PTX_VERSION (218)
