@@ -3,7 +3,7 @@ use descend_macros::{descend_kernel, descend_launch};
 
 // Note: This file is run via trybuild to ensure it fails to compile.
 fn main() {
-    let s = descend_kernel! {
+    descend_kernel! {
         fn gpu_vec_add_bad_size<N: nat, r: prv>(
             a_array: &r uniq gpu.global [i32; N],
             b_array: &r shrd gpu.global [i32; N]
@@ -16,7 +16,6 @@ fn main() {
             }
         }
     };
-    println!("{}", s);
 
     let ctx = DescendContext::new(0);
 
