@@ -1,7 +1,7 @@
 error: nvcc PTX compilation failed
-  --> tests/macro_compiler_safety/bad_size_test.rs:32:5
+  --> tests/macro_compiler_safety/bad_size_test.rs:30:5
    |
-32 |     descend_launch!(gpu_vec_add_bad_size<N: 16384>, &mut a_gpu, &b_gpu);
+30 |     descend_launch!(gpu_vec_add_bad_size<N: 16384>, &mut a_gpu, &b_gpu);
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: this error originates in the macro `descend_launch` (in Nightly builds, run with -Z macro-backtrace for more info)
