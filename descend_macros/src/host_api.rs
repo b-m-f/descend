@@ -19,26 +19,27 @@ pub fn generate_host_wrapper(
             break;
         }
         let arg_expr = &args[i];
-        
-        let expected_size_str = generic_to_size.get(&param.size_str).unwrap_or(&param.size_str);
-        let expected_size: syn::Expr = syn::parse_str(expected_size_str).unwrap_or_else(|_| {
-            syn::parse_str("0").unwrap()
-        });
+
+        let expected_size_str = generic_to_size
+            .get(&param.size_str)
+            .unwrap_or(&param.size_str);
+        let expected_size: syn::Expr =
+            syn::parse_str(expected_size_str).unwrap_or_else(|_| syn::parse_str("0").unwrap());
 
         let arg_ident = syn::Ident::new(&format!("arg_{}", i), proc_macro2::Span::call_site());
-        
+
         if param.is_uniq {
-            arg_conversions.push(quote! { 
+            arg_conversions.push(quote! {
                 let _type_check: &mut ::descend_host::GpuUniq<_, #expected_size> = #arg_expr;
-                let mut #arg_ident = _type_check.dev_buf.cu_deviceptr(); 
+                let mut #arg_ident = _type_check.dev_buf.cu_deviceptr();
             });
         } else {
-            arg_conversions.push(quote! { 
+            arg_conversions.push(quote! {
                 let _type_check: &::descend_host::GpuShrd<_, #expected_size> = #arg_expr;
-                let mut #arg_ident = _type_check.dev_buf.cu_deviceptr(); 
+                let mut #arg_ident = _type_check.dev_buf.cu_deviceptr();
             });
         }
-        
+
         param_pointers.push(quote! { &mut #arg_ident as *mut _ as *mut std::ffi::c_void });
     }
 
@@ -47,11 +48,19 @@ pub fn generate_host_wrapper(
     let mut block_dim = (1, 1, 1);
 
     // Parse grid and block dims from grid_dim_str which is like "X<64>, X<256>"
-    let dims_str = kernel.grid_dim_str.replace("X<", "").replace(">", "").replace(" ", "");
+    let dims_str = kernel
+        .grid_dim_str
+        .replace("X<", "")
+        .replace(">", "")
+        .replace(" ", "");
     let mut parts = dims_str.split(',');
-    
-    if let Some(x) = parts.next() { grid_dim.0 = x.parse().unwrap_or(1); }
-    if let Some(x) = parts.next() { block_dim.0 = x.parse().unwrap_or(1); }
+
+    if let Some(x) = parts.next() {
+        grid_dim.0 = x.parse().unwrap_or(1);
+    }
+    if let Some(x) = parts.next() {
+        block_dim.0 = x.parse().unwrap_or(1);
+    }
 
     let grid_x = grid_dim.0 as u32;
     let grid_y = grid_dim.1 as u32;
@@ -62,7 +71,8 @@ pub fn generate_host_wrapper(
     let block_z = block_dim.2 as u32;
 
     let fn_name_c_str = format!("{}\0", mangled_name);
-    let fn_name_lit = syn::LitByteStr::new(fn_name_c_str.as_bytes(), proc_macro2::Span::call_site());
+    let fn_name_lit =
+        syn::LitByteStr::new(fn_name_c_str.as_bytes(), proc_macro2::Span::call_site());
 
     let ptx_ident = syn::Ident::new(
         &format!("{}_PTX", kernel.function_name.to_uppercase()),
@@ -72,7 +82,7 @@ pub fn generate_host_wrapper(
     quote! {
         {
             const #ptx_ident: &[u8] = include_bytes!(#ptx_path_lit);
-            
+
             unsafe {
                 let mut module: ::cuda_bindings::CUmodule = std::ptr::null_mut();
                 assert_eq!(::cuda_bindings::cuModuleLoadData(&mut module, #ptx_ident.as_ptr() as *const std::ffi::c_void), 0, "cuModuleLoadData failed");
@@ -93,9 +103,9 @@ pub fn generate_host_wrapper(
                     0, std::ptr::null_mut(), // shared mem, stream
                     args_ptrs.as_mut_ptr(), std::ptr::null_mut()
                 ), 0, "cuLaunchKernel failed");
-                
+
                 assert_eq!(::cuda_bindings::cuCtxSynchronize(), 0, "cuCtxSynchronize failed");
-                
+
                 // Unload module to prevent memory leak on repeated calls
                 ::cuda_bindings::cuModuleUnload(module);
             }
