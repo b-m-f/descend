@@ -137,7 +137,7 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
 
     let ptx_result = compile_ptx_with_opts(final_cpp_code, opts);
 
-    let ptx_string = match ptx_result {
+    let mut ptx_string = match ptx_result {
         Ok(ptx) => ptx.to_src(),
         Err(e) => {
             return Err(format!("NVRTC Compilation failed:\n{}", e));
@@ -148,23 +148,10 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
     let macro_ptx_path = workspace_root.join(&ptx_file_name);
     let ptx_lib_path_str = macro_ptx_path.to_string_lossy().into_owned();
 
-    // Downgrade PTX version string to bypass CUDA_ERROR_UNSUPPORTED_PTX_VERSION (218)
-    // on older drivers while using newer NixOS CUDA toolkits.
-    let mut downgraded_ptx: String = ptx_string
-        .lines()
-        .map(|line| {
-            if line.starts_with(".version") {
-                ".version 7.0"
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    downgraded_ptx.push('\0');
+    ptx_string.push('\0');
 
     let mut mangled_name = fn_name.to_string();
-    for line in downgraded_ptx.lines() {
+    for line in ptx_string.lines() {
         if line.starts_with(".visible .entry ") {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
@@ -177,7 +164,7 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
         }
     }
 
-    std::fs::write(&macro_ptx_path, downgraded_ptx)
+    std::fs::write(&macro_ptx_path, ptx_string)
         .map_err(|e| format!("Failed to write ptx file: {}", e))?;
 
     Ok((ptx_lib_path_str, mangled_name))
