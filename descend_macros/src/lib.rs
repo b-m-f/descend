@@ -143,7 +143,7 @@ pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
     let full_descend = synthesize_main_program(&mutable_source_str, &kernel, &generic_to_size);
 
     eprintln!(">>> descend_launch compiling to ptx");
-    let (ptx_lib_path_str, mangled_name) = match compile_to_ptx(&full_descend, kernel_name) {
+    let (ptx_content, mangled_name) = match compile_to_ptx(&full_descend, kernel_name) {
         Ok(res) => res,
         Err(e) => {
             return format!("compile_error!({:?});", e).parse().unwrap();
@@ -153,7 +153,7 @@ pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
     // Generate the launcher wrapper with the embedded PTX
     let output = generate_host_wrapper(
         &kernel,
-        &ptx_lib_path_str,
+        &ptx_content,
         arrays,
         &mangled_name,
         &generic_to_size,
