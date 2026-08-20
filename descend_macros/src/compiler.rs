@@ -30,26 +30,52 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
         &format!("extern \"C\" __global__ auto {}(", fn_name),
     );
 
-    let mut options: Vec<String> = vec!["--use_fast_math".to_string(), "-default-device".to_string()];
+    // Read user-provided flags, defaulting to an empty string if not set
+    let flags_env = std::env::var("DESCEND_NVRTC_FLAGS").unwrap_or_default();
+    
+    let mut options: Vec<String> = flags_env
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
 
-    if cfg!(feature = "sm_50") {
-        options.push("-arch=compute_50".to_string());
-    } else if cfg!(feature = "sm_60") {
-        options.push("-arch=compute_60".to_string());
-    } else if cfg!(feature = "sm_70") {
-        options.push("-arch=compute_70".to_string());
-    } else if cfg!(feature = "sm_75") {
-        options.push("-arch=compute_75".to_string());
-    } else if cfg!(feature = "sm_80") {
-        options.push("-arch=compute_80".to_string());
-    } else if cfg!(feature = "sm_86") {
-        options.push("-arch=compute_86".to_string());
-    } else if cfg!(feature = "sm_89") {
-        options.push("-arch=compute_89".to_string());
-    } else if cfg!(feature = "sm_90") {
-        options.push("-arch=compute_90".to_string());
-    } else {
-        return Err("No CUDA architecture feature selected. Please enable a feature like 'sm_86' in descend_macros.".to_string());
+    // Enforce internal requirement for our C++ generation (unannotated functions compile as device)
+    options.push("-default-device".to_string());
+
+    // Check if the user explicitly provided an architecture flag
+    let has_arch = options.iter().any(|opt| opt.starts_with("-arch="));
+
+    if !has_arch {
+        // Attempt auto-detection
+        let detected_arch = std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
+            .output()
+            .ok()
+            .and_then(|output| {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let cap = stdout.lines().next().unwrap_or("").trim().replace('.', "");
+                if !cap.is_empty() {
+                    Some(cap)
+                } else {
+                    None
+                }
+            });
+
+        match detected_arch {
+            Some(cap) => {
+                options.push(format!("-arch=compute_{}", cap));
+            }
+            None => {
+                return Err(
+                    "CUDA Architecture not specified and auto-detection via `nvidia-smi` failed.\n\
+                     Please specify the target architecture explicitly by setting the \
+                     `DESCEND_NVRTC_FLAGS` environment variable (e.g., in `.cargo/config.toml`):\n\
+                     \n\
+                     [env]\n\
+                     DESCEND_NVRTC_FLAGS = \"-arch=compute_86\"\n\
+                    ".to_string()
+                );
+            }
+        }
     }
 
     // Strip host orchestration code (dummy_main) from the generated C++ since NVRTC is device-only
