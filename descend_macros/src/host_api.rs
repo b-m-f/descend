@@ -6,7 +6,7 @@ use quote::quote;
 /// and dispatches the GPU kernel using the CUDA driver API.
 pub fn generate_host_wrapper(
     kernel: &Kernel,
-    ptx_lib_path_str: &str,
+    ptx_content: &str,
     args: Vec<syn::Expr>,
     mangled_name: &str,
     generic_to_size: &std::collections::HashMap<String, String>,
@@ -43,7 +43,7 @@ pub fn generate_host_wrapper(
         param_pointers.push(quote! { &mut #arg_ident as *mut _ as *mut std::ffi::c_void });
     }
 
-    let ptx_path_lit = syn::LitStr::new(ptx_lib_path_str, proc_macro2::Span::call_site());
+    let ptx_byte_literal = syn::LitByteStr::new(ptx_content.as_bytes(), proc_macro2::Span::call_site());
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
 
@@ -81,7 +81,7 @@ pub fn generate_host_wrapper(
 
     quote! {
         {
-            const #ptx_ident: &[u8] = include_bytes!(#ptx_path_lit);
+            const #ptx_ident: &[u8] = #ptx_byte_literal;
 
             unsafe {
                 let mut module: ::cuda_bindings::CUmodule = std::ptr::null_mut();
