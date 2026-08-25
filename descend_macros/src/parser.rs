@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unreachable_patterns)]
 use descend::ast::*;
 use std::collections::HashMap;
 

@@ -1,4 +1,4 @@
-use proc_macro::{TokenStream, TokenTree, Spacing};
+use proc_macro::{TokenStream, TokenTree};
 
 pub fn extract_source_str(input: &TokenStream) -> String {
     let mut first_span = None;
