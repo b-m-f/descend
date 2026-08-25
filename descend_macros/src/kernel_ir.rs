@@ -5,7 +5,9 @@ use descend::ast::*;
 pub struct KernelParam {
     pub name: String,
     pub is_uniq: bool,
+    pub is_shared_mem: bool,
     pub size_str: String,
+    pub elem_byte_size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -13,8 +15,8 @@ pub struct Kernel {
     pub function_name: String,
     pub grid_dim_str: String,
     pub generic_params_str: String,
-    pub params: Vec<KernelParam>,
     pub generic_size_bindings: Vec<(String, String)>,
+    pub params: Vec<KernelParam>,
     pub call_args: Vec<String>,
 }
 
@@ -50,13 +52,18 @@ impl Kernel {
                     for param in &f.param_decls {
                         let p_name = &param.ident.name;
                         let size_str = extract_size_from_ty(param.ty.as_ref().unwrap());
-                        let is_uniq = format!("{:?}", param.ty).contains("Uniq");
-                        println!("param {} ty: {:?}", p_name, param.ty);
+                        let elem_byte_size = extract_byte_size_from_ty(param.ty.as_ref().unwrap());
+                        let ty_debug = format!("{:?}", param.ty);
+                        let is_uniq = ty_debug.contains("Uniq");
+                        let is_shared_mem = ty_debug.contains("GpuShared");
+                        println!("param {} ty: {}", p_name, ty_debug);
 
                         params.push(KernelParam {
                             name: p_name.to_string(),
                             is_uniq,
+                            is_shared_mem,
                             size_str,
+                            elem_byte_size,
                         });
                     }
 

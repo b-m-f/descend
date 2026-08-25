@@ -84,6 +84,29 @@ pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     None
 }
 
+fn nat_to_string(nat: &Nat) -> String {
+    match nat {
+        Nat::Lit(v) => v.to_string(),
+        Nat::Ident(id) => id.name.to_string(),
+        Nat::BinOp(op, n1, n2) => {
+            let op_str = match op {
+                descend::ast::BinOpNat::Add => "+",
+                descend::ast::BinOpNat::Sub => "-",
+                descend::ast::BinOpNat::Mul => "*",
+                descend::ast::BinOpNat::Div => "/",
+                descend::ast::BinOpNat::Mod => "%",
+                _ => "?",
+            };
+            format!("{} {} {}", nat_to_string(n1), op_str, nat_to_string(n2))
+        }
+        Nat::App(id, args) => {
+            let args_str: Vec<String> = args.iter().map(nat_to_string).collect();
+            format!("{}({})", id.name, args_str.join(", "))
+        }
+        _ => "?".to_string(),
+    }
+}
+
 pub fn extract_size_from_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         let inner_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -92,14 +115,31 @@ pub fn extract_size_from_ty(ty: &Ty) -> String {
             &dty.dty
         };
         if let DataTyKind::Array(_, nat) = inner_dty {
-            if let Nat::Lit(v) = nat {
-                return v.to_string();
-            } else if let Nat::Ident(id) = nat {
-                return id.name.to_string();
-            }
+            return nat_to_string(nat);
         }
     }
     "1".to_string()
+}
+
+pub fn extract_byte_size_from_ty(ty: &Ty) -> u32 {
+    if let TyKind::Data(dty) = &ty.ty {
+        let inner_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
+            &ref_dty.dty.dty
+        } else {
+            &dty.dty
+        };
+        if let DataTyKind::Array(elem_ty, _) = inner_dty {
+            if let DataTyKind::Scalar(scalar) = &elem_ty.dty {
+                return match scalar {
+                    descend::ast::ScalarTy::U8 | descend::ast::ScalarTy::Bool => 1,
+                    descend::ast::ScalarTy::U32 | descend::ast::ScalarTy::I32 | descend::ast::ScalarTy::F32 => 4,
+                    descend::ast::ScalarTy::U64 | descend::ast::ScalarTy::I64 | descend::ast::ScalarTy::F64 => 8,
+                    _ => 4,
+                };
+            }
+        }
+    }
+    4 // fallback
 }
 
 pub fn extract_call_args(source_str: &mut String) -> Vec<String> {
