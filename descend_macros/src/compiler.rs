@@ -3,6 +3,7 @@ use cudarc::nvrtc::compile_ptx_with_opts;
 /// Compiles synthesized Descend source code down to PTX bytecode via descend library + nvrtc.
 /// Returns the raw PTX string and the mangled C++ entry function name.
 pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, String), String> {
+    eprintln!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
     let full_source = descend::parser::SourceCode::new(full_descend.to_string());
     let mut compil_unit = descend::parser::parse(&full_source).map_err(|e| {
         format!(
@@ -47,6 +48,9 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
 
 fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str) -> String {
     let mut cpp_code = descend::codegen::gen(compil_unit);
+    // WARNING: TODO: Descend compiler outputs std::size_t which breaks nvrtc. 
+    // This is a temporary string replacement hack until the Descend compiler is updated.
+    cpp_code = cpp_code.replace("std::size_t", "size_t");
     cpp_code = cpp_code.replace("auto main(", "auto dummy_main(");
     cpp_code = cpp_code.replace(
         &format!("__global__ auto {}(", fn_name),

@@ -1,0 +1,98 @@
+fn par_scan<n: nat, gs: nat, bs: nat, r1: prv, r2: prv, r3: prv, r4: prv>(
+    input: &r1 shrd gpu.global [i32; n],
+    output: &r2 uniq gpu.global [i32; n],
+    block_sums: &r3 uniq gpu.global [i32; gs],
+    tmp: &r4 uniq gpu.shared [i32; bs*2]
+) -[grid: gpu.grid<X<gs>, X<bs>>]-> () {
+    let block_group = &shrd (*input).to_view.grp::<(bs*2)>;
+    let out_grp = &uniq (*output).to_view.grp::<(bs*2)>;
+    let block_sums_grp = &uniq (*block_sums).to_view.grp::<1>;
+
+    sched block in grid {
+        let ib = &shrd (*block_group)[[block]];
+        let block_out = &uniq (*out_grp)[[block]];
+        let bsum = &uniq (*block_sums_grp)[[block]];
+        {
+            let tmp_half0 = &uniq (*tmp).to_view[0..bs];
+            let tmp_half1 = &uniq (*tmp).to_view[bs..bs*2];
+            let input_half0 = &shrd (*ib)[0..bs];
+            let input_half1 = &shrd (*ib)[bs..bs*2];
+
+            sched thread in block {
+                (*tmp_half0)[[thread]] = (*input_half0)[[thread]];
+                (*tmp_half1)[[thread]] = (*input_half1)[[thread]]
+            }
+        };
+
+        for dd in halved_range(bs) {
+            sync(block);
+            let tmp_up_view = &uniq (*tmp).to_view.grp::<((bs*2)/dd)>;
+            indep(X) dd block {
+                active =>
+                    sched thread in active {
+                        let arr = &uniq (*tmp_up_view)[[thread]];
+                        (*arr)[(bs*2)/dd-1] = (*arr)[(bs*2)/dd-1] + (*arr)[bs/dd-1]
+                    },
+                inactive => { () }
+            }
+        };
+
+        {
+            let tmp_last = &uniq (*tmp).to_view[(bs*2)-1..bs*2];
+            indep(X) 1 block {
+                active =>
+                    sched thread in active {
+                        (*bsum)[[thread]] = (*tmp_last)[[thread]];
+                        (*tmp_last)[[thread]] = 0
+                    },
+                inactive => { () }
+            }
+        };
+
+       for dd in doubled_range(bs) {
+            sync(block);
+            let tmp_down_view = &uniq (*tmp).to_view.grp::<(bs*2)/dd>;
+
+            indep(X) dd block {
+                active =>
+                    sched thread in active {
+                        let arr = &uniq (*tmp_down_view)[[thread]];
+                        let t = (*arr)[bs/dd-1];
+                        (*arr)[bs/dd-1] = (*arr)[bs*2/dd-1];
+                        (*arr)[(bs*2)/dd-1] = (*arr)[bs*2/dd-1] + t
+                    },
+                inactive => { () }
+            }
+        };
+
+        sync(block);
+       {
+            let tmp_half0 = &uniq (*tmp).to_view[0..bs];
+            let tmp_half1 = &uniq (*tmp).to_view[bs..bs*2];
+            let output_half0 = &uniq (*block_out)[0..bs];
+            let output_half1 = &uniq (*block_out)[bs..bs*2];
+            sched thread in block {
+                (*output_half0)[[thread]] = (*tmp_half0)[[thread]];
+                (*output_half1)[[thread]] = (*tmp_half1)[[thread]]
+            }
+        }
+    }
+}
+
+fn add<n: nat, gs: nat, bs: nat, r1: prv, r2: prv>(
+    input: &r1 uniq gpu.global [i32; n],
+    block_sums: &r2 shrd gpu.global [i32; gs]
+) -[grid: gpu.grid<X<gs>, X<1>>]-> () {
+    sched block in grid {
+        let value_grp = &shrd (*block_sums).to_view.grp::<1>[[block]];
+        let chunk_grp = &uniq (*input).to_view.grp::<2*bs>[[block]];
+        sched thread in block {
+            let chunk = &uniq (*chunk_grp).grp::<2*bs>[[thread]];
+            let value = (*value_grp)[[thread]];
+            for c in &uniq *chunk {
+                let cc = *c + value;
+                *c = cc
+            }
+        }
+    }
+}

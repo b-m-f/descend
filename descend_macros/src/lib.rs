@@ -19,8 +19,9 @@ use sanitizer::extract_source_str;
 
 #[proc_macro]
 pub fn descend_kernel(input: TokenStream) -> TokenStream {
-    eprintln!(">>> descend_kernel START");
+    eprintln!(">>> descend START");
     let mut source_str = extract_source_str(&input);
+    eprintln!("SOURCE:\n{}\nEND_SOURCE", source_str);
     let call_args = crate::parser::extract_call_args(&mut source_str);
 
     let source = descend::parser::SourceCode::new(source_str.clone());
@@ -46,7 +47,7 @@ pub fn descend_kernel(input: TokenStream) -> TokenStream {
     let output = format!(
         // TODO: eliminate potential delimiter confusion if source contains four times #
         r####"
-        macro_rules! _descend_internal_{} {{
+        macro_rules! {} {{
             ($($args:tt)*) => {{
                 ::descend_macros::_descend_launch_internal!(
                     r###"{}"###,
@@ -76,13 +77,23 @@ pub fn descend_launch(input: TokenStream) -> TokenStream {
                 .unwrap()
         }
     };
+    
+    // Expect a comma
+    match iter.next() {
+        Some(proc_macro::TokenTree::Punct(p)) if p.as_char() == ',' => {}
+        _ => {
+            return "compile_error!(\"Expected comma after kernel name in descend_launch!\");"
+                .parse()
+                .unwrap()
+        }
+    }
 
     // The rest of the tokens are the launch arguments
     let rest: TokenStream = iter.collect();
 
     // Expand to: `kernel_name!(rest...)`
     let output = format!(
-        "_descend_internal_{}!({});",
+        "{}!({});",
         kernel_ident.to_string(),
         rest.to_string()
     );
@@ -111,6 +122,7 @@ pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
         }
         _ => panic!("Expected string literal for source"),
     };
+    eprintln!("LAUNCH SOURCE:\n{}\nEND_LAUNCH", source_str);
 
     let rest: TokenStream = iter.collect();
 
