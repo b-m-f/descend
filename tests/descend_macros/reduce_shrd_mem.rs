@@ -58,7 +58,7 @@ fn test_reduce_shrd_mem() {
     let a_gpu = a_cpu.to_gpu(&ctx);
 
     let out_box: Box<[i32; 128]> = vec![0i32; 128].into_boxed_slice().try_into().unwrap();
-    let mut out_cpu = CpuUniq::new(out_box);
+    let out_cpu = CpuUniq::new(out_box);
     let mut out_gpu = out_cpu.to_gpu(&ctx);
 
     descend_launch!(gpu_reduce, <gs: 128, bs: 512>, &a_gpu, &mut out_gpu);

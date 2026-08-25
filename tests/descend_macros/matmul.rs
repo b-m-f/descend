@@ -32,9 +32,9 @@ descend_kernel! {
 fn test_matmul() {
     let ctx = descend_host::DescendContext::new(0);
 
-    let m = 64;
-    let n = 128;
-    let k = 64;
+    let _m = 64;
+    let _n = 128;
+    let _k = 64;
 
     // a_mat: m x n (64 x 128)
     let a_box: Box<[i32; 64 * 128]> = vec![2i32; 64 * 128].into_boxed_slice().try_into().unwrap();
@@ -48,7 +48,7 @@ fn test_matmul() {
 
     // c_mat: m x k (64 x 64)
     let c_box: Box<[i32; 64 * 64]> = vec![0i32; 64 * 64].into_boxed_slice().try_into().unwrap();
-    let mut c_cpu = CpuUniq::new(c_box);
+    let c_cpu = CpuUniq::new(c_box);
     let mut c_gpu = c_cpu.to_gpu(&ctx);
 
     // block size = 16
