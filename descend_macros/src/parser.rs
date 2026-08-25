@@ -61,7 +61,7 @@ pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<CompilUnit<'a>, String> {
     descend::parser::parse(source)
-        .map_err(|_| "Failed to parse descend macro input. Ensure syntax is valid.".to_string())
+        .map_err(|e| format!("Failed to parse descend macro input: {:?}", e))
 }
 
 pub fn get_dim_size(d: &Dim) -> String {
@@ -77,11 +77,40 @@ pub fn get_dim_size(d: &Dim) -> String {
 
 pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     if let BaseExec::GpuGrid(dim_x, dim_y) = &exec_kind.base {
-        let x_str = get_dim_size(dim_x);
-        let y_str = get_dim_size(dim_y);
-        return Some(format!("X<{}>, X<{}>", x_str, y_str));
+        let x_str = format_dim(dim_x);
+        let y_str = format_dim(dim_y);
+        return Some(format!("{}, {}", x_str, y_str));
     }
     None
+}
+
+pub fn format_dim(dim: &descend::ast::Dim) -> String {
+    match dim {
+        descend::ast::Dim::X(nat) => format!("X<{}>", nat_to_string(&nat.0)),
+        descend::ast::Dim::Y(nat) => format!("Y<{}>", nat_to_string(&nat.0)),
+        descend::ast::Dim::Z(nat) => format!("Z<{}>", nat_to_string(&nat.0)),
+        descend::ast::Dim::XY(dim2d) => format!(
+            "XY<{}, {}>",
+            nat_to_string(&dim2d.0),
+            nat_to_string(&dim2d.1)
+        ),
+        descend::ast::Dim::XZ(dim2d) => format!(
+            "XZ<{}, {}>",
+            nat_to_string(&dim2d.0),
+            nat_to_string(&dim2d.1)
+        ),
+        descend::ast::Dim::YZ(dim2d) => format!(
+            "YZ<{}, {}>",
+            nat_to_string(&dim2d.0),
+            nat_to_string(&dim2d.1)
+        ),
+        descend::ast::Dim::XYZ(dim3d) => format!(
+            "XYZ<{}, {}, {}>",
+            nat_to_string(&dim3d.0),
+            nat_to_string(&dim3d.1),
+            nat_to_string(&dim3d.2)
+        ),
+    }
 }
 
 fn nat_to_string(nat: &Nat) -> String {
@@ -109,34 +138,94 @@ fn nat_to_string(nat: &Nat) -> String {
 
 pub fn extract_size_from_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
-        let inner_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
+        let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
             &ref_dty.dty.dty
         } else {
             &dty.dty
         };
-        if let DataTyKind::Array(_, nat) = inner_dty {
-            return nat_to_string(nat);
+
+        let mut dims = Vec::new();
+        while let DataTyKind::Array(elem_ty, nat) = current_dty {
+            dims.push(nat_to_string(nat));
+            current_dty = &elem_ty.dty;
+        }
+
+        if !dims.is_empty() {
+            return dims.join(" * ");
         }
     }
     "1".to_string()
 }
 
+pub fn format_cpu_ty(ty: &Ty) -> String {
+    if let TyKind::Data(dty) = &ty.ty {
+        if let DataTyKind::Ref(ref_dty) = &dty.dty {
+            let own_str = match ref_dty.own {
+                descend::ast::Ownership::Shrd => "shrd",
+                descend::ast::Ownership::Uniq => "uniq",
+            };
+            let inner_ty_str = format_array_dty(&ref_dty.dty);
+            return format!("&'a {} cpu.mem {}", own_str, inner_ty_str);
+        }
+    }
+    "UNKNOWN_TY".to_string()
+}
+
+pub fn format_shared_array_ty(ty: &Ty) -> String {
+    if let TyKind::Data(dty) = &ty.ty {
+        if let DataTyKind::Ref(ref_dty) = &dty.dty {
+            return format_array_dty(&ref_dty.dty);
+        }
+    }
+    "UNKNOWN_ARRAY".to_string()
+}
+
+pub fn format_array_dty(dty: &DataTy) -> String {
+    match &dty.dty {
+        DataTyKind::Array(inner, nat) => {
+            let inner_str = format_array_dty(inner);
+            let size_str = nat_to_string(nat);
+            format!("[{}; {}]", inner_str, size_str)
+        }
+        DataTyKind::Scalar(scalar) => match scalar {
+            descend::ast::ScalarTy::U8 => "u8",
+            descend::ast::ScalarTy::U32 => "u32",
+            descend::ast::ScalarTy::U64 => "u64",
+            descend::ast::ScalarTy::I32 => "i32",
+            descend::ast::ScalarTy::I64 => "i64",
+            descend::ast::ScalarTy::F32 => "f32",
+            descend::ast::ScalarTy::F64 => "f64",
+            descend::ast::ScalarTy::Bool => "bool",
+            _ => "i32",
+        }
+        .to_string(),
+        _ => "i32".to_string(),
+    }
+}
+
 pub fn extract_byte_size_from_ty(ty: &Ty) -> u32 {
     if let TyKind::Data(dty) = &ty.ty {
-        let inner_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
+        let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
             &ref_dty.dty.dty
         } else {
             &dty.dty
         };
-        if let DataTyKind::Array(elem_ty, _) = inner_dty {
-            if let DataTyKind::Scalar(scalar) = &elem_ty.dty {
-                return match scalar {
-                    descend::ast::ScalarTy::U8 | descend::ast::ScalarTy::Bool => 1,
-                    descend::ast::ScalarTy::U32 | descend::ast::ScalarTy::I32 | descend::ast::ScalarTy::F32 => 4,
-                    descend::ast::ScalarTy::U64 | descend::ast::ScalarTy::I64 | descend::ast::ScalarTy::F64 => 8,
-                    _ => 4,
-                };
-            }
+
+        while let DataTyKind::Array(elem_ty, _) = current_dty {
+            current_dty = &elem_ty.dty;
+        }
+
+        if let DataTyKind::Scalar(scalar) = current_dty {
+            return match scalar {
+                descend::ast::ScalarTy::U8 | descend::ast::ScalarTy::Bool => 1,
+                descend::ast::ScalarTy::U32
+                | descend::ast::ScalarTy::I32
+                | descend::ast::ScalarTy::F32 => 4,
+                descend::ast::ScalarTy::U64
+                | descend::ast::ScalarTy::I64
+                | descend::ast::ScalarTy::F64 => 8,
+                _ => 4,
+            };
         }
     }
     4 // fallback

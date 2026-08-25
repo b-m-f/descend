@@ -15,24 +15,17 @@ pub fn synthesize_main_program(
 
     for (i, param) in kernel.params.iter().enumerate() {
         let mem_qual = if param.is_uniq { "uniq" } else { "shrd" };
-
-        let mut actual_size_str = param.size_str.clone();
-        for (gen, _) in &kernel.generic_size_bindings {
-            if let Some(size) = generic_to_size.get(gen) {
-                actual_size_str = actual_size_str.replace(gen, size);
-            }
+        let mut actual_ty_str_cpu = param.cpu_ty_str.clone();
+        let mut actual_shared_ty = param.shared_ty_str.clone();
+        for (gen, size) in generic_to_size {
+            actual_ty_str_cpu = crate::main_workaround::replace_word(&actual_ty_str_cpu, gen, size);
+            actual_shared_ty = crate::main_workaround::replace_word(&actual_shared_ty, gen, size);
         }
-
         if param.is_shared_mem {
-            // Add to shared mem configs, e.g. `[i32; 512]`
-            shared_mem_configs.push(format!("[i32; {}]", actual_size_str));
+            shared_mem_configs.push(actual_shared_ty);
             continue;
         }
-
-        let param_str = format!(
-            "arg{}: &'a {} cpu.mem [i32; {}]",
-            i, mem_qual, actual_size_str
-        );
+        let param_str = format!("arg{}: {}", i, actual_ty_str_cpu);
         main_params.push(param_str);
 
         let var_str = format!(
@@ -46,26 +39,20 @@ pub fn synthesize_main_program(
     }
 
     let mut actual_generic_params_str = kernel.generic_params_str.clone();
-    for (gen, _) in &kernel.generic_size_bindings {
-        if let Some(size) = generic_to_size.get(gen) {
-            actual_generic_params_str = actual_generic_params_str.replace(gen, size);
-        }
+    for (gen, size) in generic_to_size {
+        actual_generic_params_str = actual_generic_params_str.replace(gen, size);
     }
 
     let mut full_descend = source_str.to_string();
 
-    for (gen, _) in &kernel.generic_size_bindings {
-        if let Some(size) = generic_to_size.get(gen) {
-            full_descend = remove_generic_decl(&full_descend, gen);
-            full_descend = replace_word(&full_descend, gen, size);
-        }
+    for (gen, size) in generic_to_size {
+        full_descend = remove_generic_decl(&full_descend, gen);
+        full_descend = replace_word(&full_descend, gen, size);
     }
 
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
-    for (gen, _) in &kernel.generic_size_bindings {
-        if let Some(size) = generic_to_size.get(gen) {
-            actual_grid_dim_str = replace_word(&actual_grid_dim_str, gen, size);
-        }
+    for (gen, size) in generic_to_size {
+        actual_grid_dim_str = replace_word(&actual_grid_dim_str, gen, size);
     }
 
     if !shared_mem_configs.is_empty() {
@@ -99,7 +86,7 @@ pub fn replace_word(s: &str, word: &str, replacement: &str) -> String {
     let bytes = s.as_bytes();
     let word_bytes = word.as_bytes();
     let mut i = 0;
-    while i <= bytes.len().saturating_sub(word.len()) {
+    while i + word.len() <= bytes.len() {
         if &bytes[i..i + word.len()] == word_bytes {
             let prev_ok = if i == 0 {
                 true

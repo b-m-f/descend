@@ -8,6 +8,8 @@ pub struct KernelParam {
     pub is_shared_mem: bool,
     pub size_str: String,
     pub elem_byte_size: u32,
+    pub cpu_ty_str: String,
+    pub shared_ty_str: String,
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +58,9 @@ impl Kernel {
                         let ty_debug = format!("{:?}", param.ty);
                         let is_uniq = ty_debug.contains("Uniq");
                         let is_shared_mem = ty_debug.contains("GpuShared");
-                        println!("param {} ty: {}", p_name, ty_debug);
+                        let cpu_ty_str = crate::parser::format_cpu_ty(param.ty.as_ref().unwrap());
+                        let shared_ty_str =
+                            crate::parser::format_shared_array_ty(param.ty.as_ref().unwrap());
 
                         params.push(KernelParam {
                             name: p_name.to_string(),
@@ -64,6 +68,8 @@ impl Kernel {
                             is_shared_mem,
                             size_str,
                             elem_byte_size,
+                            cpu_ty_str,
+                            shared_ty_str,
                         });
                     }
 

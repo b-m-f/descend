@@ -40,7 +40,6 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
         }
     };
 
-    
     let mangled_name = extract_mangled_name(&ptx_string, fn_name);
 
     Ok((ptx_string, mangled_name))
@@ -48,7 +47,7 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
 
 fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str) -> String {
     let mut cpp_code = descend::codegen::gen(compil_unit);
-    // WARNING: TODO: Descend compiler outputs std::size_t which breaks nvrtc. 
+    // WARNING: TODO: Descend compiler outputs std::size_t which breaks nvrtc.
     // This is a temporary string replacement hack until the Descend compiler is updated.
     cpp_code = cpp_code.replace("std::size_t", "size_t");
     cpp_code = cpp_code.replace("auto main(", "auto dummy_main(");
