@@ -32,14 +32,14 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
 
     let ptx_result = compile_ptx_with_opts(final_cpp_code, opts);
 
-    let mut ptx_string = match ptx_result {
+    let ptx_string = match ptx_result {
         Ok(ptx) => ptx.to_src(),
         Err(e) => {
             return Err(format!("NVRTC Compilation failed:\n{}", e));
         }
     };
 
-    ptx_string.push('\0');
+    
     let mangled_name = extract_mangled_name(&ptx_string, fn_name);
 
     Ok((ptx_string, mangled_name))

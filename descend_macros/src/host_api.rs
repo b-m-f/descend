@@ -11,6 +11,12 @@ pub fn generate_host_wrapper(
     mangled_name: &str,
     generic_to_size: &std::collections::HashMap<String, String>,
 ) -> TokenStream2 {
+    if args.is_empty() {
+        return quote! {
+            compile_error!("Descend kernels must take at least one array argument to operate upon.");
+        };
+    }
+
     let mut arg_conversions = Vec::new();
     let mut param_pointers = Vec::new();
 
@@ -30,20 +36,19 @@ pub fn generate_host_wrapper(
 
         if param.is_uniq {
             arg_conversions.push(quote! {
-                let _type_check: &mut ::descend_host::GpuUniq<_, #expected_size> = #arg_expr;
-                let mut #arg_ident = _type_check.dev_buf.cu_deviceptr();
+                let mut #arg_ident: &mut ::descend_host::GpuUniq<_, #expected_size> = #arg_expr;
             });
+            param_pointers.push(quote! { &mut #arg_ident.dev_buf });
         } else {
             arg_conversions.push(quote! {
-                let _type_check: &::descend_host::GpuShrd<_, #expected_size> = #arg_expr;
-                let mut #arg_ident = _type_check.dev_buf.cu_deviceptr();
+                let #arg_ident: &::descend_host::GpuShrd<_, #expected_size> = #arg_expr;
             });
+            param_pointers.push(quote! { &#arg_ident.dev_buf });
         }
-
-        param_pointers.push(quote! { &mut #arg_ident as *mut _ as *mut std::ffi::c_void });
     }
 
-    let ptx_byte_literal = syn::LitByteStr::new(ptx_content.as_bytes(), proc_macro2::Span::call_site());
+    let ptx_byte_literal =
+        syn::LitByteStr::new(ptx_content.as_bytes(), proc_macro2::Span::call_site());
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
 
@@ -81,34 +86,33 @@ pub fn generate_host_wrapper(
 
     quote! {
         {
+            use ::descend_host::cudarc::driver::PushKernelArg;
+
             const #ptx_ident: &[u8] = #ptx_byte_literal;
 
-            unsafe {
-                let mut module: ::cuda_bindings::CUmodule = std::ptr::null_mut();
-                assert_eq!(::cuda_bindings::cuModuleLoadData(&mut module, #ptx_ident.as_ptr() as *const std::ffi::c_void), 0, "cuModuleLoadData failed");
+            #( #arg_conversions )*
 
-                let mut function: ::cuda_bindings::CUfunction = std::ptr::null_mut();
-                assert_eq!(::cuda_bindings::cuModuleGetFunction(&mut function, module, #fn_name_lit.as_ptr() as *const i8), 0, "cuModuleGetFunction failed");
+            let stream = arg_0.dev_buf.stream().clone();
+            // the host API has this baked into the GPU array types
+            let ctx = stream.context();
 
-                #( #arg_conversions )*
+            let fn_name_str = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(#fn_name_lit).to_str().unwrap() };
+            let ptx_str = std::str::from_utf8(#ptx_ident).unwrap();
 
-                let mut args_ptrs: Vec<*mut std::ffi::c_void> = vec![
-                    #( #param_pointers ),*
-                ];
+            // Load the module temporarily for this launch (matches original cuModuleLoadData behavior)
+            let module = ctx.load_module(::descend_host::cudarc::nvrtc::Ptx::from_src(ptx_str)).expect("Failed to load PTX");
+            let mut f = module.load_function(fn_name_str).expect("Failed to get function");
 
-                assert_eq!(::cuda_bindings::cuLaunchKernel(
-                    function,
-                    #grid_x, #grid_y, #grid_z, // grid
-                    #block_x, #block_y, #block_z, // block
-                    0, std::ptr::null_mut(), // shared mem, stream
-                    args_ptrs.as_mut_ptr(), std::ptr::null_mut()
-                ), 0, "cuLaunchKernel failed");
+            let cfg = ::descend_host::cudarc::driver::LaunchConfig {
+                grid_dim: (#grid_x, #grid_y, #grid_z),
+                block_dim: (#block_x, #block_y, #block_z),
+                shared_mem_bytes: 0,
+            };
 
-                assert_eq!(::cuda_bindings::cuCtxSynchronize(), 0, "cuCtxSynchronize failed");
+            let mut builder = stream.launch_builder(&mut f);
+            #( builder.arg(#param_pointers); )*
 
-                // Unload module to prevent memory leak on repeated calls
-                ::cuda_bindings::cuModuleUnload(module);
-            }
+            unsafe { builder.launch(cfg) }.expect("Kernel launch failed");
         }
     }
 }

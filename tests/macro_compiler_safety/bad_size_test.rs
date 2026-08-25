@@ -28,6 +28,6 @@ fn main() {
     // This will trigger the compile error E0308 because N: 16384 does not match GpuUniq<i32, 1024>
     descend_launch!(gpu_vec_add_bad_size<N: 16384>, &mut a_gpu, &b_gpu);
 
-    let a_cpu_back: CpuUniq<i32, 1024> = a_gpu.to_cpu(&ctx);
+    let a_cpu_back: CpuUniq<i32, 1024> = a_gpu.to_cpu();
     assert_eq!(*a_cpu_back, [30i32; 1024]);
 }
