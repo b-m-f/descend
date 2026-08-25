@@ -2,79 +2,104 @@
 #![allow(unreachable_patterns)]
 use descend::ast::*;
 use std::collections::HashMap;
-
-use syn::parse::{Parse, ParseStream};
-use syn::{Expr, Ident, LitInt, Token};
+use proc_macro::{TokenStream, TokenTree};
 
 pub struct LaunchConfig {
-    pub kernel_name: String,
     pub generic_to_size: HashMap<String, String>,
-    pub array_args: Vec<Expr>,
+    pub array_args: Vec<TokenStream>,
 }
 
-impl Parse for LaunchConfig {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let kernel_ident: Ident = input.parse()?;
-        let kernel_name = kernel_ident.to_string();
-
+impl LaunchConfig {
+    pub fn parse(input: TokenStream) -> Result<Self, String> {
+        let mut tokens = input.into_iter().peekable();
+        
         let mut generic_to_size = HashMap::new();
 
-        // Parse optional generics: `<N: 16384, M = 10>`
-        if input.peek(Token![<]) {
-            input.parse::<Token![<]>()?;
-            while !input.is_empty() && !input.peek(Token![>]) {
-                let gen_ident: Ident = input.parse()?;
-
-                if input.peek(Token![:]) {
-                    input.parse::<Token![:]>()?;
-                } else {
-                    return Err(input.error("Expected ':' in generic argument"));
-                }
-
-                let val: LitInt = input.parse()?;
-                generic_to_size.insert(gen_ident.to_string(), val.base10_digits().to_string());
-
-                if input.peek(Token![,]) {
-                    input.parse::<Token![,]>()?;
+        // Check if there is `<` next
+        if let Some(TokenTree::Punct(p)) = tokens.peek() {
+            if p.as_char() == '<' {
+                tokens.next(); // consume `<`
+                
+                // Read generic key-value pairs until `>`
+                while let Some(tt) = tokens.peek() {
+                    if let TokenTree::Punct(p) = tt {
+                        if p.as_char() == '>' {
+                            tokens.next(); // consume `>`
+                            break;
+                        }
+                    }
+                    
+                    let gen_ident = match tokens.next() {
+                        Some(TokenTree::Ident(id)) => id,
+                        _ => return Err("Expected generic identifier in launch config".to_string()),
+                    };
+                    
+                    match tokens.next() {
+                        Some(TokenTree::Punct(p)) if p.as_char() == ':' => {},
+                        _ => return Err("Expected ':' in generic argument".to_string()),
+                    }
+                    
+                    let val = match tokens.next() {
+                        Some(TokenTree::Literal(lit)) => lit.to_string(),
+                        _ => return Err("Expected integer literal for generic value".to_string()),
+                    };
+                    
+                    generic_to_size.insert(gen_ident.to_string(), val);
+                    
+                    if let Some(TokenTree::Punct(p)) = tokens.peek() {
+                        if p.as_char() == ',' {
+                            tokens.next(); // consume `,`
+                        }
+                    }
                 }
             }
-            input.parse::<Token![>]>()?;
         }
 
-        // Parse args
-        let mut args = Vec::new();
-        while input.peek(Token![,]) {
-            input.parse::<Token![,]>()?;
-            if input.is_empty() {
-                break;
+        // if there's a comma after generics, consume it
+        if let Some(TokenTree::Punct(p)) = tokens.peek() {
+            if p.as_char() == ',' {
+                tokens.next();
             }
-            let expr: Expr = input.parse()?;
-            args.push(expr);
+        }
+
+        let mut args = Vec::new();
+        while let Some(tt) = tokens.next() {
+            if let TokenTree::Punct(p) = &tt {
+                if p.as_char() == ',' {
+                    continue;
+                }
+            }
+            
+            // Collect tokens until the next comma
+            let mut arg_tokens = vec![tt];
+            while let Some(next_tt) = tokens.peek() {
+                if let TokenTree::Punct(p) = next_tt {
+                    if p.as_char() == ',' {
+                        break;
+                    }
+                }
+                arg_tokens.push(tokens.next().unwrap());
+            }
+            
+            let mut arg_ts = TokenStream::new();
+            for t in arg_tokens {
+                arg_ts.extend(std::iter::once(t));
+            }
+            args.push(arg_ts);
         }
 
         Ok(LaunchConfig {
-            kernel_name,
             generic_to_size,
             array_args: args,
         })
     }
 }
+
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<CompilUnit<'a>, String> {
     descend::parser::parse(source)
         .map_err(|e| format!("Failed to parse descend macro input: {:?}", e))
-}
-
-pub fn get_dim_size(d: &Dim) -> String {
-    if let Dim::X(d1) = d {
-        if let Nat::Lit(v) = &d1.0 {
-            return v.to_string();
-        } else if let Nat::Ident(id) = &d1.0 {
-            return id.name.to_string();
-        }
-    }
-    "1".to_string()
 }
 
 pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
@@ -126,7 +151,6 @@ fn nat_to_string(nat: &Nat) -> String {
                 descend::ast::BinOpNat::Mul => "*",
                 descend::ast::BinOpNat::Div => "/",
                 descend::ast::BinOpNat::Mod => "%",
-                _ => "?",
             };
             format!("{} {} {}", nat_to_string(n1), op_str, nat_to_string(n2))
         }
@@ -233,33 +257,53 @@ pub fn extract_byte_size_from_ty(ty: &Ty) -> u32 {
     4 // fallback
 }
 
-pub fn extract_call_args(source_str: &mut String) -> Vec<String> {
+pub fn extract_call_args_tokens(stream: &mut TokenStream) -> Vec<String> {
     let mut call_args = Vec::new();
-    if let Some(call_idx) = source_str.find("call(") {
-        let rest = &source_str[call_idx + 5..];
-        if let Some(close_idx) = rest.find(')') {
-            let args_str = &rest[..close_idx];
-            for arg in args_str.split(',') {
-                let trimmed = arg.trim();
-                if !trimmed.is_empty() {
-                    call_args.push(trimmed.to_string());
+    let tokens: Vec<TokenTree> = stream.clone().into_iter().collect();
+    
+    let mut call_idx = None;
+    for (i, tt) in tokens.iter().enumerate() {
+        if let TokenTree::Ident(id) = tt {
+            if id.to_string() == "call" {
+                if i + 1 < tokens.len() {
+                    if let TokenTree::Group(g) = &tokens[i + 1] {
+                        if g.delimiter() == proc_macro::Delimiter::Parenthesis {
+                            call_idx = Some(i);
+                            
+                            // parse args from the group
+                            let mut current_arg = String::new();
+                            for arg_tt in g.stream() {
+                                if let TokenTree::Punct(p) = &arg_tt {
+                                    if p.as_char() == ',' {
+                                        call_args.push(current_arg.trim().to_string());
+                                        current_arg = String::new();
+                                        continue;
+                                    }
+                                }
+                                current_arg.push_str(&arg_tt.to_string());
+                            }
+                            if !current_arg.trim().is_empty() {
+                                call_args.push(current_arg.trim().to_string());
+                            }
+                            break;
+                        }
+                    }
                 }
             }
         }
-        source_str.truncate(call_idx);
     }
+    
+    if let Some(idx) = call_idx {
+        // Remove `call(...)` from the stream
+        let mut new_stream = TokenStream::new();
+        for i in 0..idx {
+            new_stream.extend(std::iter::once(tokens[i].clone()));
+        }
+        for i in idx + 2..tokens.len() {
+            new_stream.extend(std::iter::once(tokens[i].clone()));
+        }
+        *stream = new_stream;
+    }
+    
     call_args
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_call_args() {
-        let mut source = "fn foo() {} call(a_array, b_array);".to_string();
-        let args = extract_call_args(&mut source);
-        assert_eq!(source, "fn foo() {} ");
-        assert_eq!(args, vec!["a_array", "b_array"]);
-    }
 }

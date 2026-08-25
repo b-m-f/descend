@@ -1,4 +1,4 @@
-#![feature(proc_macro_span)]
+
 extern crate proc_macro;
 
 mod compiler;
@@ -8,198 +8,159 @@ mod host_api;
 mod kernel_ir;
 mod main_workaround;
 mod parser;
-mod sanitizer;
+mod format;
 
 use compiler::compile_to_ptx;
 use host_api::generate_host_wrapper;
 use kernel_ir::Kernel;
 use main_workaround::synthesize_main_program;
-use proc_macro::TokenStream;
-use sanitizer::extract_source_str;
+use proc_macro::{TokenStream, TokenTree, Ident, Punct, Spacing, Group, Delimiter};
+use std::str::FromStr;
 
 #[proc_macro]
 pub fn descend_kernel(input: TokenStream) -> TokenStream {
-    eprintln!(">>> descend START");
-    let mut source_str = extract_source_str(&input);
-    eprintln!("SOURCE:\n{}\nEND_SOURCE", source_str);
-    let call_args = crate::parser::extract_call_args(&mut source_str);
+    let mut source_ts = input.clone();
+    let call_args = crate::parser::extract_call_args_tokens(&mut source_ts);
+    let source_str = crate::format::to_descend_string(source_ts.clone());
 
     let source = descend::parser::SourceCode::new(source_str.clone());
     let compilation_unit = match crate::parser::parse_descend_source(&source) {
         Ok(c) => c,
         Err(err) => {
-            return format!("compile_error!({:?});", err).parse().unwrap();
+            return std::format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
 
     let mut kernel = match Kernel::extract(&compilation_unit) {
         Ok(i) => i,
         Err(err) => {
-            return format!("compile_error!({:?});", err).parse().unwrap();
+            return std::format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
     kernel.call_args = call_args;
 
     let kernel_name = kernel.function_name.clone();
 
-    // Generate a declarative macro named after the kernel
-    // It captures the source code and forwards it to descend_launch_internal
-    let output = format!(
-        // TODO: eliminate potential delimiter confusion if source contains four times #
-        r####"
-        macro_rules! {} {{
-            ($($args:tt)*) => {{
-                ::descend_macros::_descend_launch_internal!(
-                    r###"{}"###,
-                    {} $($args)*
-                )
-            }}
-        }}
-        "####,
-        kernel_name, source_str, kernel_name
-    );
-
-    eprintln!(">>> descend_kernel END");
-    output.parse().unwrap()
+    let mut output = TokenStream::new();
+    
+    // macro_rules! kernel_name
+    output.extend(vec![
+        TokenTree::Ident(Ident::new("macro_rules", proc_macro::Span::call_site())),
+        TokenTree::Punct(Punct::new('!', Spacing::Alone)),
+        TokenTree::Ident(Ident::new(&kernel_name, proc_macro::Span::call_site())),
+    ]);
+    
+    let mut rule_match = TokenStream::new();
+    rule_match.extend(vec![
+        TokenTree::Punct(Punct::new('$', Spacing::Alone)),
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::from_str("$args:tt").unwrap())),
+        TokenTree::Punct(Punct::new('*', Spacing::Alone)),
+    ]);
+    
+    let mut macro_body = TokenStream::new();
+    macro_body.extend(TokenStream::from_str("::descend_macros::_descend_launch_internal!").unwrap());
+    
+    let mut launch_args = TokenStream::new();
+    launch_args.extend(vec![
+        TokenTree::Group(Group::new(Delimiter::Brace, source_ts)),
+        TokenTree::Punct(Punct::new(',', Spacing::Alone)),
+    ]);
+    launch_args.extend(TokenStream::from_str("$($args)*").unwrap());
+    
+    macro_body.extend(vec![
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, launch_args)),
+    ]);
+    
+    let mut rule_body = TokenStream::new();
+    rule_body.extend(vec![
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, rule_match)),
+        TokenTree::Punct(Punct::new('=', Spacing::Joint)),
+        TokenTree::Punct(Punct::new('>', Spacing::Alone)),
+        TokenTree::Group(Group::new(Delimiter::Brace, macro_body)),
+    ]);
+    
+    output.extend(vec![
+        TokenTree::Group(Group::new(Delimiter::Brace, rule_body)),
+    ]);
+    
+    output
 }
 
 #[proc_macro]
 pub fn descend_launch(input: TokenStream) -> TokenStream {
-    eprintln!(">>> descend_launch START proxy");
     let mut iter = input.into_iter();
 
-    // First token is the kernel name identifier
     let kernel_ident = match iter.next() {
-        Some(proc_macro::TokenTree::Ident(id)) => id,
-        _ => {
-            return "compile_error!(\"Expected kernel name identifier in descend_launch!\");"
-                .parse()
-                .unwrap()
-        }
+        Some(TokenTree::Ident(id)) => id,
+        _ => return "compile_error!(\"Expected kernel name identifier in descend_launch!\");".parse().unwrap(),
     };
     
-    // Expect a comma
     match iter.next() {
-        Some(proc_macro::TokenTree::Punct(p)) if p.as_char() == ',' => {}
-        _ => {
-            return "compile_error!(\"Expected comma after kernel name in descend_launch!\");"
-                .parse()
-                .unwrap()
-        }
+        Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
+        _ => return "compile_error!(\"Expected comma after kernel name in descend_launch!\");".parse().unwrap(),
     }
 
-    // The rest of the tokens are the launch arguments
     let rest: TokenStream = iter.collect();
-
-    // Expand to: `kernel_name!(rest...)`
-    let output = format!(
-        "{}!({});",
-        kernel_ident.to_string(),
-        rest.to_string()
-    );
-
-    eprintln!(">>> descend_launch END proxy");
-    output.parse().unwrap()
+    eprintln!("REST TOKENS: {}", rest.to_string());
+    let mut output = TokenStream::new();
+    output.extend(vec![
+        TokenTree::Ident(kernel_ident),
+        TokenTree::Punct(Punct::new('!', Spacing::Alone)),
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, rest)),
+    ]);
+    
+    output
 }
 
 #[proc_macro]
 pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
-    let input_clone = input.clone();
-    let result = std::panic::catch_unwind(|| {
-        _descend_launch_internal_real(input_clone)
-    });
-    match result {
-        Ok(t) => t,
-        Err(e) => {
-            let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                *s
-            } else if let Some(s) = e.downcast_ref::<String>() {
-                s.as_str()
-            } else {
-                "Unknown panic"
-            };
-            panic!("_descend_launch_internal PANIC: {}", msg);
-        }
-    }
-}
-fn _descend_launch_internal_real(input: TokenStream) -> TokenStream {
-    std::panic::set_hook(Box::new(|info| {
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        eprintln!("MACRO PANIC HOOK: {}\n{}", info, backtrace);
-    }));
-    eprintln!("INPUT TO _descend_launch_internal: {}", input);
-    eprintln!(">>> descend_launch_internal START");
-
-    // 1. Extract the source string literal
     let mut iter = input.into_iter();
-    let source_tt = iter.next().expect("Expected source string literal");
-    let _comma_tt = iter.next().expect("Expected comma");
-
-    let source_str = match source_tt {
-        proc_macro::TokenTree::Literal(lit) => {
-            let s = lit.to_string();
-            // Trim the r###" and "###
-            s.strip_prefix("r###\"")
-                .and_then(|s| s.strip_suffix("\"###"))
-                .unwrap_or(&s)
-                .to_string()
-        }
-        _ => panic!("Expected string literal for source"),
+    
+    let source_tt = iter.next().expect("Expected source group");
+    let source_ts = match source_tt {
+        TokenTree::Group(g) => g.stream(),
+        _ => panic!("Expected block for source"),
     };
-    eprintln!("LAUNCH SOURCE:\n{}\nEND_LAUNCH", source_str);
-
+    
+    let _comma_tt = iter.next().expect("Expected comma");
     let rest: TokenStream = iter.collect();
+    eprintln!("REST TOKENS: {}", rest.to_string());
 
-    // 2. Parse LaunchConfig from the rest of the stream
-    // (This is exactly what the old descend_launch did)
-    // To use syn on `rest`, we can convert it to proc_macro2::TokenStream
-    // Wait, syn::parse takes proc_macro::TokenStream natively
-    let launch_config = match syn::parse::<crate::parser::LaunchConfig>(rest) {
+    let launch_config = match crate::parser::LaunchConfig::parse(rest) {
         Ok(c) => c,
         Err(err) => {
-            return err.to_compile_error().into();
+            return std::format!("compile_error!({:?});", err).parse().unwrap();
         }
     };
 
-    let kernel_name = &launch_config.kernel_name;
     let generic_to_size = launch_config.generic_to_size;
+    eprintln!("generic_to_size: {:?}", generic_to_size);
     let arrays = launch_config.array_args;
 
-    // 3. Re-parse the source code to get the AST
-    // Since we no longer use a global map, we re-parse the stashed source
+    let mut mutable_source_ts = source_ts.clone();
+    let call_args = crate::parser::extract_call_args_tokens(&mut mutable_source_ts);
+    
+    let source_str = crate::format::to_descend_string(mutable_source_ts.clone());
     let source_code = descend::parser::SourceCode::new(source_str.clone());
     let compilation_unit = crate::parser::parse_descend_source(&source_code).unwrap();
     let mut kernel = Kernel::extract(&compilation_unit).unwrap();
-
-    // Extract call args from source_str (which mutates it)
-    let mut mutable_source_str = source_str.clone();
-    let call_args = crate::parser::extract_call_args(&mut mutable_source_str);
     kernel.call_args = call_args;
 
-    let full_descend = synthesize_main_program(&mutable_source_str, &kernel, &generic_to_size);
+    let full_descend = synthesize_main_program(mutable_source_ts, &kernel, &generic_to_size);
 
-    eprintln!(">>> descend_launch compiling to ptx");
-    let (ptx_content, mangled_name) = match compile_to_ptx(&full_descend, kernel_name) {
+    let kernel_name = kernel.function_name.clone();
+    let (ptx_content, mangled_name) = match compile_to_ptx(&full_descend, &kernel_name) {
         Ok(res) => res,
         Err(e) => {
-            return format!("compile_error!({:?});", e).parse().unwrap();
+            return std::format!("compile_error!({:?});", e).parse().unwrap();
         }
     };
 
-    // Generate the launcher wrapper with the embedded PTX
-    let output = generate_host_wrapper(
+    generate_host_wrapper(
         &kernel,
         &ptx_content,
         arrays,
         &mangled_name,
         &generic_to_size,
-    );
-
-    eprintln!(
-        ">>> descend_launch END
-OUTPUT:
-{}",
-        output
-    );
-    TokenStream::from(output)
+    )
 }

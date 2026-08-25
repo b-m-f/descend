@@ -1,23 +1,22 @@
 use crate::kernel_ir::Kernel;
-use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use std::collections::HashMap;
+use proc_macro::{TokenStream, TokenTree, Group, Delimiter};
+use std::str::FromStr;
 
-/// Generates the mock host launcher wrapper that embeds the compiled PTX
-/// and dispatches the GPU kernel using the CUDA driver API.
 pub fn generate_host_wrapper(
     kernel: &Kernel,
     ptx_content: &str,
-    args: Vec<syn::Expr>,
+    args: Vec<TokenStream>,
     mangled_name: &str,
-    generic_to_size: &std::collections::HashMap<String, String>,
-) -> TokenStream2 {
+    generic_to_size: &HashMap<String, String>,
+) -> TokenStream {
     if args.is_empty() {
-        return quote! {
-            compile_error!("Descend kernels must take at least one array argument to operate upon.");
-        };
+        return TokenStream::from_str("compile_error!(\"Descend kernels must take at least one array argument to operate upon.\");").unwrap();
     }
 
-    let mut arg_conversions = Vec::new();
+    let mut out = TokenStream::new();
+    let mut block = TokenStream::new();
+
     let mut param_pointers = Vec::new();
 
     for (i, param) in kernel.params.iter().enumerate() {
@@ -28,126 +27,174 @@ pub fn generate_host_wrapper(
 
         let mut expected_size_str = param.size_str.clone();
         for (gen, size) in generic_to_size {
-            expected_size_str = crate::main_workaround::replace_word(&expected_size_str, gen, size);
+            expected_size_str = substitute_word(&expected_size_str, gen, size);
         }
-        let expected_size: syn::Expr =
-            syn::parse_str(&expected_size_str).unwrap_or_else(|_| syn::parse_str("0").unwrap());
-
-        let arg_ident = syn::Ident::new(&format!("arg_{}", i), proc_macro2::Span::call_site());
 
         if param.is_uniq {
-            arg_conversions.push(quote! {
-                let mut #arg_ident: &mut ::descend_host::GpuUniq<_, { #expected_size }> = #arg_expr;
-            });
-            param_pointers.push(quote! { &mut #arg_ident.dev_buf });
+            let decl = format!("let mut arg_{}: &mut ::descend_host::GpuUniq<_, {{ {} }}> =", i, expected_size_str);
+            block.extend(TokenStream::from_str(&decl).unwrap());
+            block.extend(arg_expr.clone());
+            block.extend(TokenStream::from_str(";").unwrap());
+            param_pointers.push(format!("&mut arg_{}.dev_buf", i));
         } else {
-            arg_conversions.push(quote! {
-                let #arg_ident: &::descend_host::GpuShrd<_, { #expected_size }> = #arg_expr;
-            });
-            param_pointers.push(quote! { &#arg_ident.dev_buf });
+            let decl = format!("let arg_{}: &::descend_host::GpuShrd<_, {{ {} }}> =", i, expected_size_str);
+            block.extend(TokenStream::from_str(&decl).unwrap());
+            block.extend(arg_expr.clone());
+            block.extend(TokenStream::from_str(";").unwrap());
+            param_pointers.push(format!("&arg_{}.dev_buf", i));
         }
     }
 
-    let ptx_byte_literal =
-        syn::LitByteStr::new(ptx_content.as_bytes(), proc_macro2::Span::call_site());
+    let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
+    
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
     let mut shared_mem_bytes = 0;
 
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
     for (gen, size) in generic_to_size {
-        actual_grid_dim_str = crate::main_workaround::replace_word(&actual_grid_dim_str, gen, size);
+        actual_grid_dim_str = substitute_word(&actual_grid_dim_str, gen, size);
+    }
+    let grid_block_parts: Vec<&str> = actual_grid_dim_str.split(">,").collect();
+    let mut gb_parsed = Vec::new();
+    for part in grid_block_parts {
+        let s = part.replace("XYZ<", "")
+                    .replace("XY<", "")
+                    .replace("XZ<", "")
+                    .replace("YZ<", "")
+                    .replace("X<", "")
+                    .replace("Y<", "")
+                    .replace("Z<", "")
+                    .replace(">", "")
+                    .replace(" ", "");
+        let mut dims = (1, 1, 1);
+        let vals: Vec<&str> = s.split(',').collect();
+        if vals.len() > 0 { dims.0 = eval_math(vals[0]).unwrap_or(1); }
+        if vals.len() > 1 { dims.1 = eval_math(vals[1]).unwrap_or(1); }
+        if vals.len() > 2 { dims.2 = eval_math(vals[2]).unwrap_or(1); }
+        gb_parsed.push(dims);
+    }
+    
+    if gb_parsed.len() > 0 {
+        grid_dim = gb_parsed[0];
+    }
+    if gb_parsed.len() > 1 {
+        block_dim = gb_parsed[1];
     }
 
     for param in &kernel.params {
         if param.is_shared_mem {
-            let mut expected_size_str = param.size_str.clone();
+            let mut sz = param.size_str.clone();
             for (gen, size) in generic_to_size {
-                expected_size_str = crate::main_workaround::replace_word(&expected_size_str, gen, size);
+                sz = substitute_word(&sz, gen, size);
             }
-            // Evaluate the math expression to get the exact number of elements
-            let expr: syn::Expr = syn::parse_str(&expected_size_str).unwrap_or_else(|_| syn::parse_str("0").unwrap());
-            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = expr {
-                if let Ok(num_elements) = lit_int.base10_parse::<u32>() {
-                    shared_mem_bytes += num_elements * param.elem_byte_size;
-                }
-            } else {
-                // simple fallback if it's not easily evaluable (e.g. still has unevaluated math like 128*512)
-                // in reality, const math evaluation in proc macro needs something like `evalexpr` 
-                // but since we substituted sizes, we can try to evaluate it!
-                // For now, we will do a simple eval if it contains `*`.
-                let parts: Vec<&str> = expected_size_str.split('*').collect();
-                let mut num_elements = 1;
-                for p in parts {
-                    if let Ok(val) = p.trim().parse::<u32>() {
-                        num_elements *= val;
-                    }
-                }
-                shared_mem_bytes += num_elements * param.elem_byte_size;
+            if let Some(bytes) = eval_math(&sz) {
+                shared_mem_bytes += bytes * 4;
             }
         }
     }
 
-    // Parse grid and block dims from grid_dim_str which is like "X<64>, X<256>"
-    let dims_str = actual_grid_dim_str
-        .replace("X<", "")
-        .replace(">", "")
-        .replace(" ", "");
-    let mut parts = dims_str.split(',');
+    let builder_args = param_pointers
+        .into_iter()
+        .map(|p| format!("builder.arg({});", p))
+        .collect::<Vec<_>>()
+        .join("\n        ");
 
-    if let Some(x) = parts.next() {
-        grid_dim.0 = x.parse().unwrap_or(1);
+    let core_str = format!("
+        use ::descend_host::cudarc::driver::PushKernelArg;
+        let stream = arg_0.dev_buf.stream().clone();
+        let ctx = stream.context();
+        let fn_name_str = unsafe {{
+            std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
+        }};
+        let ptx_str = std::str::from_utf8({}).unwrap();
+        let module = ctx.load_module(::descend_host::cudarc::nvrtc::Ptx::from_src(ptx_str)).expect(\"Failed to load PTX\");
+        let mut f = module.load_function(fn_name_str).expect(\"Failed to get function\");
+        let cfg = ::descend_host::cudarc::driver::LaunchConfig {{
+            grid_dim: ({}, {}, {}),
+            block_dim: ({}, {}, {}),
+            shared_mem_bytes: {},
+        }};
+        let mut builder = stream.launch_builder(&mut f);
+        {}
+        unsafe {{ builder.launch(cfg) }}.expect(\"Kernel launch failed\");
+    ", mangled_name, ptx_byte_literal, grid_dim.0, grid_dim.1, grid_dim.2, block_dim.0, block_dim.1, block_dim.2, shared_mem_bytes, builder_args);
+
+    block.extend(TokenStream::from_str(&core_str).unwrap());
+    
+    out.extend(std::iter::once(TokenTree::Group(Group::new(Delimiter::Brace, block))));
+    out
+}
+
+fn escape_bytes(bytes: &[u8]) -> String {
+    let mut s = String::new();
+    for &b in bytes {
+        if b == b'\"' {
+            s.push_str("\\\"");
+        } else if b == b'\\' {
+            s.push_str("\\\\");
+        } else if b >= 32 && b <= 126 {
+            s.push(b as char);
+        } else {
+            s.push_str(&format!("\\x{:02x}", b));
+        }
     }
-    if let Some(x) = parts.next() {
-        block_dim.0 = x.parse().unwrap_or(1);
+    s
+}
+
+fn eval_math(expr: &str) -> Option<u32> {
+    if expr.contains('*') {
+        let parts: Vec<&str> = expr.split('*').collect();
+        if parts.len() == 2 {
+            let left = parts[0].trim().parse::<u32>().unwrap_or(1);
+            let right = parts[1].trim().parse::<u32>().unwrap_or(1);
+            return Some(left * right);
+        }
     }
+    if expr.contains('/') {
+        let parts: Vec<&str> = expr.split('/').collect();
+        if parts.len() == 2 {
+            let left = parts[0].trim().parse::<u32>().unwrap_or(1);
+            let right = parts[1].trim().parse::<u32>().unwrap_or(1);
+            if right != 0 {
+                return Some(left / right);
+            }
+        }
+    }
+    expr.trim().parse::<u32>().ok()
+}
 
-    let grid_x = grid_dim.0 as u32;
-    let grid_y = grid_dim.1 as u32;
-    let grid_z = grid_dim.2 as u32;
+pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut last_end = 0;
 
-    let block_x = block_dim.0 as u32;
-    let block_y = block_dim.1 as u32;
-    let block_z = block_dim.2 as u32;
-
-    let fn_name_c_str = format!("{}\0", mangled_name);
-    let fn_name_lit =
-        syn::LitByteStr::new(fn_name_c_str.as_bytes(), proc_macro2::Span::call_site());
-
-    let ptx_ident = syn::Ident::new(
-        &format!("{}_PTX", kernel.function_name.to_uppercase()),
-        proc_macro2::Span::call_site(),
-    );
-
-    quote! {
-        {
-            use ::descend_host::cudarc::driver::PushKernelArg;
-
-            const #ptx_ident: &[u8] = #ptx_byte_literal;
-
-            #( #arg_conversions )*
-
-            let stream = arg_0.dev_buf.stream().clone();
-            // the host API has this baked into the GPU array types
-            let ctx = stream.context();
-
-            let fn_name_str = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(#fn_name_lit).to_str().unwrap() };
-            let ptx_str = std::str::from_utf8(#ptx_ident).unwrap();
-
-            // Load the module temporarily for this launch (matches original cuModuleLoadData behavior)
-            let module = ctx.load_module(::descend_host::cudarc::nvrtc::Ptx::from_src(ptx_str)).expect("Failed to load PTX");
-            let mut f = module.load_function(fn_name_str).expect("Failed to get function");
-
-            let cfg = ::descend_host::cudarc::driver::LaunchConfig {
-                grid_dim: (#grid_x, #grid_y, #grid_z),
-                block_dim: (#block_x, #block_y, #block_z),
-                shared_mem_bytes: #shared_mem_bytes,
+    let bytes = s.as_bytes();
+    let word_bytes = word.as_bytes();
+    let mut i = 0;
+    while i + word.len() <= bytes.len() {
+        if &bytes[i..i + word.len()] == word_bytes {
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_'
+            };
+            let next_idx = i + word.len();
+            let next_ok = if next_idx == bytes.len() {
+                true
+            } else {
+                !bytes[next_idx].is_ascii_alphanumeric() && bytes[next_idx] != b'_'
             };
 
-            let mut builder = stream.launch_builder(&mut f);
-            #( builder.arg(#param_pointers); )*
-
-            unsafe { builder.launch(cfg) }.expect("Kernel launch failed");
+            if prev_ok && next_ok {
+                result.push_str(&s[last_end..i]);
+                result.push_str(replacement);
+                i += word.len();
+                last_end = i;
+                continue;
+            }
         }
+        i += 1;
     }
+    result.push_str(&s[last_end..]);
+    result
 }
