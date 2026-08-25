@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cuda-core = { git = "https://github.com/NVlabs/cuda-oxide.git" }
+cudarc = { version = "0.19.9", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-linking", "cuda-version-from-build-system"] }

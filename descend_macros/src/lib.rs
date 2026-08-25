@@ -98,7 +98,7 @@ pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
     // 1. Extract the source string literal
     let mut iter = input.into_iter();
     let source_tt = iter.next().expect("Expected source string literal");
-    let comma_tt = iter.next().expect("Expected comma");
+    let _comma_tt = iter.next().expect("Expected comma");
 
     let source_str = match source_tt {
         proc_macro::TokenTree::Literal(lit) => {

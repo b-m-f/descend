@@ -27,6 +27,6 @@ fn test_vec_add_functional_generic() {
 
     descend_launch!(gpu_vec_add, &mut a_gpu, &b_gpu);
 
-    let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu(&ctx);
+    let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }

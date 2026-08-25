@@ -36,12 +36,6 @@ path = "./descend_macros"
 [dev-dependencies.descend_host]
 path = "./descend_host"
 
-[dev-dependencies.cuda-core]
-git = "https://github.com/NVlabs/cuda-oxide.git"
-
-[dev-dependencies.cuda-bindings]
-git = "https://github.com/NVlabs/cuda-oxide.git"
-
 [dev-dependencies.trybuild]
 version = "1.0"
 
