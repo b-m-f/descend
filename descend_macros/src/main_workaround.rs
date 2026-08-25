@@ -1,10 +1,10 @@
 use crate::kernel_ir::Kernel;
+use proc_macro::{TokenStream, TokenTree, Group};
 use std::collections::HashMap;
 
 /// Synthesizes a valid full Descend program by appending a dummy `main` function wrapper.
-/// This satisfies `descend::ty_check`, which currently hardcodes a requirement for a `main` entry point.
 pub fn synthesize_main_program(
-    source_str: &str,
+    source_ts: TokenStream,
     kernel: &Kernel,
     generic_to_size: &HashMap<String, String>,
 ) -> String {
@@ -18,8 +18,8 @@ pub fn synthesize_main_program(
         let mut actual_ty_str_cpu = param.cpu_ty_str.clone();
         let mut actual_shared_ty = param.shared_ty_str.clone();
         for (gen, size) in generic_to_size {
-            actual_ty_str_cpu = crate::main_workaround::replace_word(&actual_ty_str_cpu, gen, size);
-            actual_shared_ty = crate::main_workaround::replace_word(&actual_shared_ty, gen, size);
+            actual_ty_str_cpu = crate::host_api::substitute_word(&actual_ty_str_cpu, gen, size);
+            actual_shared_ty = crate::host_api::substitute_word(&actual_shared_ty, gen, size);
         }
         if param.is_shared_mem {
             shared_mem_configs.push(actual_shared_ty);
@@ -38,21 +38,9 @@ pub fn synthesize_main_program(
         main_args.push(arg_str);
     }
 
-    let mut actual_generic_params_str = kernel.generic_params_str.clone();
-    for (gen, size) in generic_to_size {
-        actual_generic_params_str = actual_generic_params_str.replace(gen, size);
-    }
-
-    let mut full_descend = source_str.to_string();
-
-    for (gen, size) in generic_to_size {
-        full_descend = remove_generic_decl(&full_descend, gen);
-        full_descend = replace_word(&full_descend, gen, size);
-    }
-
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
     for (gen, size) in generic_to_size {
-        actual_grid_dim_str = replace_word(&actual_grid_dim_str, gen, size);
+        actual_grid_dim_str = crate::host_api::substitute_word(&actual_grid_dim_str, gen, size);
     }
 
     if !shared_mem_configs.is_empty() {
@@ -76,156 +64,156 @@ fn main({}) -[t: cpu.thread]-> () <'a> {{
         main_args.join(", ")
     );
 
+    // Remove the generic `<N: nat, ...>` declarations from the function signature FIRST
+    let stripped_ts = remove_generic_declarations(source_ts, generic_to_size.keys().map(|k| k.as_str()).collect());
+    // Apply generic substitutions to the rest of the token stream
+    let substituted_ts = substitute_generics_in_tokens(stripped_ts, generic_to_size);
+
+    // Convert back to string for Descend compiler
+    let full_descend = crate::format::to_descend_string(substituted_ts);
+
     format!("{}\n{}", main_fn, full_descend)
 }
 
-pub fn replace_word(s: &str, word: &str, replacement: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_end = 0;
-
-    let bytes = s.as_bytes();
-    let word_bytes = word.as_bytes();
-    let mut i = 0;
-    while i + word.len() <= bytes.len() {
-        if &bytes[i..i + word.len()] == word_bytes {
-            let prev_ok = if i == 0 {
-                true
-            } else {
-                !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_'
-            };
-            let next_idx = i + word.len();
-            let next_ok = if next_idx == bytes.len() {
-                true
-            } else {
-                !bytes[next_idx].is_ascii_alphanumeric() && bytes[next_idx] != b'_'
-            };
-
-            if prev_ok && next_ok {
-                result.push_str(&s[last_end..i]);
-                result.push_str(replacement);
-                i += word.len();
-                last_end = i;
-                continue;
+fn substitute_generics_in_tokens(stream: TokenStream, generic_to_size: &HashMap<String, String>) -> TokenStream {
+    let mut out = TokenStream::new();
+    for tt in stream {
+        match tt {
+            TokenTree::Group(g) => {
+                let mut new_g = Group::new(g.delimiter(), substitute_generics_in_tokens(g.stream(), generic_to_size));
+                new_g.set_span(g.span());
+                out.extend(std::iter::once(TokenTree::Group(new_g)));
             }
+            TokenTree::Ident(i) => {
+                let name = i.to_string();
+                if let Some(size) = generic_to_size.get(&name) {
+                    eprintln!("MATCHED GENERIC: {} -> {}", name, size);
+                    if let Ok(ts) = size.parse::<TokenStream>() {
+                        out.extend(ts);
+                        continue;
+                    }
+                }
+                out.extend(std::iter::once(TokenTree::Ident(i)));
+            }
+            _ => out.extend(std::iter::once(tt)),
         }
-        i += 1;
     }
-    result.push_str(&s[last_end..]);
-    result
+    out
 }
 
-fn remove_generic_decl(s: &str, gen: &str) -> String {
-    let mut chars = s.char_indices().peekable();
-    let mut result = String::new();
-    let gen_len = gen.len();
-
-    while let Some((i, c)) = chars.next() {
-        if s[i..].starts_with(gen) {
-            let prev_char = if i == 0 {
-                ' '
-            } else {
-                s[..i].chars().last().unwrap()
-            };
-            if !prev_char.is_ascii_alphanumeric() && prev_char != '_' {
-                let next_idx = i + gen_len;
-                let next_char = if next_idx < s.len() {
-                    s[next_idx..].chars().next().unwrap()
-                } else {
-                    ' '
-                };
-                if !next_char.is_ascii_alphanumeric() && next_char != '_' {
-                    let mut lookahead = chars.clone();
-                    for _ in 1..gen.chars().count() {
-                        lookahead.next();
-                    }
-
-                    let mut is_decl = false;
-                    while let Some(&(_, lc)) = lookahead.peek() {
-                        if lc.is_whitespace() {
-                            lookahead.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    if let Some((_, ':')) = lookahead.next() {
-                        while let Some(&(_, lc)) = lookahead.peek() {
-                            if lc.is_whitespace() {
-                                lookahead.next();
-                            } else {
-                                break;
-                            }
-                        }
-                        if let Some((_, 'n')) = lookahead.next() {
-                            if let Some((_, 'a')) = lookahead.next() {
-                                if let Some((_, 't')) = lookahead.next() {
-                                    is_decl = true;
-                                    while let Some(&(_, lc)) = lookahead.peek() {
-                                        if lc.is_whitespace() {
-                                            lookahead.next();
-                                        } else {
-                                            break;
+fn remove_generic_declarations(stream: TokenStream, generic_keys: Vec<&str>) -> TokenStream {
+    let mut out = TokenStream::new();
+    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    let mut i = 0;
+    
+    while i < tokens.len() {
+        if let TokenTree::Ident(ref ident) = tokens[i] {
+            if ident.to_string() == "fn" {
+                eprintln!("FOUND FN: next={}, nextnext={}", tokens.get(i+1).map(|t| t.to_string()).unwrap_or_default(), tokens.get(i+2).map(|t| t.to_string()).unwrap_or_default());
+                out.extend(std::iter::once(tokens[i].clone()));
+                i += 1;
+                if i < tokens.len() {
+                    if let TokenTree::Ident(ref _name) = tokens[i] {
+                        out.extend(std::iter::once(tokens[i].clone()));
+                        i += 1;
+                        if i < tokens.len() {
+                            if let TokenTree::Punct(ref p) = tokens[i] {
+                                if p.as_char() == '<' {
+                                    let mut depth = 1;
+                                    let mut inner_tokens = Vec::new();
+                                    i += 1;
+                                    while i < tokens.len() && depth > 0 {
+                                        if let TokenTree::Punct(ref inner_p) = tokens[i] {
+                                            if inner_p.as_char() == '<' {
+                                                depth += 1;
+                                            } else if inner_p.as_char() == '>' {
+                                                depth -= 1;
+                                                if depth == 0 {
+                                                    break;
+                                                }
+                                            }
                                         }
+                                        inner_tokens.push(tokens[i].clone());
+                                        i += 1;
                                     }
-                                    if let Some(&(_, ',')) = lookahead.peek() {
-                                        lookahead.next();
+                                    
+                                    let filtered = filter_generics(inner_tokens, &generic_keys);
+                                    let filtered_vec: Vec<_> = filtered.into_iter().collect();
+                                    if !filtered_vec.is_empty() {
+                                        out.extend(std::iter::once(TokenTree::Punct(proc_macro::Punct::new('<', proc_macro::Spacing::Joint))));
+                                        for t in filtered_vec {
+                                            out.extend(std::iter::once(t));
+                                        }
+                                        out.extend(std::iter::once(TokenTree::Punct(proc_macro::Punct::new('>', proc_macro::Spacing::Alone))));
                                     }
+                                    i += 1;
+                                    continue;
                                 }
                             }
                         }
                     }
-
-                    if is_decl {
-                        chars = lookahead;
-                        continue;
-                    }
                 }
-            }
-        }
-        result.push(c);
-    }
-
-    let mut final_res = String::new();
-    let mut chars2 = result.char_indices().peekable();
-    while let Some((_, c)) = chars2.next() {
-        if c == ',' {
-            let mut lookahead = chars2.clone();
-            let mut is_bracket = false;
-            while let Some(&(_, lc)) = lookahead.peek() {
-                if lc.is_whitespace() {
-                    lookahead.next();
-                } else if lc == '>' {
-                    is_bracket = true;
-                    break;
-                } else {
-                    break;
-                }
-            }
-            if is_bracket {
                 continue;
             }
         }
-        if c == '<' {
-            let mut lookahead = chars2.clone();
-            let mut is_comma = false;
-            while let Some(&(_, lc)) = lookahead.peek() {
-                if lc.is_whitespace() {
-                    lookahead.next();
-                } else if lc == ',' {
-                    is_comma = true;
-                    lookahead.next();
-                    break;
-                } else {
-                    break;
-                }
-            }
-            if is_comma {
-                final_res.push('<');
-                chars2 = lookahead;
+        
+        if let TokenTree::Group(ref g) = tokens[i] {
+            let mut new_g = Group::new(g.delimiter(), remove_generic_declarations(g.stream(), generic_keys.clone()));
+            new_g.set_span(g.span());
+            out.extend(std::iter::once(TokenTree::Group(new_g)));
+        } else {
+            out.extend(std::iter::once(tokens[i].clone()));
+        }
+        i += 1;
+    }
+    
+    out
+}
+
+fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
+    let mut out = TokenStream::new();
+    let mut parts = Vec::new();
+    let mut current_part = Vec::new();
+    
+    for tt in tokens {
+        if let TokenTree::Punct(ref p) = tt {
+            if p.as_char() == ',' {
+                parts.push(current_part);
+                current_part = Vec::new();
                 continue;
             }
         }
-        final_res.push(c);
+        current_part.push(tt);
     }
-
-    final_res
+    if !current_part.is_empty() {
+        parts.push(current_part);
+    }
+    
+    let mut keep_parts = Vec::new();
+    for part in parts {
+        let mut keep = true;
+        for tt in &part {
+            if let TokenTree::Ident(ref i) = tt {
+                    eprintln!("CHECKING KEY: {}, in keys: {:?}", i.to_string(), keys);
+                if keys.contains(&i.to_string().as_str()) {
+                    keep = false;
+                }
+                break; // only check the first identifier in the decl (e.g., `N` in `N: nat`)
+            }
+        }
+        if keep {
+            keep_parts.push(part);
+        }
+    }
+    
+    for (i, part) in keep_parts.into_iter().enumerate() {
+        if i > 0 {
+            out.extend(std::iter::once(TokenTree::Punct(proc_macro::Punct::new(',', proc_macro::Spacing::Alone))));
+        }
+        for tt in part {
+            out.extend(std::iter::once(tt));
+        }
+    }
+    
+    out
 }
