@@ -23,6 +23,7 @@ impl DescendContext {
     }
 }
 
+// TODO: both needed?
 pub struct CpuShrd<T: Clone + Default + DeviceRepr, const N: usize>(pub Box<[T; N]>);
 pub struct CpuUniq<T: Clone + Default + DeviceRepr, const N: usize>(pub Box<[T; N]>);
 
@@ -64,6 +65,8 @@ impl<T: DeviceRepr + Clone + Default, const N: usize> GpuUniq<T, N> {
     pub fn to_cpu(&self) -> CpuUniq<T, N> {
         let stream = self.dev_buf.stream();
         let vec = stream.clone_dtoh(&self.dev_buf).expect("Failed DtoH");
+        // TODO: dont hide this. maybe async?
+        // TODO: CUDA events?
         stream.synchronize().unwrap();
         let boxed_slice = vec.into_boxed_slice();
         let boxed_array: Box<[T; N]> = boxed_slice
