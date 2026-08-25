@@ -1,4 +1,4 @@
-use proc_macro::TokenStream;
+use proc_macro::{TokenStream, TokenTree, Spacing};
 
 pub fn extract_source_str(input: &TokenStream) -> String {
     let mut first_span = None;
@@ -10,40 +10,86 @@ pub fn extract_source_str(input: &TokenStream) -> String {
         last_span = Some(token.span());
     }
 
-    let mut source_str = if let (Some(first), Some(last)) = (first_span, last_span) {
+    if let (Some(first), Some(last)) = (first_span, last_span) {
         if let Some(joined) = first.join(last) {
-            joined.source_text().unwrap_or_else(|| input.to_string())
-        } else {
-            input.to_string()
+            if let Some(text) = joined.source_text() {
+                return text;
+            }
         }
-    } else {
-        input.to_string()
-    };
+    }
 
-    sanitize_tokens_fallback(&mut source_str);
-    source_str
+    // Fallback: manually serialize tokens respecting Punct spacing
+    token_stream_to_string(input.clone())
 }
 
-/// Aggressive token-spacing sanitization fallback for IDEs (like rust-analyzer)
-/// where `source_text()` returns `None` and tokenization inserts spaces around punctuation.
-fn sanitize_tokens_fallback(source_str: &mut String) {
-    let replacements = [
-        ("- [", "-["),
-        ("] ->", "]->"),
-        ("& uniq", "&uniq "),
-        ("& shrd", "&shrd "),
-        ("& r uniq", "&r uniq "),
-        ("& r shrd", "&r shrd "),
-        ("&uniq", "&uniq "),
-        ("&shrd", "&shrd "),
-        ("gpu . global", "gpu.global"),
-        ("gpu . grid", "gpu.grid"),
-        ("cpu . mem", "cpu.mem"),
-        ("cpu . thread", "cpu.thread"),
-        (" . ", "."),
-    ];
+fn token_stream_to_string(ts: TokenStream) -> String {
+    let mut out = String::new();
+    let mut last_was_ident_or_lit = false;
+    
+    fn flatten(ts: TokenStream, out: &mut String, last_was_ident_or_lit: &mut bool) {
+        for tt in ts {
+            match tt {
+                TokenTree::Group(g) => {
+                    let delim = g.delimiter();
+                    let (open, close) = match delim {
+                        proc_macro::Delimiter::Parenthesis => ("(", ")"),
+                        proc_macro::Delimiter::Brace => ("{", "}"),
+                        proc_macro::Delimiter::Bracket => ("[", "]"),
+                        proc_macro::Delimiter::None => ("", ""),
+                    };
+                    out.push(' ');
+                    out.push_str(open);
+                    *last_was_ident_or_lit = false;
+                    
+                    flatten(g.stream(), out, last_was_ident_or_lit);
+                    
+                    out.push_str(close);
+                    out.push(' ');
+                    *last_was_ident_or_lit = false;
+                }
+                TokenTree::Ident(i) => {
+                    if *last_was_ident_or_lit {
+                        out.push(' ');
+                    }
+                    out.push_str(&i.to_string());
+                    *last_was_ident_or_lit = true;
+                }
+                TokenTree::Literal(l) => {
+                    if *last_was_ident_or_lit {
+                        out.push(' ');
+                    }
+                    out.push_str(&l.to_string());
+                    *last_was_ident_or_lit = true;
+                }
+                TokenTree::Punct(p) => {
+                    out.push(p.as_char());
+                    *last_was_ident_or_lit = false;
+                }
+            }
+        }
+    }
+    flatten(ts, &mut out, &mut last_was_ident_or_lit);
+    out
+}
 
-    for (from, to) in replacements {
-        *source_str = source_str.replace(from, to);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+    
+    #[test]
+    fn test_print_tokens() {
+        let tokens = quote! {
+            fn gpu_matmul<bs: nat, m: nat, n: nat, k: nat, r: prv>(
+                a_mat: &r shrd gpu.global [i32; m*n],
+                b_mat: &r shrd gpu.global [i32; n*k],
+                c_mat: &r uniq gpu.global [i32; m*k]
+            ) -[grid: gpu.grid<XY<k/bs, m/bs>, XY<bs, bs>>]-> () {
+                sched(Y) block_row in grid {
+                }
+            }
+        };
+        // Proc macros use proc_macro::TokenStream, quote uses proc_macro2::TokenStream
+        // We can't directly convert without a proc macro context.
     }
 }

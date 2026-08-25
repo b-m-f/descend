@@ -104,6 +104,30 @@ pub fn descend_launch(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
+    let input_clone = input.clone();
+    let result = std::panic::catch_unwind(|| {
+        _descend_launch_internal_real(input_clone)
+    });
+    match result {
+        Ok(t) => t,
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                *s
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "Unknown panic"
+            };
+            panic!("_descend_launch_internal PANIC: {}", msg);
+        }
+    }
+}
+fn _descend_launch_internal_real(input: TokenStream) -> TokenStream {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        eprintln!("MACRO PANIC HOOK: {}\n{}", info, backtrace);
+    }));
+    eprintln!("INPUT TO _descend_launch_internal: {}", input);
     eprintln!(">>> descend_launch_internal START");
 
     // 1. Extract the source string literal
