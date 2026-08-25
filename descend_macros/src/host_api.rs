@@ -26,22 +26,23 @@ pub fn generate_host_wrapper(
         }
         let arg_expr = &args[i];
 
-        let expected_size_str = generic_to_size
-            .get(&param.size_str)
-            .unwrap_or(&param.size_str);
+        let mut expected_size_str = param.size_str.clone();
+        for (gen, size) in generic_to_size {
+            expected_size_str = crate::main_workaround::replace_word(&expected_size_str, gen, size);
+        }
         let expected_size: syn::Expr =
-            syn::parse_str(expected_size_str).unwrap_or_else(|_| syn::parse_str("0").unwrap());
+            syn::parse_str(&expected_size_str).unwrap_or_else(|_| syn::parse_str("0").unwrap());
 
         let arg_ident = syn::Ident::new(&format!("arg_{}", i), proc_macro2::Span::call_site());
 
         if param.is_uniq {
             arg_conversions.push(quote! {
-                let mut #arg_ident: &mut ::descend_host::GpuUniq<_, #expected_size> = #arg_expr;
+                let mut #arg_ident: &mut ::descend_host::GpuUniq<_, { #expected_size }> = #arg_expr;
             });
             param_pointers.push(quote! { &mut #arg_ident.dev_buf });
         } else {
             arg_conversions.push(quote! {
-                let #arg_ident: &::descend_host::GpuShrd<_, #expected_size> = #arg_expr;
+                let #arg_ident: &::descend_host::GpuShrd<_, { #expected_size }> = #arg_expr;
             });
             param_pointers.push(quote! { &#arg_ident.dev_buf });
         }
@@ -51,10 +52,44 @@ pub fn generate_host_wrapper(
         syn::LitByteStr::new(ptx_content.as_bytes(), proc_macro2::Span::call_site());
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
+    let mut shared_mem_bytes = 0;
+
+    let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
+    for (gen, size) in generic_to_size {
+        actual_grid_dim_str = crate::main_workaround::replace_word(&actual_grid_dim_str, gen, size);
+    }
+
+    for param in &kernel.params {
+        if param.is_shared_mem {
+            let mut expected_size_str = param.size_str.clone();
+            for (gen, size) in generic_to_size {
+                expected_size_str = crate::main_workaround::replace_word(&expected_size_str, gen, size);
+            }
+            // Evaluate the math expression to get the exact number of elements
+            let expr: syn::Expr = syn::parse_str(&expected_size_str).unwrap_or_else(|_| syn::parse_str("0").unwrap());
+            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = expr {
+                if let Ok(num_elements) = lit_int.base10_parse::<u32>() {
+                    shared_mem_bytes += num_elements * param.elem_byte_size;
+                }
+            } else {
+                // simple fallback if it's not easily evaluable (e.g. still has unevaluated math like 128*512)
+                // in reality, const math evaluation in proc macro needs something like `evalexpr` 
+                // but since we substituted sizes, we can try to evaluate it!
+                // For now, we will do a simple eval if it contains `*`.
+                let parts: Vec<&str> = expected_size_str.split('*').collect();
+                let mut num_elements = 1;
+                for p in parts {
+                    if let Ok(val) = p.trim().parse::<u32>() {
+                        num_elements *= val;
+                    }
+                }
+                shared_mem_bytes += num_elements * param.elem_byte_size;
+            }
+        }
+    }
 
     // Parse grid and block dims from grid_dim_str which is like "X<64>, X<256>"
-    let dims_str = kernel
-        .grid_dim_str
+    let dims_str = actual_grid_dim_str
         .replace("X<", "")
         .replace(">", "")
         .replace(" ", "");
@@ -106,7 +141,7 @@ pub fn generate_host_wrapper(
             let cfg = ::descend_host::cudarc::driver::LaunchConfig {
                 grid_dim: (#grid_x, #grid_y, #grid_z),
                 block_dim: (#block_x, #block_y, #block_z),
-                shared_mem_bytes: 0,
+                shared_mem_bytes: #shared_mem_bytes,
             };
 
             let mut builder = stream.launch_builder(&mut f);

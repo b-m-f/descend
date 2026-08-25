@@ -11,6 +11,7 @@ pub fn synthesize_main_program(
     let mut main_params = Vec::new();
     let mut main_vars = Vec::new();
     let mut main_args = Vec::new();
+    let mut shared_mem_configs = Vec::new();
 
     for (i, param) in kernel.params.iter().enumerate() {
         let mem_qual = if param.is_uniq { "uniq" } else { "shrd" };
@@ -20,6 +21,12 @@ pub fn synthesize_main_program(
             if let Some(size) = generic_to_size.get(gen) {
                 actual_size_str = actual_size_str.replace(gen, size);
             }
+        }
+
+        if param.is_shared_mem {
+            // Add to shared mem configs, e.g. `[i32; 512]`
+            shared_mem_configs.push(format!("[i32; {}]", actual_size_str));
+            continue;
         }
 
         let param_str = format!(
@@ -49,13 +56,21 @@ pub fn synthesize_main_program(
 
     for (gen, _) in &kernel.generic_size_bindings {
         if let Some(size) = generic_to_size.get(gen) {
-            // Remove the generic declaration robustly handling spaces e.g. "N : nat ,"
             full_descend = remove_generic_decl(&full_descend, gen);
-
-            // Note: Descend might have empty angle brackets if we remove all, e.g. `< r: prv>`.
-            // Now, replace the generic variable everywhere else as a word boundary
             full_descend = replace_word(&full_descend, gen, size);
         }
+    }
+
+    let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
+    for (gen, _) in &kernel.generic_size_bindings {
+        if let Some(size) = generic_to_size.get(gen) {
+            actual_grid_dim_str = replace_word(&actual_grid_dim_str, gen, size);
+        }
+    }
+
+    if !shared_mem_configs.is_empty() {
+        actual_grid_dim_str.push_str("; ");
+        actual_grid_dim_str.push_str(&shared_mem_configs.join(", "));
     }
 
     let main_fn = format!(
@@ -70,7 +85,7 @@ fn main({}) -[t: cpu.thread]-> () <'a> {{
         main_params.join(", "),
         main_vars.join("\n    "),
         kernel.function_name,
-        kernel.grid_dim_str,
+        actual_grid_dim_str,
         main_args.join(", ")
     );
 
