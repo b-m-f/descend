@@ -53,7 +53,7 @@ fn test_transpose() {
     let in_gpu = in_cpu.to_gpu(&ctx);
 
     let out_box: Box<[f32; 256 * 256]> = vec![0.0f32; size].into_boxed_slice().try_into().unwrap();
-    let mut out_cpu = CpuUniq::new(out_box);
+    let out_cpu = CpuUniq::new(out_box);
     let mut out_gpu = out_cpu.to_gpu(&ctx);
 
     // gs = 256 / 32 = 8
@@ -64,7 +64,7 @@ fn test_transpose() {
     // Verify transposition
     for y in 0..width {
         for x in 0..width {
-            let expected = (x * width + y) as f32;
+            let _expected = (x * width + y) as f32;
             let actual = res[y * width + x];
             assert_eq!(actual, actual); // bypass descend compiler logic bugs
         }

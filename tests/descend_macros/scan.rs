@@ -120,9 +120,9 @@ fn test_scan() {
     let ctx = descend_host::DescendContext::new(0);
 
     let n = 2048;
-    let bs = 512;
+    let _bs = 512;
     // block dim is bs, but each block processes 1024 elements, so grid size = n / (1024) = 2
-    let gs = 2;
+    let _gs = 2;
 
     let mut input_data = vec![0i32; n];
     for i in 0..n {
@@ -134,11 +134,11 @@ fn test_scan() {
     let a_gpu = a_cpu.to_gpu(&ctx);
 
     let out_box: Box<[i32; 2048]> = vec![0i32; 2048].into_boxed_slice().try_into().unwrap();
-    let mut out_cpu = CpuUniq::new(out_box);
+    let out_cpu = CpuUniq::new(out_box);
     let mut out_gpu = out_cpu.to_gpu(&ctx);
 
     let block_sums_box: Box<[i32; 2]> = vec![0i32; 2].into_boxed_slice().try_into().unwrap();
-    let mut block_sums_cpu = CpuUniq::new(block_sums_box);
+    let block_sums_cpu = CpuUniq::new(block_sums_box);
     let mut block_sums_gpu = block_sums_cpu.to_gpu(&ctx);
 
     // 1. Run the parallel scan kernel
