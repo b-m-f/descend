@@ -22,11 +22,12 @@ pub struct Kernel {
     pub params: Vec<KernelParam>,
     pub call_args: Vec<String>,
 }
-
+// TODO: move to compil_unit? vec of kernels
 impl Kernel {
     pub fn extract(compil_unit: &CompilUnit) -> Result<Self, String> {
         for item in &compil_unit.items {
             match item {
+                // TODO: only 1 function
                 Item::FunDef(f) => {
                     let function_name = f.ident.name.to_string();
                     // TODO: rethink the default 1,1?
