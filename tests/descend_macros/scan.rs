@@ -146,7 +146,7 @@ fn test_scan() {
 
     // 2. Synchronize and copy block sums back to CPU
     let mut cpu_sums = block_sums_gpu.to_cpu();
-    
+
     // 3. Scan the block sums on the CPU
     cpu_scan_inplace(&mut *cpu_sums);
 
@@ -166,7 +166,10 @@ fn test_scan() {
     let mut expected = 0;
     for i in 0..n {
         if res[i] != expected {
-            println!("Mismatch at index {}: expected {}, got {}", i, expected, res[i]);
+            println!(
+                "Mismatch at index {}: expected {}, got {}",
+                i, expected, res[i]
+            );
             assert_eq!(res[i], expected);
         }
         expected += 1;
