@@ -10,7 +10,11 @@ pub struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    pub fn parse(input: TokenStream) -> Result<Self, String> {
+    /// Parses the launch configuration block from the `descend_launch!` internal macro invocation.
+/// 
+/// What it does: Extracts the generic bindings (like `<N: 256>`) and runtime arguments (like `&mut a_gpu`) into a `LaunchConfig` struct.
+/// Why it is needed: Necessary to resolve abstract macro sizes to concrete integer bounds required for NVCC compilation and to capture the host runtime parameters to embed back into the CUDA call.
+pub fn parse(input: TokenStream) -> Result<Self, String> {
         let mut tokens = input.into_iter().peekable();
         
         let mut generic_to_size = HashMap::new();
@@ -95,6 +99,10 @@ impl LaunchConfig {
     }
 }
 
+/// Wraps the invocation of the Descend language parser.
+/// 
+/// What it does: Calls the `descend::parser::parse` method to extract the Abstract Syntax Tree (AST).
+/// Why it is needed: Safely converts the user's macro code into a semantic structure (`CompilUnit`) we can navigate to identify `Item::FunDef` nodes for code generation.
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<CompilUnit<'a>, String> {
@@ -102,6 +110,10 @@ pub fn parse_descend_source<'a>(
         .map_err(|e| format!("Failed to parse descend macro input: {:?}", e))
 }
 
+/// Translates Descend execution block dimensionality expressions into strings.
+/// 
+/// What it does: Flattens `Exec::GpuGrid` configurations into comma-separated text layouts.
+/// Why it is needed: Converts the internal AST coordinate types to text strings capable of being evaluated for CUDA grid launch configurations.
 pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     if let BaseExec::GpuGrid(dim_x, dim_y) = &exec_kind.base {
         let x_str = format_dim(dim_x);
@@ -111,6 +123,10 @@ pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     None
 }
 
+/// Converts 1D, 2D, and 3D native Descend dimensions into text.
+/// 
+/// What it does: Matches inner `Dim::X`, `Dim::XY`, etc. variants and delegates to `nat_to_string`.
+/// Why it is needed: Allows extraction of complex algebraic structures mapping directly to CUDA thread layouts.
 pub fn format_dim(dim: &descend::ast::Dim) -> String {
     match dim {
         descend::ast::Dim::X(nat) => format!("X<{}>", nat_to_string(&nat.0)),
@@ -140,6 +156,10 @@ pub fn format_dim(dim: &descend::ast::Dim) -> String {
     }
 }
 
+/// Unrolls mathematical expressions and abstract number representations back to text strings.
+/// 
+/// What it does: Recursively visits `Nat::Lit`, `Nat::BinOp`, etc., converting tree data structures into calculable strings.
+/// Why it is needed: Maintains mathematical operators supplied in grid sizes (e.g. `n/bs`) intact so they can be processed and verified cleanly.
 fn nat_to_string(nat: &Nat) -> String {
     match nat {
         Nat::Lit(v) => v.to_string(),
@@ -162,6 +182,10 @@ fn nat_to_string(nat: &Nat) -> String {
     }
 }
 
+/// Scans nested type hierarchies looking for terminal array limits.
+/// 
+/// What it does: Follows inner data structures of vectors until locating the bounding `Nat` object.
+/// Why it is needed: Required for computing buffer allocations statically at compile time.
 pub fn extract_size_from_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -183,6 +207,10 @@ pub fn extract_size_from_ty(ty: &Ty) -> String {
     "1".to_string()
 }
 
+/// Maps abstract GPU global structures to host-level representation strings.
+/// 
+/// What it does: Emits Rust types representing mapped memory slices like `&shrd cpu.mem [i32; ...] `.
+/// Why it is needed: Reconstitutes synthetically the CPU-side parameter mappings mirroring GPU resources.
 pub fn format_cpu_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -197,6 +225,10 @@ pub fn format_cpu_ty(ty: &Ty) -> String {
     "UNKNOWN_TY".to_string()
 }
 
+/// Extracts the dimensionality layout of a nested shared block array.
+/// 
+/// What it does: Traverses `GpuShared` AST type parameters to isolate their structure.
+/// Why it is needed: Necessary to determine the amount of runtime dynamic memory to allocate.
 pub fn format_shared_array_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -206,6 +238,10 @@ pub fn format_shared_array_ty(ty: &Ty) -> String {
     "UNKNOWN_ARRAY".to_string()
 }
 
+/// Builds text approximations for AST arrays.
+/// 
+/// What it does: Maps `DataTyKind` variants recursively to scalar sizes.
+/// Why it is needed: Connects standard primitive boundaries to internal compilation structures.
 pub fn format_array_dty(dty: &DataTy) -> String {
     match &dty.dty {
         DataTyKind::Array(inner, nat) => {
@@ -229,6 +265,10 @@ pub fn format_array_dty(dty: &DataTy) -> String {
     }
 }
 
+/// Computes byte alignment constants for raw scalar variants.
+/// 
+/// What it does: Multiplies element types out by bytes.
+/// Why it is needed: Needed explicitly for `cudarc` shared memory allocations.
 pub fn extract_byte_size_from_ty(ty: &Ty) -> u32 {
     if let TyKind::Data(dty) = &ty.ty {
         let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -257,6 +297,10 @@ pub fn extract_byte_size_from_ty(ty: &Ty) -> u32 {
     4 // fallback
 }
 
+/// Seeks within the caller stream to locate explicitly passed `call(...)` invocations to modify kernel generation.
+/// 
+/// What it does: Parses inner punctuation boundaries to extract arguments dynamically.
+/// Why it is needed: Allows seamless function overriding during generic kernel implementations without rewriting tree nodes directly.
 pub fn extract_call_args_tokens(stream: &mut TokenStream) -> Vec<String> {
     let mut call_args = Vec::new();
     let tokens: Vec<TokenTree> = stream.clone().into_iter().collect();
