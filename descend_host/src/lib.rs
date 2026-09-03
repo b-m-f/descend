@@ -5,7 +5,7 @@
 //! launch, manage, and interact with compiled Descend GPU kernels.
 
 pub use cudarc;
-use cudarc::driver::{CudaContext, CudaSlice, DeviceRepr};
+use cudarc::driver::{CudaContext, CudaSlice, DeviceRepr, DeviceSlice};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -23,74 +23,35 @@ impl DescendContext {
     }
 }
 
+<<<<<<< HEAD
 // TODO: both needed?
 pub struct CpuShrd<T: Clone + Default + DeviceRepr, const N: usize>(pub Box<[T; N]>);
 pub struct CpuUniq<T: Clone + Default + DeviceRepr, const N: usize>(pub Box<[T; N]>);
 
 pub struct GpuShrd<T: DeviceRepr, const N: usize> {
+=======
+pub struct GpuBuffer<T: DeviceRepr, const N: usize> {
+>>>>>>> 7cc7078 (use standard rust types and simple transparent wrapper. add more test cases)
     pub dev_buf: CudaSlice<T>,
 }
 
-pub struct GpuUniq<T: DeviceRepr, const N: usize> {
-    pub dev_buf: CudaSlice<T>,
-}
-
-impl<T: Clone + Default + DeviceRepr, const N: usize> CpuShrd<T, N> {
-    pub fn new(arr: Box<[T; N]>) -> Self {
-        CpuShrd(arr)
-    }
-    pub fn to_gpu(&self, context: &DescendContext) -> GpuShrd<T, N> {
+impl<T: Clone + Default + DeviceRepr, const N: usize> GpuBuffer<T, N> {
+    pub fn from_slice(context: &DescendContext, slice: &[T; N]) -> Self {
         let stream = context.0.default_stream();
-        let dev_buf = stream.clone_htod(&*self.0).expect("Failed HtoD");
+        let dev_buf = stream.clone_htod(slice.as_slice()).expect("Failed HtoD");
         let dev_buf: CudaSlice<T> = dev_buf.try_into().unwrap();
         stream.synchronize().unwrap();
-        GpuShrd { dev_buf }
+        Self { dev_buf }
     }
-}
 
-impl<T: Clone + Default + DeviceRepr, const N: usize> CpuUniq<T, N> {
-    pub fn new(arr: Box<[T; N]>) -> Self {
-        CpuUniq(arr)
-    }
-    pub fn to_gpu(&self, context: &DescendContext) -> GpuUniq<T, N> {
-        let stream = context.0.default_stream();
-        let dev_buf = stream.clone_htod(&*self.0).expect("Failed HtoD");
-        let dev_buf: CudaSlice<T> = dev_buf.try_into().unwrap();
-        stream.synchronize().unwrap();
-        GpuUniq { dev_buf }
-    }
-}
-
-impl<T: DeviceRepr + Clone + Default, const N: usize> GpuUniq<T, N> {
-    pub fn to_cpu(&self) -> CpuUniq<T, N> {
+    pub fn to_cpu(&self) -> Box<[T; N]> {
         let stream = self.dev_buf.stream();
         let vec = stream.clone_dtoh(&self.dev_buf).expect("Failed DtoH");
         // TODO: dont hide this. maybe async?
         // TODO: CUDA events?
         stream.synchronize().unwrap();
-        let boxed_slice = vec.into_boxed_slice();
-        let boxed_array: Box<[T; N]> = boxed_slice
+        vec.into_boxed_slice()
             .try_into()
-            .unwrap_or_else(|_| panic!("Failed to convert slice to array"));
-        CpuUniq(boxed_array)
-    }
-}
-
-// Deref
-impl<T: Clone + Default + DeviceRepr, const N: usize> std::ops::Deref for CpuUniq<T, N> {
-    type Target = [T; N];
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl<T: Clone + Default + DeviceRepr, const N: usize> std::ops::DerefMut for CpuUniq<T, N> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-impl<T: Clone + Default + DeviceRepr, const N: usize> std::ops::Deref for CpuShrd<T, N> {
-    type Target = [T; N];
-    fn deref(&self) -> &Self::Target {
-        &self.0
+            .unwrap_or_else(|_| panic!("Failed to convert slice to array"))
     }
 }

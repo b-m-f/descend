@@ -35,13 +35,13 @@ pub fn generate_host_wrapper(
         }
 
         if param.is_uniq {
-            let decl = format!("let mut arg_{}: &mut ::descend_host::GpuUniq<_, {{ {} }}> =", i, expected_size_str);
+            let decl = format!("let mut arg_{}: &mut ::descend_host::GpuBuffer<_, {{ {} }}> =", i, expected_size_str);
             block.extend(TokenStream::from_str(&decl).unwrap());
             block.extend(arg_expr.clone());
             block.extend(TokenStream::from_str(";").unwrap());
             param_pointers.push(format!("&mut arg_{}.dev_buf", i));
         } else {
-            let decl = format!("let arg_{}: &::descend_host::GpuShrd<_, {{ {} }}> =", i, expected_size_str);
+            let decl = format!("let arg_{}: &::descend_host::GpuBuffer<_, {{ {} }}> =", i, expected_size_str);
             block.extend(TokenStream::from_str(&decl).unwrap());
             block.extend(arg_expr.clone());
             block.extend(TokenStream::from_str(";").unwrap());

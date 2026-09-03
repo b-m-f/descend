@@ -1,4 +1,4 @@
-use descend_host::{CpuShrd, CpuUniq, DescendContext, GpuShrd, GpuUniq};
+use descend_host::{DescendContext, GpuBuffer};
 use descend_macros::{descend, descend_launch};
 
 descend! {
@@ -23,15 +23,15 @@ fn test_vec_add_arithmetic() {
 
     // Provide values that make (N * M) + O == 16384 and (N / M) - (O % 3) == 16384
     // E.g. N = 16384, M = 1, O = 0 -> (16384 * 1) + 0 = 16384, (16384 / 1) - 0 = 16384
-    let a_array = CpuUniq::new(Box::new([20i32; 16384]));
-    let b_array = CpuShrd::new(Box::new([10i32; 16384]));
+    let a_array = [20i32; 16384];
+    let b_array = [10i32; 16384];
 
-    let mut a_gpu: GpuUniq<i32, 16384> = a_array.to_gpu(&ctx);
-    let b_gpu: GpuShrd<i32, 16384> = b_array.to_gpu(&ctx);
+    let mut a_gpu = GpuBuffer::from_slice(&ctx, &a_array);
+    let b_gpu = GpuBuffer::from_slice(&ctx, &b_array);
 
     // Testing parsing of multiple generics and their multiplication inside the Descend AST!
     descend_launch!(gpu_vec_add_arithmetic, <N: 16384, M: 1, O: 0>, &mut a_gpu, &b_gpu);
 
-    let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu();
+    let a_cpu_back = a_gpu.to_cpu();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }
