@@ -1,4 +1,4 @@
-use descend_host::{CpuShrd, CpuUniq, DescendContext, GpuShrd, GpuUniq};
+use descend_host::{DescendContext, GpuBuffer};
 use descend_macros::{descend, descend_launch};
 
 // -> generic descend
@@ -20,15 +20,14 @@ descend! {
 fn test_vec_add_generic() {
     let ctx = DescendContext::new(0);
 
-    let a_array = CpuUniq::new(Box::new([20i32; 16384]));
-    let b_array = CpuShrd::new(Box::new([10i32; 16384]));
+    let a_array = [20i32; 16384];
+    let b_array = [10i32; 16384];
 
-    let mut a_gpu: GpuUniq<i32, 16384> = a_array.to_gpu(&ctx);
-    let b_gpu: GpuShrd<i32, 16384> = b_array.to_gpu(&ctx);
+    let mut a_gpu = GpuBuffer::from_slice(&ctx, &a_array);
+    let b_gpu = GpuBuffer::from_slice(&ctx, &b_array);
 
-    // TODO:
     descend_launch!(gpu_vec_add, <N: 16384>, &mut a_gpu, &b_gpu);
 
-    let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu();
+    let a_cpu_back = a_gpu.to_cpu();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }
