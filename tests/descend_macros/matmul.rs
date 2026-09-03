@@ -1,7 +1,7 @@
 use descend_host::*;
-use descend_macros::{descend_kernel, descend_launch};
+use descend_macros::{descend, descend_launch};
 
-descend_kernel! {
+descend! {
     fn gpu_matmul<bs: nat, m: nat, n: nat, k: nat, r: prv>(
         a_mat: &r shrd gpu.global [i32; m*n],
         b_mat: &r shrd gpu.global [i32; n*k],

@@ -1,5 +1,12 @@
 use proc_macro::{TokenStream, TokenTree, Delimiter};
 
+/// Converts a TokenStream into a densely packed string adhering to the strict spacing requirements of the Descend PEG parser.
+/// 
+/// What it does: Recursively visits `TokenTree` instances, intelligently suppressing whitespace between punctuation while 
+/// ensuring literals and identifiers remain properly spaced.
+/// Why it is needed: The native rustc stringification (`TokenStream::to_string()`) injects syntactic spaces globally 
+/// (e.g. `gpu . global` instead of `gpu.global`). The Descend compiler parser is brittle regarding these injected spaces, 
+/// so this function guarantees a clean syntax payload compatible directly with the compiler.
 pub fn to_descend_string(stream: TokenStream) -> String {
     let mut out = String::new();
     let mut last_was_ident_or_lit = false;
