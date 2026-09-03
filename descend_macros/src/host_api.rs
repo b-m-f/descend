@@ -53,7 +53,7 @@ pub fn generate_host_wrapper(
     
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
-    let mut shared_mem_bytes = 0;
+    
 
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
     for (gen, size) in generic_to_size {
@@ -86,17 +86,24 @@ pub fn generate_host_wrapper(
         block_dim = gb_parsed[1];
     }
 
+    let mut shared_mem_exprs = vec![];
     for param in &kernel.params {
         if param.is_shared_mem {
             let mut sz = param.size_str.clone();
             for (gen, size) in generic_to_size {
                 sz = substitute_word(&sz, gen, size);
             }
-            if let Some(bytes) = eval_math(&sz) {
-                shared_mem_bytes += bytes * 4;
+            if let Some(num_elements) = eval_math(&sz) {
+                shared_mem_exprs.push(format!("({} * std::mem::size_of::<{}>())", num_elements, param.elem_base_ty));
             }
         }
     }
+    
+    let shared_mem_bytes = if shared_mem_exprs.is_empty() {
+        "0".to_string()
+    } else {
+        shared_mem_exprs.join(" + ")
+    };
 
     let builder_args = param_pointers
         .into_iter()

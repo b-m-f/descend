@@ -261,8 +261,58 @@ pub fn format_array_dty(dty: &DataTy) -> String {
             _ => "i32",
         }
         .to_string(),
+        DataTyKind::Ident(ident) => ident.name.to_string(),
+        DataTyKind::Struct(s) => s.ident.name.to_string(),
+        DataTyKind::At(dty, _) => format_array_dty(dty),
         _ => "i32".to_string(),
     }
+}
+
+pub fn format_base_ty(ty: &Ty) -> String {
+    if let TyKind::Data(dty) = &ty.ty {
+        let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
+            &ref_dty.dty.dty
+        } else {
+            &dty.dty
+        };
+        while let DataTyKind::Array(elem_ty, _) = current_dty {
+            current_dty = &elem_ty.dty;
+        }
+        if let DataTyKind::Scalar(scalar) = current_dty {
+            return match scalar {
+                descend::ast::ScalarTy::U8 => "u8",
+                descend::ast::ScalarTy::U32 => "u32",
+                descend::ast::ScalarTy::U64 => "u64",
+                descend::ast::ScalarTy::I32 => "i32",
+                descend::ast::ScalarTy::I64 => "i64",
+                descend::ast::ScalarTy::F32 => "f32",
+                descend::ast::ScalarTy::F64 => "f64",
+                descend::ast::ScalarTy::Bool => "bool",
+                _ => "i32",
+            }.to_string();
+        } else if let DataTyKind::Ident(ident) = current_dty {
+            return ident.name.to_string();
+        } else if let DataTyKind::Struct(s) = current_dty {
+            return s.ident.name.to_string();
+        }
+    }
+    "i32".to_string()
+}
+
+pub fn format_rust_struct(s: &descend::ast::StructDecl) -> String {
+    let mut out = String::new();
+    out.push_str("#[repr(C)]\n#[derive(Clone, Copy)]\npub struct ");
+    out.push_str(&s.ident.name);
+    out.push_str(" {\n");
+    for (ident, dty) in &s.fields {
+        out.push_str("    pub ");
+        out.push_str(&ident.name);
+        out.push_str(": ");
+        out.push_str(&format_array_dty(dty));
+        out.push_str(",\n");
+    }
+    out.push_str("}\n");
+    out
 }
 
 /// Computes byte alignment constants for raw scalar variants.
