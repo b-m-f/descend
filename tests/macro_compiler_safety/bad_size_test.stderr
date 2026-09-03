@@ -12,8 +12,8 @@ error[E0308]: mismatched types
 29 |       descend_launch!(gpu_vec_add_bad_size, <N: 16384>, &mut a_gpu, &b_gpu);
    |                                                         ^^^^^^^^^^ expected `16384`, found `1024`
    |
-   = note: expected mutable reference `&mut GpuUniq<_, 16384>`
-              found mutable reference `&mut GpuUniq<i32, 1024>`
+   = note: expected mutable reference `&mut GpuBuffer<_, 16384>`
+              found mutable reference `&mut GpuBuffer<i32, 1024>`
 
 error[E0308]: mismatched types
   --> tests/macro_compiler_safety/bad_size_test.rs:29:67
@@ -29,5 +29,5 @@ error[E0308]: mismatched types
 29 |       descend_launch!(gpu_vec_add_bad_size, <N: 16384>, &mut a_gpu, &b_gpu);
    |                                                                     ^^^^^^ expected `16384`, found `1024`
    |
-   = note: expected reference `&GpuShrd<_, 16384>`
-              found reference `&GpuShrd<i32, 1024>`
+   = note: expected reference `&GpuBuffer<_, 16384>`
+              found reference `&GpuBuffer<i32, 1024>`

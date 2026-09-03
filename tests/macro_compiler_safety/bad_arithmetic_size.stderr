@@ -1,0 +1,33 @@
+error[E0308]: mismatched types
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:26:57
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_bad_arithmetic<N: nat, M: nat, r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; (N * M)],
+ 8 | |             b_array: &r shrd gpu.global [i32; (N * M)]
+...  |
+17 | |     }
+   | |_____- expected due to this
+...
+26 |       descend_launch!(gpu_bad_arithmetic, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
+   |                                                           ^^^^^^^^^^ expected `200`, found `100`
+   |
+   = note: expected mutable reference `&mut GpuBuffer<_, 200>`
+              found mutable reference `&mut GpuBuffer<i32, 100>`
+
+error[E0308]: mismatched types
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:26:69
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_bad_arithmetic<N: nat, M: nat, r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; (N * M)],
+ 8 | |             b_array: &r shrd gpu.global [i32; (N * M)]
+...  |
+17 | |     }
+   | |_____- expected due to this
+...
+26 |       descend_launch!(gpu_bad_arithmetic, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
+   |                                                                       ^^^^^^ expected `200`, found `100`
+   |
+   = note: expected reference `&GpuBuffer<_, 200>`
+              found reference `&GpuBuffer<i32, 100>`

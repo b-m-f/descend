@@ -1,0 +1,16 @@
+error[E0308]: mismatched types
+  --> tests/macro_compiler_safety/bad_mutability.rs:28:36
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_bad_mut<r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; 100],
+ 8 | |             b_array: &r shrd gpu.global [i32; 100]
+...  |
+17 | |     }
+   | |_____- expected due to this
+...
+28 |       descend_launch!(gpu_bad_mut, , &a_gpu, &mut b_gpu);
+   |                                      ^^^^^^ types differ in mutability
+   |
+   = note: expected mutable reference `&mut GpuBuffer<_, 100>`
+                      found reference `&GpuBuffer<i32, 100>`
