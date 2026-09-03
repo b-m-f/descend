@@ -1,9 +1,9 @@
 use descend_host::{CpuShrd, CpuUniq, DescendContext, GpuShrd, GpuUniq};
-use descend_macros::{descend_kernel, descend_launch};
+use descend_macros::{descend, descend_launch};
 
 // Note: This file is run via trybuild to ensure it fails to compile.
 fn main() {
-    descend_kernel! {
+    descend! {
         fn gpu_vec_add_bad_size<N: nat, r: prv>(
             a_array: &r uniq gpu.global [i32; N],
             b_array: &r shrd gpu.global [i32; N]

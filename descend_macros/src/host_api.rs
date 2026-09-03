@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use proc_macro::{TokenStream, TokenTree, Group, Delimiter};
 use std::str::FromStr;
 
+/// Orchestrates the embedding of compiled payload to standard Rust APIs.
+/// 
+/// What it does: Re-generates `cudarc` `LaunchConfig` arithmetic dynamically, constructs strongly typed mutable/immutable CUDA references, and returns a callable anonymous Rust module wrapped securely.
+/// Why it is needed: Forms the actual host-side execution binary allowing `descend_launch!` to trigger GPU resources via `cudarc` at runtime seamlessly.
 pub fn generate_host_wrapper(
     kernel: &Kernel,
     ptx_content: &str,
@@ -142,6 +146,10 @@ fn escape_bytes(bytes: &[u8]) -> String {
     s
 }
 
+/// Statically evaluates elementary math operations embedded within dimension parameters.
+/// 
+/// What it does: Splits common syntax bounds (like `/` or `*`) to perform lightweight local reductions during macro execution.
+/// Why it is needed: Provides fallback dimensionality estimations directly to the macro builder independent of external evaluations.
 fn eval_math(expr: &str) -> Option<u32> {
     if expr.contains('*') {
         let parts: Vec<&str> = expr.split('*').collect();

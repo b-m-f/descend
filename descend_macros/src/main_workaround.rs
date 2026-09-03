@@ -3,6 +3,10 @@ use proc_macro::{TokenStream, TokenTree, Group};
 use std::collections::HashMap;
 
 /// Synthesizes a valid full Descend program by appending a dummy `main` function wrapper.
+/// Produces a synthesized main execution unit resolving missing elements for compiler compatibility.
+/// 
+/// What it does: Crawls through the AST token streams swapping abstract bound markers for statically-resolved concrete values passed during macro expansion, emitting a pseudo-main function.
+/// Why it is needed: Binds runtime host inputs and constraints into the strict type-driven context required to generate functional Descend PTX C++ sources.
 pub fn synthesize_main_program(
     source_ts: TokenStream,
     kernel: &Kernel,
@@ -75,6 +79,10 @@ fn main({}) -[t: cpu.thread]-> () <'a> {{
     format!("{}\n{}", main_fn, full_descend)
 }
 
+/// Resolves generic dimension tags deeply nested inside source tokens.
+/// 
+/// What it does: Crawls structural `Group` variants directly mutating matched identifiers to the literal bounds mapped within `generic_to_size`.
+/// Why it is needed: Replaces procedural variable bounds securely without corrupting spacing metadata or breaking string limits enforced by parsing frameworks.
 fn substitute_generics_in_tokens(stream: TokenStream, generic_to_size: &HashMap<String, String>) -> TokenStream {
     let mut out = TokenStream::new();
     for tt in stream {
@@ -101,6 +109,10 @@ fn substitute_generics_in_tokens(stream: TokenStream, generic_to_size: &HashMap<
     out
 }
 
+/// Isolates and filters the `<gs: nat>` declaration lists from function headers.
+/// 
+/// What it does: Drops generic brackets globally over matching function signatures within raw token lists.
+/// Why it is needed: After generic substitution, residual declarations produce invalid code inside Descend's grammar. They must be removed prior to `parse_descend_source`.
 fn remove_generic_declarations(stream: TokenStream, generic_keys: Vec<&str>) -> TokenStream {
     let mut out = TokenStream::new();
     let tokens: Vec<TokenTree> = stream.into_iter().collect();

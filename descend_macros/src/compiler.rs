@@ -2,6 +2,10 @@ use cudarc::nvrtc::compile_ptx_with_opts;
 
 /// Compiles synthesized Descend source code down to PTX bytecode via descend library + nvrtc.
 /// Returns the raw PTX string and the mangled C++ entry function name.
+/// Compiles synthesized Descend source code down to PTX bytecode via descend library + nvrtc.
+/// 
+/// What it does: Runs AST type checking and converts `full_descend` logic via NVCC configuration into raw PTX payload.
+/// Why it is needed: Necessary to provide the executable payload needed by the host orchestrator (`cudarc`) at runtime.
 pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, String), String> {
     eprintln!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
     let full_source = descend::parser::SourceCode::new(full_descend.to_string());
@@ -45,6 +49,10 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
     Ok((ptx_string, mangled_name))
 }
 
+/// Generates intermediate C++ from a compiled AST unit.
+/// 
+/// What it does: Calls the descend code generator, sanitizes the payload, and masks out non-device artifacts.
+/// Why it is needed: NVRTC expects valid pure GPU-bound C++ syntax; the host code embedded via CPU orchestrator crashes standard compilation.
 fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str) -> String {
     let mut cpp_code = descend::codegen::gen(compil_unit);
     // WARNING: TODO: Descend compiler outputs std::size_t which breaks nvrtc.
@@ -99,6 +107,10 @@ fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str
     )
 }
 
+/// Captures dynamic compilation flags passed into the system environment.
+/// 
+/// What it does: Interrogates `DESCEND_NVRTC_FLAGS` or auto-detects GPU computation capability.
+/// Why it is needed: NVCC requires an accurate architecture flag (`compute_86`, etc.) in order to emit compatible PTX binaries.
 fn resolve_nvrtc_options() -> Result<cudarc::nvrtc::CompileOptions, String> {
     // Read user-provided flags, defaulting to an empty string if not set
     let flags_env = std::env::var("DESCEND_NVRTC_FLAGS").unwrap_or_default();
@@ -154,6 +166,10 @@ fn resolve_nvrtc_options() -> Result<cudarc::nvrtc::CompileOptions, String> {
     Ok(opts)
 }
 
+/// Examines raw PTX strings to extract generated mangled kernel symbols.
+/// 
+/// What it does: String-matches standard `.visible .entry` conventions against the user-supplied function name.
+/// Why it is needed: NVCC compilation obfuscates C++ functions; `cudarc` needs the exact mangled name string to launch the compiled bytecode payload securely.
 fn extract_mangled_name(ptx_string: &str, original_fn_name: &str) -> String {
     let mut mangled_name = original_fn_name.to_string();
     for line in ptx_string.lines() {
