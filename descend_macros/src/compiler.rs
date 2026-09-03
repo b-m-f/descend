@@ -7,7 +7,7 @@ use cudarc::nvrtc::compile_ptx_with_opts;
 /// What it does: Runs AST type checking and converts `full_descend` logic via NVCC configuration into raw PTX payload.
 /// Why it is needed: Necessary to provide the executable payload needed by the host orchestrator (`cudarc`) at runtime.
 pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, String), String> {
-    eprintln!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
+    debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
     let full_source = descend::parser::SourceCode::new(full_descend.to_string());
     let mut compil_unit = descend::parser::parse(&full_source).map_err(|e| {
         format!(
@@ -21,6 +21,10 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
     }
 
     let final_cpp_code = generate_device_cpp(&mut compil_unit, fn_name);
+    
+    // Print the generated C++ code for debugging purposes
+    debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", fn_name, final_cpp_code);
+
     let mut opts = resolve_nvrtc_options()?;
 
     if let Ok(nvcc_path) = std::process::Command::new("which").arg("nvcc").output() {

@@ -1,8 +1,9 @@
 extern crate proc_macro;
 
-mod compiler;
 #[macro_use]
 mod helper;
+
+mod compiler;
 mod host_api;
 mod kernel_ir;
 mod main_workaround;
@@ -13,8 +14,33 @@ use compiler::compile_to_ptx;
 use host_api::generate_host_wrapper;
 use kernel_ir::Kernel;
 use main_workaround::synthesize_main_program;
-use proc_macro::{TokenStream, TokenTree, Ident, Punct, Spacing, Group, Delimiter};
-use std::str::FromStr;
+use proc_macro::{TokenStream, TokenTree, Group, Delimiter};
+
+/// Recursively traverses a `TokenStream` to replace a specific placeholder identifier with the user's pristine code.
+///
+/// What it does: 
+/// - `TokenTree::Group` match: Recursively descends into nested brackets/braces (like `{ ... }` or `( ... )`). `TokenStream`s are tree structures, not flat arrays. Without this recursion, we would fail to find placeholders hidden inside the macro's inner blocks.
+/// - `TokenTree::Ident` match: Looks for the exact literal word `_SOURCE_PLACEHOLDER_` and swaps it out for the user's untouched `TokenStream` (wrapped in braces).
+/// 
+/// Why it is needed: This technique allows us to use highly readable string templates (e.g. `format!("macro_rules! ...")`) for boilerplate macro generation, while cleanly injecting the user's original `TokenStream` without stringifying it. This perfectly preserves compiler span hygiene so `rustc` errors point directly to the user's specific faulty syntax rather than highlighting the entire macro block.
+fn substitute_source_placeholder(ts: TokenStream, source_ts: &TokenStream) -> TokenStream {
+    let mut out = TokenStream::new();
+    for tt in ts {
+        match tt {
+            TokenTree::Group(g) => {
+                let new_stream = substitute_source_placeholder(g.stream(), source_ts);
+                out.extend(std::iter::once(TokenTree::Group(Group::new(g.delimiter(), new_stream))));
+            }
+            TokenTree::Ident(id) if id.to_string() == "_SOURCE_PLACEHOLDER_" => {
+                out.extend(std::iter::once(TokenTree::Group(Group::new(Delimiter::Brace, source_ts.clone()))));
+            }
+            other => {
+                out.extend(std::iter::once(other));
+            }
+        }
+    }
+    out
+}
 
 /// The primary entry point for embedding Descend code in Rust.
 /// 
@@ -28,7 +54,7 @@ pub fn descend(input: TokenStream) -> TokenStream {
     
     // We format the raw tokens tightly (removing syntax-invalid spaces) 
     // to strictly satisfy the Descend PEG parser requirements.
-    let source_str = crate::format::to_descend_string(source_ts.clone());
+    let source_str = crate::format::to_descend_string(source_ts.clone()); debug!("MACRO INPUT: {}", source_str);
     let source = descend::parser::SourceCode::new(source_str.clone());
     let compilation_unit = match crate::parser::parse_descend_source(&source) {
         Ok(c) => c,
@@ -44,48 +70,18 @@ pub fn descend(input: TokenStream) -> TokenStream {
         if let descend::ast::Item::FunDef(f) = item {
             let kernel_name = f.ident.name.to_string();
             
-            // macro_rules! kernel_name
-            output.extend(vec![
-                TokenTree::Ident(Ident::new("macro_rules", proc_macro::Span::call_site())),
-                TokenTree::Punct(Punct::new('!', Spacing::Alone)),
-                TokenTree::Ident(Ident::new(&kernel_name, proc_macro::Span::call_site())),
-            ]);
+            let template = format!(
+                "macro_rules! {0} {{ ($($args:tt)*) => {{ ::descend_macros::_descend_launch_internal!( _SOURCE_PLACEHOLDER_, {0}, $($args)* ) }} }}", 
+                kernel_name
+            );
             
-            let mut rule_match = TokenStream::new();
-            rule_match.extend(vec![
-                TokenTree::Punct(Punct::new('$', Spacing::Alone)),
-                TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::from_str("$args:tt").unwrap())),
-                TokenTree::Punct(Punct::new('*', Spacing::Alone)),
-            ]);
+            let template_ts = template.parse::<TokenStream>().unwrap();
+            let rule_ts = substitute_source_placeholder(template_ts, &source_ts);
             
-            let mut macro_body = TokenStream::new();
-            macro_body.extend(TokenStream::from_str("::descend_macros::_descend_launch_internal!").unwrap());
-            
-            let mut launch_args = TokenStream::new();
-            // Block containing entire original source tokens
-            launch_args.extend(vec![
-                TokenTree::Group(Group::new(Delimiter::Brace, source_ts.clone())),
-                TokenTree::Punct(Punct::new(',', Spacing::Alone)),
-                TokenTree::Ident(Ident::new(&kernel_name, proc_macro::Span::call_site())),
-                TokenTree::Punct(Punct::new(',', Spacing::Alone)),
-            ]);
-            launch_args.extend(TokenStream::from_str("$($args)*").unwrap());
-            
-            macro_body.extend(vec![
-                TokenTree::Group(Group::new(Delimiter::Parenthesis, launch_args)),
-            ]);
-            
-            let mut rule_body = TokenStream::new();
-            rule_body.extend(vec![
-                TokenTree::Group(Group::new(Delimiter::Parenthesis, rule_match)),
-                TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                TokenTree::Punct(Punct::new('>', Spacing::Alone)),
-                TokenTree::Group(Group::new(Delimiter::Brace, macro_body)),
-            ]);
-            
-            output.extend(vec![
-                TokenTree::Group(Group::new(Delimiter::Brace, rule_body)),
-            ]);
+            output.extend(rule_ts);
+        } else if let descend::ast::Item::StructDecl(s) = item {
+            let struct_code = crate::parser::format_rust_struct(s);
+            output.extend(struct_code.parse::<TokenStream>().unwrap());
         }
     }
     
@@ -111,12 +107,9 @@ pub fn descend_launch(input: TokenStream) -> TokenStream {
     }
 
     let rest: TokenStream = iter.collect();
-    let mut output = TokenStream::new();
-    output.extend(vec![
-        TokenTree::Ident(kernel_ident),
-        TokenTree::Punct(Punct::new('!', Spacing::Alone)),
-        TokenTree::Group(Group::new(Delimiter::Parenthesis, rest)),
-    ]);
+    
+    let mut output = format!("{}!", kernel_ident).parse::<TokenStream>().unwrap();
+    output.extend(std::iter::once(TokenTree::Group(Group::new(Delimiter::Parenthesis, rest))));
     
     output
 }
@@ -172,7 +165,7 @@ fn step_1_parse_and_extract_ir(
         .unwrap_or_else(|err| panic!("Launch config error: {:?}", err));
 
     let call_args = crate::parser::extract_call_args_tokens(source_ts);
-    let source_str = crate::format::to_descend_string(source_ts.clone());
+    let source_str = crate::format::to_descend_string(source_ts.clone()); debug!("MACRO INPUT: {}", source_str);
     
     let source_code = descend::parser::SourceCode::new(source_str);
     let compilation_unit = crate::parser::parse_descend_source(&source_code).expect("Failed to parse descend source");

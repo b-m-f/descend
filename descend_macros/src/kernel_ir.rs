@@ -9,7 +9,7 @@ pub struct KernelParam {
     pub is_uniq: bool,
     pub is_shared_mem: bool,
     pub size_str: String,
-    pub elem_byte_size: u32,
+    pub elem_base_ty: String,
     pub cpu_ty_str: String,
     pub shared_ty_str: String,
 }
@@ -62,7 +62,7 @@ impl Kernel {
                 for param in &f.param_decls {
                     let p_name = &param.ident.name;
                     let size_str = extract_size_from_ty(param.ty.as_ref().unwrap());
-                    let elem_byte_size = extract_byte_size_from_ty(param.ty.as_ref().unwrap());
+                    let elem_base_ty = crate::parser::format_base_ty(param.ty.as_ref().unwrap());
                     let ty_debug = format!("{:?}", param.ty);
                     let is_uniq = ty_debug.contains("Uniq");
                     let is_shared_mem = ty_debug.contains("GpuShared");
@@ -75,7 +75,7 @@ impl Kernel {
                         is_uniq,
                         is_shared_mem,
                         size_str,
-                        elem_byte_size,
+                        elem_base_ty,
                         cpu_ty_str,
                         shared_ty_str,
                     });
