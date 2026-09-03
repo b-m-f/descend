@@ -2,7 +2,7 @@ use descend_host::{CpuShrd, CpuUniq, DescendContext, GpuShrd, GpuUniq};
 use descend_macros::{descend, descend_launch};
 
 #[test]
-fn test_vec_add_functional_generic() {
+fn test_vec_add() {
     descend! {
         fn gpu_vec_add<r: prv>(
             a_array: &r uniq gpu.global [i32; 16384],
