@@ -27,12 +27,23 @@ pub struct GpuBuffer<T: DeviceRepr, const N: usize> {
     pub dev_buf: CudaSlice<T>,
 }
 
-impl<T: Clone + Default + DeviceRepr, const N: usize> GpuBuffer<T, N> {
-    pub fn from_slice(context: &DescendContext, slice: &[T; N]) -> Self {
+impl<T: Clone + Default + DeviceRepr + Send + 'static, const N: usize> GpuBuffer<T, N> {
+    pub fn from_box(context: &DescendContext, host_data: Box<[T; N]>) -> Self {
         let stream = context.0.default_stream();
-        let dev_buf = stream.clone_htod(slice.as_slice()).expect("Failed HtoD");
+        
+        // HtoD async transfer
+        let dev_buf = stream.clone_htod(host_data.as_slice()).expect("Failed HtoD");
         let dev_buf: CudaSlice<T> = dev_buf.try_into().unwrap();
-        stream.synchronize().unwrap();
+        
+        // Record event
+        let event = stream.record_event(None).expect("Failed to record event");
+        
+        // Spawn a pure Rust background thread to wait for the event and drop the host data
+        std::thread::spawn(move || {
+            event.synchronize().expect("Failed to synchronize event");
+            drop(host_data);
+        });
+        
         Self { dev_buf }
     }
 

@@ -18,10 +18,10 @@ fn main() {
 
     let ctx = DescendContext::new(0);
     let a_array = [20i32; 100];
-    let a_gpu = GpuBuffer::from_slice(&ctx, &a_array); // Not mut!
+    let a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array)); // Not mut!
 
     let b_array = [20i32; 100];
-    let mut b_gpu = GpuBuffer::from_slice(&ctx, &b_array); // Mut!
+    let mut b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array)); // Mut!
 
     // Bad Mutability! Expects `uniq` (mut) for the first argument, but we give it an immutable `&a_gpu`.
     // And expects `shrd` for the second, but we give a mutable `&mut b_gpu`.

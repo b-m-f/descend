@@ -26,8 +26,8 @@ fn test_vec_add_arithmetic() {
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
-    let mut a_gpu = GpuBuffer::from_slice(&ctx, &a_array);
-    let b_gpu = GpuBuffer::from_slice(&ctx, &b_array);
+    let mut a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array));
+    let b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array));
 
     // Testing parsing of multiple generics and their multiplication inside the Descend AST!
     descend_launch!(gpu_vec_add_arithmetic, <N: 16384, M: 1, O: 0>, &mut a_gpu, &b_gpu);
