@@ -23,15 +23,7 @@ impl DescendContext {
     }
 }
 
-<<<<<<< HEAD
-// TODO: both needed?
-pub struct CpuShrd<T: Clone + Default + DeviceRepr, const N: usize>(pub Box<[T; N]>);
-pub struct CpuUniq<T: Clone + Default + DeviceRepr, const N: usize>(pub Box<[T; N]>);
-
-pub struct GpuShrd<T: DeviceRepr, const N: usize> {
-=======
 pub struct GpuBuffer<T: DeviceRepr, const N: usize> {
->>>>>>> 7cc7078 (use standard rust types and simple transparent wrapper. add more test cases)
     pub dev_buf: CudaSlice<T>,
 }
 
