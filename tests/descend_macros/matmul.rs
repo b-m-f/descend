@@ -35,9 +35,9 @@ fn test_matmul() {
     let b_box: Box<[i32; 128 * 64]> = vec![3i32; 128 * 64].into_boxed_slice().try_into().unwrap();
     let c_box: Box<[i32; 64 * 64]> = vec![0i32; 64 * 64].into_boxed_slice().try_into().unwrap();
 
-    let a_gpu = GpuBuffer::from_slice(&ctx, a_box.as_ref());
-    let b_gpu = GpuBuffer::from_slice(&ctx, b_box.as_ref());
-    let mut c_gpu = GpuBuffer::from_slice(&ctx, c_box.as_ref());
+    let a_gpu = GpuBuffer::from_box(&ctx, a_box);
+    let b_gpu = GpuBuffer::from_box(&ctx, b_box);
+    let mut c_gpu = GpuBuffer::from_box(&ctx, c_box);
 
     descend_launch!(gpu_matmul, <bs: 16, m: 64, n: 128, k: 64>, &a_gpu, &b_gpu, &mut c_gpu);
 

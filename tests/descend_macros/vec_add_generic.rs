@@ -42,9 +42,14 @@ fn test_vec_add_generic() {
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
+<<<<<<< HEAD
     let mut a_gpu = GpuBuffer::from_slice(&ctx, &a_array);
     let b_gpu = GpuBuffer::from_slice(&ctx, &b_array);
 >>>>>>> 7cc7078 (use standard rust types and simple transparent wrapper. add more test cases)
+=======
+    let mut a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array));
+    let b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array));
+>>>>>>> 7d7319b (moves to box and auto frees when transfer is done)
 
     descend_launch!(gpu_vec_add, <N: 16384>, &mut a_gpu, &b_gpu);
 >>>>>>> 04da9b5 (wip multi kernel)
