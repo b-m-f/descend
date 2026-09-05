@@ -22,8 +22,8 @@ fn test_vec_add() {
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
-    let mut a_gpu = GpuBuffer::from_slice(&ctx, &a_array);
-    let b_gpu = GpuBuffer::from_slice(&ctx, &b_array);
+    let mut a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array));
+    let b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array));
 
     descend_launch!(gpu_vec_add, , &mut a_gpu, &b_gpu);
 
