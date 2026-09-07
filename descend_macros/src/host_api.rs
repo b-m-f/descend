@@ -1,12 +1,8 @@
-use crate::kernel_ir::Kernel;
 use std::collections::HashMap;
 use proc_macro::{TokenStream, TokenTree, Group, Delimiter};
 use std::str::FromStr;
+use crate::kernel_ir::Kernel;
 
-/// Orchestrates the embedding of compiled payload to standard Rust APIs.
-/// 
-/// What it does: Re-generates `cudarc` `LaunchConfig` arithmetic dynamically, constructs strongly typed mutable/immutable CUDA references, and returns a callable anonymous Rust module wrapped securely.
-/// Why it is needed: Forms the actual host-side execution binary allowing `descend_launch!` to trigger GPU resources via `cudarc` at runtime seamlessly.
 pub fn generate_host_wrapper(
     kernel: &Kernel,
     ptx_content: &str,
@@ -22,6 +18,7 @@ pub fn generate_host_wrapper(
     let mut block = TokenStream::new();
 
     let mut param_pointers = Vec::new();
+    let mut param_decls = Vec::new();
 
     for (i, param) in kernel.params.iter().enumerate() {
         if i >= args.len() {
@@ -39,14 +36,15 @@ pub fn generate_host_wrapper(
             block.extend(TokenStream::from_str(&decl).unwrap());
             block.extend(arg_expr.clone());
             block.extend(TokenStream::from_str(";").unwrap());
-            param_pointers.push(format!("&mut arg_{}.dev_buf", i));
         } else {
             let decl = format!("let arg_{}: &::descend_host::GpuBuffer<_, {{ {} }}> =", i, expected_size_str);
             block.extend(TokenStream::from_str(&decl).unwrap());
             block.extend(arg_expr.clone());
             block.extend(TokenStream::from_str(";").unwrap());
-            param_pointers.push(format!("&arg_{}.dev_buf", i));
         }
+        
+        param_decls.push(format!("let mut ptr_{} = arg_{}.dev_buf.cu_deviceptr();", i, i));
+        param_pointers.push(format!("&mut ptr_{} as *mut _ as *mut ::core::ffi::c_void", i));
     }
 
     let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
@@ -54,7 +52,6 @@ pub fn generate_host_wrapper(
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
     
-
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
     for (gen, size) in generic_to_size {
         actual_grid_dim_str = substitute_word(&actual_grid_dim_str, gen, size);
@@ -105,31 +102,38 @@ pub fn generate_host_wrapper(
         shared_mem_exprs.join(" + ")
     };
 
-    let builder_args = param_pointers
-        .into_iter()
-        .map(|p| format!("builder.arg({});", p))
-        .collect::<Vec<_>>()
-        .join("\n        ");
+    let count = param_pointers.len();
+    let ptrs = param_pointers.join(",\n            ");
+    let declarations = param_decls.join("\n        ");
 
     let core_str = format!("
-        use ::descend_host::cudarc::driver::PushKernelArg;
-        let stream = arg_0.dev_buf.stream().clone();
-        let ctx = stream.context();
+        let stream = arg_0.dev_buf.context().new_stream().expect(\"Failed to create stream\");
+        let ctx = arg_0.dev_buf.context();
         let fn_name_str = unsafe {{
             std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
         }};
         let ptx_str = std::str::from_utf8({}).unwrap();
-        let module = ctx.load_module(::descend_host::cudarc::nvrtc::Ptx::from_src(ptx_str)).expect(\"Failed to load PTX\");
-        let mut f = module.load_function(fn_name_str).expect(\"Failed to get function\");
-        let cfg = ::descend_host::cudarc::driver::LaunchConfig {{
-            grid_dim: ({}, {}, {}),
-            block_dim: ({}, {}, {}),
-            shared_mem_bytes: {},
-        }};
-        let mut builder = stream.launch_builder(&mut f);
+        let module = ctx.load_module_from_ptx_src(ptx_str).expect(\"Failed to load PTX\");
+        let f = module.load_function(fn_name_str).expect(\"Failed to get function\");
+        
         {}
-        unsafe {{ builder.launch(cfg) }}.expect(\"Kernel launch failed\");
-    ", mangled_name, ptx_byte_literal, grid_dim.0, grid_dim.1, grid_dim.2, block_dim.0, block_dim.1, block_dim.2, shared_mem_bytes, builder_args);
+        
+        let mut params: [*mut ::core::ffi::c_void; {}] = [
+            {}
+        ];
+        
+        unsafe {{
+            ::descend_host::cuda_core::simt::launch_kernel_on_stream(
+                &f,
+                ({}, {}, {}),
+                ({}, {}, {}),
+                {},
+                &stream,
+                &mut params
+            )
+        }}.expect(\"Kernel launch failed\");
+        stream.synchronize().expect(\"Failed to synchronize\");
+    ", mangled_name, ptx_byte_literal, declarations, count, ptrs, grid_dim.0, grid_dim.1, grid_dim.2, block_dim.0, block_dim.1, block_dim.2, shared_mem_bytes);
 
     block.extend(TokenStream::from_str(&core_str).unwrap());
     
@@ -153,10 +157,6 @@ fn escape_bytes(bytes: &[u8]) -> String {
     s
 }
 
-/// Statically evaluates elementary math operations embedded within dimension parameters.
-/// 
-/// What it does: Splits common syntax bounds (like `/` or `*`) to perform lightweight local reductions during macro execution.
-/// Why it is needed: Provides fallback dimensionality estimations directly to the macro builder independent of external evaluations.
 fn eval_math(expr: &str) -> Option<u32> {
     if expr.contains('*') {
         let parts: Vec<&str> = expr.split('*').collect();

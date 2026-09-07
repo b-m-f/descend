@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cudarc = { version = "0.19.9", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-linking", "cuda-version-from-build-system"] }
+cuda-core = { git = "https://github.com/nvlabs/cutile-rs", rev = "2eed75e8f552be31216ddf2019288f03dfec4939" }
