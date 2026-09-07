@@ -9,4 +9,4 @@ proc-macro = true
 
 [dependencies]
 descend = { path = "../" }
-cudarc = { version = "0.19.9", default-features = false, features = ["nvrtc", "std", "dynamic-linking", "cuda-version-from-build-system"] }
+uuid = { version = "1.0", features = ["v4"] }

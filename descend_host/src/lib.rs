@@ -4,8 +4,8 @@
 //! It serves as the primary runtime interface for CPU-bound Rust programs to safely and seamlessly
 //! launch, manage, and interact with compiled Descend GPU kernels.
 
-pub use cudarc;
-use cudarc::driver::{CudaContext, CudaSlice, DeviceRepr, DeviceSlice};
+pub use cuda_core;
+use cuda_core::simt::{CudaContext, CudaStream, DeviceBuffer, DeviceCopy};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -23,38 +23,95 @@ impl DescendContext {
     }
 }
 
-pub struct GpuBuffer<T: DeviceRepr, const N: usize> {
-    pub dev_buf: CudaSlice<T>,
+pub struct GpuBuffer<T: DeviceCopy, const N: usize> {
+    pub dev_buf: DeviceBuffer<T>,
 }
 
-impl<T: Clone + Default + DeviceRepr + Send + 'static, const N: usize> GpuBuffer<T, N> {
+impl<T: DeviceCopy, const N: usize> GpuBuffer<T, N> {
+    /// Synchronously uploads data to the GPU and returns a buffer.
+    /// Blocks the CPU thread until the transfer is complete.
+    /// Takes ownership of the Box, eagerly dropping the host memory immediately after transfer.
     pub fn from_box(context: &DescendContext, host_data: Box<[T; N]>) -> Self {
-        let stream = context.0.default_stream();
-        
-        // HtoD async transfer
-        let dev_buf = stream.clone_htod(host_data.as_slice()).expect("Failed HtoD");
-        let dev_buf: CudaSlice<T> = dev_buf.try_into().unwrap();
-        
-        // Record event
-        let event = stream.record_event(None).expect("Failed to record event");
-        
-        // Spawn a pure Rust background thread to wait for the event and drop the host data
-        std::thread::spawn(move || {
-            event.synchronize().expect("Failed to synchronize event");
-            drop(host_data);
-        });
-        
+        let stream = context.0.new_stream().expect("Failed to create stream");
+        let dev_buf = DeviceBuffer::from_host(&stream, host_data.as_slice()).expect("Failed HtoD Sync");
+        Self { dev_buf }
+    }
+
+    /// Synchronously uploads data to the GPU from a reference.
+    /// Blocks the CPU thread until the transfer is complete.
+    /// The caller retains ownership of the host memory.
+    pub fn from_slice(context: &DescendContext, host_data: &[T; N]) -> Self {
+        let stream = context.0.new_stream().expect("Failed to create stream");
+        let dev_buf = DeviceBuffer::from_host(&stream, host_data.as_slice()).expect("Failed HtoD Sync");
         Self { dev_buf }
     }
 
     pub fn to_cpu(&self) -> Box<[T; N]> {
-        let stream = self.dev_buf.stream();
-        let vec = stream.clone_dtoh(&self.dev_buf).expect("Failed DtoH");
-        // TODO: dont hide this. maybe async?
-        // TODO: CUDA events?
-        stream.synchronize().unwrap();
-        vec.into_boxed_slice()
-            .try_into()
-            .unwrap_or_else(|_| panic!("Failed to convert slice to array"))
+        let stream = self.dev_buf.context().new_stream().expect("Failed to create stream");
+        let host_vec = self.dev_buf.to_host_vec(&stream).expect("Failed DtoH Sync");
+        host_vec.into_boxed_slice().try_into().unwrap_or_else(|_| panic!("Failed to convert slice to array"))
     }
 }
+
+/*
+// =====================================================================
+// FUTURE ASYNC API (TRUE ZERO-STALL PINNED MEMORY)
+// =====================================================================
+// This section implements a custom smart pointer for OS-level page-locked
+// memory to bypass the CUDA driver's hidden synchronous staging buffers.
+// Left commented out for future thesis iterations on high-performance DMA.
+
+// use std::ops::{Deref, DerefMut};
+// use cuda_core::simt::{PinnedHostBuffer, CudaEvent};
+
+/// A custom Smart Pointer that owns OS-level page-locked (pinned) memory.
+/// Safely wraps `cuMemAllocHost` and `cuMemFreeHost`.
+// pub struct DescendPinnedBox<T: DeviceCopy> {
+//     inner: PinnedHostBuffer<T>,
+// }
+
+// impl<T: DeviceCopy> DescendPinnedBox<T> {
+//     pub fn new_zeroed(context: &DescendContext, len: usize) -> Self {
+//         Self {
+//             inner: PinnedHostBuffer::zeroed(&context.0, len)
+//                 .expect("Failed to allocate pinned host memory")
+//         }
+//     }
+// }
+
+// impl<T: DeviceCopy> Deref for DescendPinnedBox<T> {
+//     type Target = [T];
+//     fn deref(&self) -> &Self::Target {
+//         &self.inner
+//     }
+// }
+
+// impl<T: DeviceCopy> DerefMut for DescendPinnedBox<T> {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         &mut self.inner
+//     }
+// }
+
+// impl<T: DeviceCopy + Send + 'static, const N: usize> GpuBuffer<T, N> {
+//     /// Enqueues a true Zero-Stall asynchronous DMA transfer from Pinned Host Memory.
+//     /// Because the memory is page-locked by the OS, the CUDA driver does not need
+//     /// to allocate a staging buffer, allowing the CPU to return instantly (< 10µs).
+//     pub fn from_pinned_async(
+//         context: &DescendContext, 
+//         host_data: DescendPinnedBox<T>
+//     ) -> (Self, CudaEvent, DescendPinnedBox<T>) {
+//         let stream = context.0.new_stream().expect("Failed to create stream");
+//         
+//         let dev_buf = unsafe {
+//             // The CUDA driver automatically detects that the underlying pointer is pinned 
+//             // and bypasses the synchronous staging copy, achieving true Zero-Stall.
+//             DeviceBuffer::from_host_async_unchecked(&stream, &host_data)
+//                 .expect("Failed HtoD Async")
+//         };
+//         
+//         let event = stream.record_event(None).expect("Failed to record event");
+//         
+//         (Self { dev_buf }, event, host_data)
+//     }
+// }
+*/
