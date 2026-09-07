@@ -15,6 +15,7 @@ mod linux_memory_tests {
     #[test]
     fn test_from_box_sync_memory_reclaim() {
         let ctx = DescendContext::new(0);
+        let stream = ctx.new_stream();
         let rss_baseline = get_rss_bytes();
         
         // Allocate 100MB
@@ -27,16 +28,17 @@ mod linux_memory_tests {
         assert!(rss_allocated >= rss_baseline + 100_000_000, "Memory should increase after allocation");
 
         let start = Instant::now();
-        let buf = GpuBuffer::from_box(&ctx, data);
+        let buf = GpuBuffer::from_box(&stream, data);
+        stream.synchronize(); // Explicitly sync
         let duration = start.elapsed();
         
         let rss_after_from_box = get_rss_bytes();
-        // Since from_box is sync and consumes the Box, it drops it before returning.
+        // Since from_box consumes the Box and the inner staging copy is synchronous
         assert!(rss_after_from_box < rss_allocated - 50_000_000, "Memory should be reclaimed immediately by from_box");
         
         println!("Sync from_box took: {:?}", duration);
 
-        let fetched = buf.to_cpu();
+        let fetched = buf.to_cpu(&stream);
         assert_eq!(fetched.len(), N);
         assert_eq!(fetched[0], 1, "Data at index 0 corrupted or lost");
         assert_eq!(fetched[N - 1], 1, "Data at end of buffer corrupted or lost");
@@ -45,6 +47,7 @@ mod linux_memory_tests {
     #[test]
     fn test_from_slice_sync_memory_retained() {
         let ctx = DescendContext::new(0);
+        let stream = ctx.new_stream();
         let rss_baseline = get_rss_bytes();
         
         // Allocate 100MB
@@ -57,7 +60,8 @@ mod linux_memory_tests {
         assert!(rss_allocated >= rss_baseline + 100_000_000, "Memory should increase after allocation");
 
         let start = Instant::now();
-        let buf = GpuBuffer::from_slice(&ctx, &data);
+        let buf = GpuBuffer::from_slice(&stream, &data);
+        stream.synchronize();
         let duration = start.elapsed();
         
         println!("Sync from_slice took: {:?}", duration);
@@ -72,7 +76,7 @@ mod linux_memory_tests {
         let rss_final = get_rss_bytes();
         assert!(rss_final < rss_allocated - 50_000_000, "Memory should be reclaimed after consumer drops array");
 
-        let fetched = buf.to_cpu();
+        let fetched = buf.to_cpu(&stream);
         assert_eq!(fetched.len(), N);
         assert_eq!(fetched[0], 1, "Data at index 0 corrupted or lost");
         assert_eq!(fetched[N - 1], 1, "Data at end of buffer corrupted or lost");

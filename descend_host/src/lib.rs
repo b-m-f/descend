@@ -21,8 +21,25 @@ impl DescendContext {
     pub fn new(device_id: u32) -> Self {
         Self(CudaContext::new(device_id as usize).expect("Failed to create CUDA context"))
     }
+
+    pub fn new_stream(&self) -> DescendStream {
+        DescendStream {
+            inner: self.0.new_stream().expect("Failed to create stream"),
+            context: self.clone(),
+        }
+    }
 }
 
+pub struct DescendStream {
+    pub inner: Arc<CudaStream>,
+    pub context: DescendContext,
+}
+
+impl DescendStream {
+    pub fn synchronize(&self) {
+        self.inner.synchronize().expect("Failed to synchronize stream");
+    }
+}
 
 pub struct KernelLaunchConfig {
     pub grid_dim: (u32, u32, u32),
@@ -31,14 +48,13 @@ pub struct KernelLaunchConfig {
 }
 
 pub fn launch_kernel(
-    context: &DescendContext,
+    stream: &DescendStream,
     ptx_str: &str,
     fn_name: &str,
     config: KernelLaunchConfig,
     params: &mut [*mut std::ffi::c_void]
 ) {
-    let stream = context.0.new_stream().expect("Failed to create stream");
-    let module = context.0.load_module_from_ptx_src(ptx_str).expect("Failed to load PTX");
+    let module = stream.context.0.load_module_from_ptx_src(ptx_str).expect("Failed to load PTX");
     let f = module.load_function(fn_name).expect("Failed to get function");
     
     unsafe {
@@ -47,15 +63,14 @@ pub fn launch_kernel(
             config.grid_dim,
             config.block_dim,
             config.shared_mem_bytes,
-            &stream,
+            &stream.inner,
             params
         )
     }.expect("Kernel launch failed");
-    stream.synchronize().expect("Failed to synchronize");
+    // NO stream.synchronize() here. It is handled manually by the caller!
 }
 
 pub struct GpuBuffer<T: DeviceCopy, const N: usize> {
-
     pub dev_buf: DeviceBuffer<T>,
 }
 
@@ -65,30 +80,22 @@ impl<T: DeviceCopy, const N: usize> GpuBuffer<T, N> {
     }
 
     /// Synchronously uploads data to the GPU and returns a buffer.
-    /// Blocks the CPU thread until the transfer is complete.
-    /// Takes ownership of the Box, eagerly dropping the host memory immediately after transfer.
-    pub fn from_box(context: &DescendContext, host_data: Box<[T; N]>) -> Self {
-        let stream = context.0.new_stream().expect("Failed to create stream");
-        let dev_buf = DeviceBuffer::from_host(&stream, host_data.as_slice()).expect("Failed HtoD Sync");
+    pub fn from_box(stream: &DescendStream, host_data: Box<[T; N]>) -> Self {
+        let dev_buf = DeviceBuffer::from_host(&stream.inner, host_data.as_slice()).expect("Failed HtoD Sync");
         Self { dev_buf }
     }
 
     /// Synchronously uploads data to the GPU from a reference.
-    /// Blocks the CPU thread until the transfer is complete.
-    /// The caller retains ownership of the host memory.
-    pub fn from_slice(context: &DescendContext, host_data: &[T; N]) -> Self {
-        let stream = context.0.new_stream().expect("Failed to create stream");
-        let dev_buf = DeviceBuffer::from_host(&stream, host_data.as_slice()).expect("Failed HtoD Sync");
+    pub fn from_slice(stream: &DescendStream, host_data: &[T; N]) -> Self {
+        let dev_buf = DeviceBuffer::from_host(&stream.inner, host_data.as_slice()).expect("Failed HtoD Sync");
         Self { dev_buf }
     }
 
-    pub fn to_cpu(&self) -> Box<[T; N]> {
-        let stream = self.dev_buf.context().new_stream().expect("Failed to create stream");
-        let host_vec = self.dev_buf.to_host_vec(&stream).expect("Failed DtoH Sync");
+    pub fn to_cpu(&self, stream: &DescendStream) -> Box<[T; N]> {
+        let host_vec = self.dev_buf.to_host_vec(&stream.inner).expect("Failed DtoH Sync");
         host_vec.into_boxed_slice().try_into().unwrap_or_else(|_| panic!("Failed to convert slice to array"))
     }
 }
-
 /*
 // =====================================================================
 // FUTURE ASYNC API (TRUE ZERO-STALL PINNED MEMORY)

@@ -17,13 +17,14 @@ fn main() {
     }
 
     let ctx = DescendContext::new(0);
+    let stream = ctx.new_stream();
     let a_array = [20i32; 100];
-    let a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array)); // Not mut!
+    let a_gpu = GpuBuffer::from_box(&stream, Box::new(a_array)); // Not mut!
 
     let b_array = [20i32; 100];
-    let mut b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array)); // Mut!
+    let mut b_gpu = GpuBuffer::from_box(&stream, Box::new(b_array)); // Mut!
 
     // Bad Mutability! Expects `uniq` (mut) for the first argument, but we give it an immutable `&a_gpu`.
     // And expects `shrd` for the second, but we give a mutable `&mut b_gpu`.
-    descend_launch!(gpu_bad_mut, , &a_gpu, &mut b_gpu);
+    descend_launch!(gpu_bad_mut, &stream, , &a_gpu, &mut b_gpu);
 }

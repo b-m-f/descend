@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use proc_macro::{TokenStream, TokenTree};
 
 pub struct LaunchConfig {
+    pub stream_expr: proc_macro::TokenStream,
     pub generic_to_size: HashMap<String, String>,
-    pub array_args: Vec<TokenStream>,
+    pub array_args: Vec<proc_macro::TokenStream>,
 }
 
 impl LaunchConfig {
@@ -17,6 +18,26 @@ impl LaunchConfig {
 pub fn parse(input: TokenStream) -> Result<Self, String> {
         let mut tokens = input.into_iter().peekable();
         
+        // Parse stream_expr until the first comma
+        let mut stream_tokens = Vec::new();
+        while let Some(tt) = tokens.peek() {
+            if let proc_macro::TokenTree::Punct(p) = tt {
+                if p.as_char() == ',' {
+                    break;
+                }
+            }
+            stream_tokens.push(tokens.next().unwrap());
+        }
+        
+        if let Some(proc_macro::TokenTree::Punct(p)) = tokens.peek() {
+            if p.as_char() == ',' {
+                tokens.next(); // consume the comma
+            }
+        }
+        
+        let mut stream_expr = proc_macro::TokenStream::new();
+        stream_expr.extend(stream_tokens);
+
         let mut generic_to_size = HashMap::new();
 
         // Check if there is `<` next
@@ -93,6 +114,7 @@ pub fn parse(input: TokenStream) -> Result<Self, String> {
         }
 
         Ok(LaunchConfig {
+            stream_expr,
             generic_to_size,
             array_args: args,
         })

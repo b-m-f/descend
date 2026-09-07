@@ -1,5 +1,5 @@
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/bad_mutability.rs:28:36
+  --> tests/macro_compiler_safety/bad_mutability.rs:29:45
    |
  5 | /     descend! {
  6 | |         fn gpu_bad_mut<r: prv>(
@@ -9,8 +9,8 @@ error[E0308]: mismatched types
 17 | |     }
    | |_____- expected due to this
 ...
-28 |       descend_launch!(gpu_bad_mut, , &a_gpu, &mut b_gpu);
-   |                                      ^^^^^^ types differ in mutability
+29 |       descend_launch!(gpu_bad_mut, &stream, , &a_gpu, &mut b_gpu);
+   |                                               ^^^^^^ types differ in mutability
    |
    = note: expected mutable reference `&mut GpuBuffer<_, 100>`
                       found reference `&GpuBuffer<i32, 100>`

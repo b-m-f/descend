@@ -17,11 +17,12 @@ fn main() {
     }
 
     let ctx = DescendContext::new(0);
+    let stream = ctx.new_stream();
     let a_array = [20i32; 100];
-    let mut a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array));
+    let mut a_gpu = GpuBuffer::from_box(&stream, Box::new(a_array));
     let b_array = [20i32; 100];
-    let b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array));
+    let b_gpu = GpuBuffer::from_box(&stream, Box::new(b_array));
 
     // Bad Size! 10 * 20 = 200, but our GpuBuffer is 100.
-    descend_launch!(gpu_bad_arithmetic, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
+    descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
 }

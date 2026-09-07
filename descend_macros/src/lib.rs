@@ -138,7 +138,7 @@ pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
     let rest: TokenStream = iter.collect();
 
     // Step 1: Parse
-    let (kernel, generic_to_size, array_args) = step_1_parse_and_extract_ir(rest, &mut source_ts, &target_name);
+    let (kernel, stream_expr, generic_to_size, array_args) = step_1_parse_and_extract_ir(rest, &mut source_ts, &target_name);
     
     // Step 2: Evaluate to Static Values
     let full_descend = step_2_evaluate_to_static_values(source_ts, &kernel, &generic_to_size);
@@ -147,7 +147,7 @@ pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
     let (ptx_content, mangled_name) = step_3_and_4_type_check_and_compile(&full_descend, &kernel.function_name);
 
     // Step 5: Extract and Embed
-    step_5_extract_and_embed(&kernel, &ptx_content, array_args, &mangled_name, &generic_to_size)
+    step_5_extract_and_embed(&kernel, &ptx_content, stream_expr, array_args, &mangled_name, &generic_to_size)
 }
 
 /// Step 1: Parse and Extract Kernel IR
@@ -160,7 +160,7 @@ fn step_1_parse_and_extract_ir(
     rest_args: TokenStream,
     source_ts: &mut TokenStream,
     target_name: &str
-) -> (Kernel, std::collections::HashMap<String, String>, Vec<TokenStream>) {
+) -> (Kernel, TokenStream, std::collections::HashMap<String, String>, Vec<TokenStream>) {
     let launch_config = crate::parser::LaunchConfig::parse(rest_args)
         .unwrap_or_else(|err| panic!("Launch config error: {:?}", err));
 
@@ -173,7 +173,7 @@ fn step_1_parse_and_extract_ir(
     let mut kernel = Kernel::extract(&compilation_unit, target_name).expect("Kernel extraction failed");
     kernel.call_args = call_args;
 
-    (kernel, launch_config.generic_to_size, launch_config.array_args)
+    (kernel, launch_config.stream_expr, launch_config.generic_to_size, launch_config.array_args)
 }
 
 /// Step 2: Evaluate to Static Values
@@ -207,6 +207,7 @@ fn step_3_and_4_type_check_and_compile(full_descend: &str, function_name: &str) 
 fn step_5_extract_and_embed(
     kernel: &Kernel,
     ptx_content: &str,
+    stream_expr: TokenStream,
     array_args: Vec<TokenStream>,
     mangled_name: &str,
     generic_to_size: &std::collections::HashMap<String, String>
@@ -214,6 +215,7 @@ fn step_5_extract_and_embed(
     generate_host_wrapper(
         kernel,
         ptx_content,
+        stream_expr,
         array_args,
         mangled_name,
         generic_to_size,
