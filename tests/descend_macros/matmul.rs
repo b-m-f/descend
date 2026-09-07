@@ -30,18 +30,19 @@ descend! {
 #[test]
 fn test_matmul() {
     let ctx = DescendContext::new(0);
+    let stream = ctx.new_stream();
 
     let a_box: Box<[i32; 64 * 128]> = vec![2i32; 64 * 128].into_boxed_slice().try_into().unwrap();
     let b_box: Box<[i32; 128 * 64]> = vec![3i32; 128 * 64].into_boxed_slice().try_into().unwrap();
     let c_box: Box<[i32; 64 * 64]> = vec![0i32; 64 * 64].into_boxed_slice().try_into().unwrap();
 
-    let a_gpu = GpuBuffer::from_box(&ctx, a_box);
-    let b_gpu = GpuBuffer::from_box(&ctx, b_box);
-    let mut c_gpu = GpuBuffer::from_box(&ctx, c_box);
+    let a_gpu = GpuBuffer::from_box(&stream, a_box);
+    let b_gpu = GpuBuffer::from_box(&stream, b_box);
+    let mut c_gpu = GpuBuffer::from_box(&stream, c_box);
 
-    descend_launch!(gpu_matmul, <bs: 16, m: 64, n: 128, k: 64>, &a_gpu, &b_gpu, &mut c_gpu);
+    descend_launch!(gpu_matmul, &stream, <bs: 16, m: 64, n: 128, k: 64>, &a_gpu, &b_gpu, &mut c_gpu);
 
-    let res = c_gpu.to_cpu();
+    let res = c_gpu.to_cpu(&stream);
 
     // The result should be 128 * (2 * 3) = 768
     for val in res.iter() {

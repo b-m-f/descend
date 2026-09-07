@@ -18,15 +18,16 @@ descend! {
 #[test]
 fn test_vec_add_generic() {
     let ctx = DescendContext::new(0);
+    let stream = ctx.new_stream();
 
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
-    let mut a_gpu = GpuBuffer::from_box(&ctx, Box::new(a_array));
-    let b_gpu = GpuBuffer::from_box(&ctx, Box::new(b_array));
+    let mut a_gpu = GpuBuffer::from_box(&stream, Box::new(a_array));
+    let b_gpu = GpuBuffer::from_box(&stream, Box::new(b_array));
 
-    descend_launch!(gpu_vec_add, <N: 16384>, &mut a_gpu, &b_gpu);
+    descend_launch!(gpu_vec_add, &stream, <N: 16384>, &mut a_gpu, &b_gpu);
 
-    let a_cpu_back = a_gpu.to_cpu();
+    let a_cpu_back = a_gpu.to_cpu(&stream);
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }

@@ -6,6 +6,7 @@ use crate::kernel_ir::Kernel;
 pub fn generate_host_wrapper(
     kernel: &Kernel,
     ptx_content: &str,
+    stream_expr: TokenStream,
     args: Vec<TokenStream>,
     mangled_name: &str,
     generic_to_size: &HashMap<String, String>,
@@ -125,7 +126,7 @@ pub fn generate_host_wrapper(
         }};
         
         ::descend_host::launch_kernel(
-            &arg_0.context(),
+            __STREAM_EXPR__,
             ptx_str,
             fn_name_str,
             config,
@@ -133,9 +134,30 @@ pub fn generate_host_wrapper(
         );
     ", mangled_name, ptx_byte_literal, declarations, count, ptrs, grid_dim.0, grid_dim.1, grid_dim.2, block_dim.0, block_dim.1, block_dim.2, shared_mem_bytes);
 
-    block.extend(TokenStream::from_str(&core_str).unwrap());
+    let parsed = TokenStream::from_str(&core_str).unwrap();
+    let replaced = replace_placeholder(parsed, "__STREAM_EXPR__", &stream_expr);
+    block.extend(replaced);
     
     out.extend(std::iter::once(TokenTree::Group(Group::new(Delimiter::Brace, block))));
+    out
+}
+
+
+fn replace_placeholder(ts: TokenStream, placeholder: &str, replacement: &TokenStream) -> TokenStream {
+    let mut out = TokenStream::new();
+    for tt in ts {
+        match tt {
+            TokenTree::Group(g) => {
+                let mut new_g = Group::new(g.delimiter(), replace_placeholder(g.stream(), placeholder, replacement));
+                new_g.set_span(g.span());
+                out.extend(std::iter::once(TokenTree::Group(new_g)));
+            }
+            TokenTree::Ident(ref id) if id.to_string() == placeholder => {
+                out.extend(replacement.clone());
+            }
+            _ => out.extend(std::iter::once(tt)),
+        }
+    }
     out
 }
 
