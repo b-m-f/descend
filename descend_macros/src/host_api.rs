@@ -107,14 +107,10 @@ pub fn generate_host_wrapper(
     let declarations = param_decls.join("\n        ");
 
     let core_str = format!("
-        let stream = arg_0.dev_buf.context().new_stream().expect(\"Failed to create stream\");
-        let ctx = arg_0.dev_buf.context();
         let fn_name_str = unsafe {{
             std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
         }};
         let ptx_str = std::str::from_utf8({}).unwrap();
-        let module = ctx.load_module_from_ptx_src(ptx_str).expect(\"Failed to load PTX\");
-        let f = module.load_function(fn_name_str).expect(\"Failed to get function\");
         
         {}
         
@@ -122,17 +118,19 @@ pub fn generate_host_wrapper(
             {}
         ];
         
-        unsafe {{
-            ::descend_host::cuda_core::simt::launch_kernel_on_stream(
-                &f,
-                ({}, {}, {}),
-                ({}, {}, {}),
-                {},
-                &stream,
-                &mut params
-            )
-        }}.expect(\"Kernel launch failed\");
-        stream.synchronize().expect(\"Failed to synchronize\");
+        let config = ::descend_host::KernelLaunchConfig {{
+            grid_dim: ({}, {}, {}),
+            block_dim: ({}, {}, {}),
+            shared_mem_bytes: {},
+        }};
+        
+        ::descend_host::launch_kernel(
+            &arg_0.context(),
+            ptx_str,
+            fn_name_str,
+            config,
+            &mut params
+        );
     ", mangled_name, ptx_byte_literal, declarations, count, ptrs, grid_dim.0, grid_dim.1, grid_dim.2, block_dim.0, block_dim.1, block_dim.2, shared_mem_bytes);
 
     block.extend(TokenStream::from_str(&core_str).unwrap());

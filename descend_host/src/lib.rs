@@ -23,11 +23,47 @@ impl DescendContext {
     }
 }
 
+
+pub struct KernelLaunchConfig {
+    pub grid_dim: (u32, u32, u32),
+    pub block_dim: (u32, u32, u32),
+    pub shared_mem_bytes: u32,
+}
+
+pub fn launch_kernel(
+    context: &DescendContext,
+    ptx_str: &str,
+    fn_name: &str,
+    config: KernelLaunchConfig,
+    params: &mut [*mut std::ffi::c_void]
+) {
+    let stream = context.0.new_stream().expect("Failed to create stream");
+    let module = context.0.load_module_from_ptx_src(ptx_str).expect("Failed to load PTX");
+    let f = module.load_function(fn_name).expect("Failed to get function");
+    
+    unsafe {
+        cuda_core::simt::launch_kernel_on_stream(
+            &f,
+            config.grid_dim,
+            config.block_dim,
+            config.shared_mem_bytes,
+            &stream,
+            params
+        )
+    }.expect("Kernel launch failed");
+    stream.synchronize().expect("Failed to synchronize");
+}
+
 pub struct GpuBuffer<T: DeviceCopy, const N: usize> {
+
     pub dev_buf: DeviceBuffer<T>,
 }
 
 impl<T: DeviceCopy, const N: usize> GpuBuffer<T, N> {
+    pub fn context(&self) -> DescendContext {
+        DescendContext(self.dev_buf.context().clone())
+    }
+
     /// Synchronously uploads data to the GPU and returns a buffer.
     /// Blocks the CPU thread until the transfer is complete.
     /// Takes ownership of the Box, eagerly dropping the host memory immediately after transfer.
