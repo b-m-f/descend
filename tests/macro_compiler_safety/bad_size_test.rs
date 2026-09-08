@@ -23,11 +23,11 @@ fn main() {
     let a_array = [20i32; 1024];
     let b_array = [10i32; 1024];
 
-    let mut a_gpu = GpuBuffer::to_gpu(&Box::new(a_array), &stream);
-    let b_gpu = GpuBuffer::to_gpu(&Box::new(b_array), &stream);
+    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream);
+    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream);
 
     // This will trigger the compile error E0308 because N: 16384 does not match GpuBuffer<i32, 1024>
     descend_launch!(gpu_vec_add_bad_size, <N: 16384>, &mut a_gpu, &b_gpu);
 
-    let a_cpu_back = a_gpu.to_cpu(&stream);
+    let a_cpu_back = a_gpu.to_host(&stream);
 }

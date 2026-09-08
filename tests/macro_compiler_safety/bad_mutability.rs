@@ -19,10 +19,10 @@ fn main() {
     let ctx = Context::new(0);
     let stream = ctx.new_stream();
     let a_array = [20i32; 100];
-    let a_gpu = GpuBuffer::to_gpu(&Box::new(a_array), &stream); // Not mut!
+    let a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream); // Not mut!
 
     let b_array = [20i32; 100];
-    let mut b_gpu = GpuBuffer::to_gpu(&Box::new(b_array), &stream); // Mut!
+    let mut b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream); // Mut!
 
     // Bad Mutability! Expects `uniq` (mut) for the first argument, but we give it an immutable `&a_gpu`.
     // And expects `shrd` for the second, but we give a mutable `&mut b_gpu`.
