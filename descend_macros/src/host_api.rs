@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use proc_macro::{TokenStream, TokenTree, Group, Delimiter};
-use std::str::FromStr;
 use crate::kernel_ir::Kernel;
+use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
+use std::collections::HashMap;
+use std::str::FromStr;
 
 pub fn generate_host_wrapper(
     kernel: &Kernel,
@@ -19,7 +19,6 @@ pub fn generate_host_wrapper(
     let mut block = TokenStream::new();
 
     let mut param_pointers = Vec::new();
-    let mut param_decls = Vec::new();
 
     for (i, param) in kernel.params.iter().enumerate() {
         if i >= args.len() {
@@ -33,26 +32,31 @@ pub fn generate_host_wrapper(
         }
 
         if param.is_uniq {
-            let decl = format!("let mut arg_{}: &mut ::descend_host::GpuBuffer<_, {{ {} }}> =", i, expected_size_str);
+            let decl = format!(
+                "let mut arg_{}: &mut ::descend_host::GpuBuffer<_, {{ {} }}> =",
+                i, expected_size_str
+            );
             block.extend(TokenStream::from_str(&decl).unwrap());
             block.extend(arg_expr.clone());
             block.extend(TokenStream::from_str(";").unwrap());
         } else {
-            let decl = format!("let arg_{}: &::descend_host::GpuBuffer<_, {{ {} }}> =", i, expected_size_str);
+            let decl = format!(
+                "let arg_{}: &::descend_host::GpuBuffer<_, {{ {} }}> =",
+                i, expected_size_str
+            );
             block.extend(TokenStream::from_str(&decl).unwrap());
             block.extend(arg_expr.clone());
             block.extend(TokenStream::from_str(";").unwrap());
         }
-        
-        param_decls.push(format!("let mut ptr_{} = arg_{}.dev_buf.cu_deviceptr();", i, i));
-        param_pointers.push(format!("&mut ptr_{} as *mut _ as *mut ::core::ffi::c_void", i));
+
+        param_pointers.push(format!("launcher.push_arg(arg_{});", i));
     }
 
     let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
-    
+
     let mut grid_dim = (1, 1, 1);
     let mut block_dim = (1, 1, 1);
-    
+
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
     for (gen, size) in generic_to_size {
         actual_grid_dim_str = substitute_word(&actual_grid_dim_str, gen, size);
@@ -60,23 +64,30 @@ pub fn generate_host_wrapper(
     let grid_block_parts: Vec<&str> = actual_grid_dim_str.split(">,").collect();
     let mut gb_parsed = Vec::new();
     for part in grid_block_parts {
-        let s = part.replace("XYZ<", "")
-                    .replace("XY<", "")
-                    .replace("XZ<", "")
-                    .replace("YZ<", "")
-                    .replace("X<", "")
-                    .replace("Y<", "")
-                    .replace("Z<", "")
-                    .replace(">", "")
-                    .replace(" ", "");
+        let s = part
+            .replace("XYZ<", "")
+            .replace("XY<", "")
+            .replace("XZ<", "")
+            .replace("YZ<", "")
+            .replace("X<", "")
+            .replace("Y<", "")
+            .replace("Z<", "")
+            .replace(">", "")
+            .replace(" ", "");
         let mut dims = (1, 1, 1);
         let vals: Vec<&str> = s.split(',').collect();
-        if vals.len() > 0 { dims.0 = eval_math(vals[0]).unwrap_or(1); }
-        if vals.len() > 1 { dims.1 = eval_math(vals[1]).unwrap_or(1); }
-        if vals.len() > 2 { dims.2 = eval_math(vals[2]).unwrap_or(1); }
+        if vals.len() > 0 {
+            dims.0 = eval_math(vals[0]).unwrap_or(1);
+        }
+        if vals.len() > 1 {
+            dims.1 = eval_math(vals[1]).unwrap_or(1);
+        }
+        if vals.len() > 2 {
+            dims.2 = eval_math(vals[2]).unwrap_or(1);
+        }
         gb_parsed.push(dims);
     }
-    
+
     if gb_parsed.len() > 0 {
         grid_dim = gb_parsed[0];
     }
@@ -92,32 +103,28 @@ pub fn generate_host_wrapper(
                 sz = substitute_word(&sz, gen, size);
             }
             if let Some(num_elements) = eval_math(&sz) {
-                shared_mem_exprs.push(format!("({} * std::mem::size_of::<{}>())", num_elements, param.elem_base_ty));
+                shared_mem_exprs.push(format!(
+                    "({} * std::mem::size_of::<{}>())",
+                    num_elements, param.elem_base_ty
+                ));
             }
         }
     }
-    
+
     let shared_mem_bytes = if shared_mem_exprs.is_empty() {
         "0".to_string()
     } else {
         shared_mem_exprs.join(" + ")
     };
 
-    let count = param_pointers.len();
-    let ptrs = param_pointers.join(",\n            ");
-    let declarations = param_decls.join("\n        ");
+    let ptrs = param_pointers.join("\n        ");
 
-    let core_str = format!("
+    let core_str = format!(
+        "
         let fn_name_str = unsafe {{
             std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
         }};
         let ptx_str = std::str::from_utf8({}).unwrap();
-        
-        {}
-        
-        let mut params: [*mut ::core::ffi::c_void; {}] = [
-            {}
-        ];
         
         let config = ::descend_host::KernelLaunchConfig {{
             grid_dim: ({}, {}, {}),
@@ -125,30 +132,51 @@ pub fn generate_host_wrapper(
             shared_mem_bytes: {},
         }};
         
-        ::descend_host::launch_kernel(
+        let mut launcher = ::descend_host::KernelLauncher::new(
             __STREAM_EXPR__,
             ptx_str,
             fn_name_str,
-            config,
-            &mut params
+            config
         );
-    ", mangled_name, ptx_byte_literal, declarations, count, ptrs, grid_dim.0, grid_dim.1, grid_dim.2, block_dim.0, block_dim.1, block_dim.2, shared_mem_bytes);
+        {}
+        launcher.launch();
+    ",
+        mangled_name,
+        ptx_byte_literal,
+        grid_dim.0,
+        grid_dim.1,
+        grid_dim.2,
+        block_dim.0,
+        block_dim.1,
+        block_dim.2,
+        shared_mem_bytes,
+        ptrs
+    );
 
     let parsed = TokenStream::from_str(&core_str).unwrap();
     let replaced = replace_placeholder(parsed, "__STREAM_EXPR__", &stream_expr);
     block.extend(replaced);
-    
-    out.extend(std::iter::once(TokenTree::Group(Group::new(Delimiter::Brace, block))));
+
+    out.extend(std::iter::once(TokenTree::Group(Group::new(
+        Delimiter::Brace,
+        block,
+    ))));
     out
 }
 
-
-fn replace_placeholder(ts: TokenStream, placeholder: &str, replacement: &TokenStream) -> TokenStream {
+fn replace_placeholder(
+    ts: TokenStream,
+    placeholder: &str,
+    replacement: &TokenStream,
+) -> TokenStream {
     let mut out = TokenStream::new();
     for tt in ts {
         match tt {
             TokenTree::Group(g) => {
-                let mut new_g = Group::new(g.delimiter(), replace_placeholder(g.stream(), placeholder, replacement));
+                let mut new_g = Group::new(
+                    g.delimiter(),
+                    replace_placeholder(g.stream(), placeholder, replacement),
+                );
                 new_g.set_span(g.span());
                 out.extend(std::iter::once(TokenTree::Group(new_g)));
             }

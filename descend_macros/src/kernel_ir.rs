@@ -27,7 +27,7 @@ pub struct Kernel {
 
 impl Kernel {
     /// Extracts Kernel IR for a given target function name from the parsed compilation unit.
-    /// 
+    ///
     /// What it does: Scans the Descend AST for the `FunDef` matching `target_name`.
     /// Why it is needed: Extracts specifically requested FunDef to compile to PTX and bind to the Rust invocation.
     pub fn extract(compil_unit: &CompilUnit, target_name: &str) -> Result<Self, String> {
@@ -37,7 +37,7 @@ impl Kernel {
                 if function_name != target_name {
                     continue;
                 }
-                
+
                 let grid_dim_str =
                     parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
 
@@ -85,8 +85,7 @@ impl Kernel {
                 for generic_arg in &generic_args {
                     for param in &params {
                         if param.size_str == *generic_arg {
-                            generic_size_bindings
-                                .push((generic_arg.clone(), param.name.clone()));
+                            generic_size_bindings.push((generic_arg.clone(), param.name.clone()));
                         }
                     }
                 }
@@ -102,11 +101,14 @@ impl Kernel {
             }
         }
 
-        Err(format!("Kernel definition '{}' not found in macro body", target_name))
+        Err(format!(
+            "Kernel definition '{}' not found in macro body",
+            target_name
+        ))
     }
 
     /// Calculates total grid size statically if possible, otherwise defaults to 16384.
-    /// 
+    ///
     /// What it does: Computes grid limits mathematically.
     /// Why it is needed: Determines exact sizes for host orchestrator data movement buffering.
     pub fn grid_total_size(&self) -> String {

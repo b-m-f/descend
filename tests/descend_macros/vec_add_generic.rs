@@ -1,4 +1,4 @@
-use descend_host::{DescendContext, GpuBuffer};
+use descend_host::{Context, GpuBuffer};
 use descend_macros::{descend, descend_launch};
 
 descend! {
@@ -17,14 +17,14 @@ descend! {
 
 #[test]
 fn test_vec_add_generic() {
-    let ctx = DescendContext::new(0);
+    let ctx = Context::new(0);
     let stream = ctx.new_stream();
 
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
-    let mut a_gpu = GpuBuffer::from_box(&stream, Box::new(a_array));
-    let b_gpu = GpuBuffer::from_box(&stream, Box::new(b_array));
+    let mut a_gpu = GpuBuffer::to_gpu(&Box::new(a_array), &stream);
+    let b_gpu = GpuBuffer::to_gpu(&Box::new(b_array), &stream);
 
     descend_launch!(gpu_vec_add, &stream, <N: 16384>, &mut a_gpu, &b_gpu);
 
