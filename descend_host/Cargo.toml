@@ -5,3 +5,7 @@ edition = "2021"
 
 [dependencies]
 cuda-core = { git = "https://github.com/nvlabs/cutile-rs", rev = "2eed75e8f552be31216ddf2019288f03dfec4939" }
+
+
+[dev-dependencies]
+trybuild = "1.0"
