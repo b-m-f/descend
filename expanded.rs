@@ -62,7 +62,7 @@ mod vec_add {
             builder.arg(&arg_1.dev_buf);
             unsafe { builder.launch(cfg) }.expect("Kernel launch failed");
         };
-        let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_cpu();
+        let a_cpu_back: CpuUniq<i32, 16384> = a_gpu.to_host();
         {
             match (&*a_cpu_back, &[30i32; 16384]) {
                 (left_val, right_val) => {

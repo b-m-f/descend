@@ -36,13 +36,13 @@ fn test_matmul() {
     let b_box: Box<[i32; 128 * 64]> = vec![3i32; 128 * 64].into_boxed_slice().try_into().unwrap();
     let c_box: Box<[i32; 64 * 64]> = vec![0i32; 64 * 64].into_boxed_slice().try_into().unwrap();
 
-    let a_gpu = GpuBuffer::to_gpu(&a_box, &stream);
-    let b_gpu = GpuBuffer::to_gpu(&b_box, &stream);
-    let mut c_gpu = GpuBuffer::to_gpu(&c_box, &stream);
+    let a_gpu = GpuBuffer::from_host(&a_box, &stream);
+    let b_gpu = GpuBuffer::from_host(&b_box, &stream);
+    let mut c_gpu = GpuBuffer::from_host(&c_box, &stream);
 
     descend_launch!(gpu_matmul, &stream, <bs: 16, m: 64, n: 128, k: 64>, &a_gpu, &b_gpu, &mut c_gpu);
 
-    let res = c_gpu.to_cpu(&stream);
+    let res = c_gpu.to_host(&stream);
 
     // The result should be 128 * (2 * 3) = 768
     for val in res.iter() {

@@ -13,12 +13,12 @@ impl<T: DeviceCopy, const N: usize> GpuBuffer<T, N> {
         }
     }
 
-    pub fn to_gpu(data: &[T; N], stream: &Stream) -> Self {
+    pub fn from_host(data: &[T; N], stream: &Stream) -> Self {
         let dev_buf = DeviceBuffer::from_host(&stream.inner, data).expect("Failed HtoD Sync");
         Self { dev_buf }
     }
 
-    pub fn to_cpu(&self, stream: &Stream) -> Box<[T; N]> {
+    pub fn to_host(&self, stream: &Stream) -> Box<[T; N]> {
         let host_vec = self
             .dev_buf
             .to_host_vec(&stream.inner)
@@ -41,10 +41,10 @@ mod tests {
 
         // 1. Stack Array Reference
         let stack_arr = [1i32; 10];
-        let _buf1 = GpuBuffer::to_gpu(&stack_arr, &stream);
+        let _buf1 = GpuBuffer::from_host(&stack_arr, &stream);
 
         // 2. Heap Array Reference (tests Deref coercion)
         let bx: Box<[i32; 10]> = vec![1i32; 10].into_boxed_slice().try_into().unwrap();
-        let _buf2 = GpuBuffer::to_gpu(&bx, &stream);
+        let _buf2 = GpuBuffer::from_host(&bx, &stream);
     }
 }
