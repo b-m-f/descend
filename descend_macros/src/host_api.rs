@@ -49,7 +49,7 @@ pub fn generate_host_wrapper(
             block.extend(TokenStream::from_str(";").unwrap());
         }
 
-        param_pointers.push(format!("launcher.push_arg(arg_{});", i));
+        param_pointers.push(format!("kernel.push_arg(arg_{});", i));
     }
 
     let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
@@ -132,14 +132,11 @@ pub fn generate_host_wrapper(
             shared_mem_bytes: {},
         }};
         
-        let mut launcher = ::descend_host::KernelLauncher::new(
-            __STREAM_EXPR__,
-            ptx_str,
-            fn_name_str,
-            config
-        );
+        let mut kernel = ::descend_host::Kernel::new(fn_name_str, config);
         {}
-        launcher.launch();
+        
+        let launcher = ::descend_host::KernelLauncher::new(__STREAM_EXPR__, ptx_str);
+        launcher.launch(kernel);
     ",
         mangled_name,
         ptx_byte_literal,

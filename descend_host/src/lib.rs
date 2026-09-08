@@ -7,7 +7,7 @@ pub mod stream;
 
 pub use context::Context;
 pub use gpu_buffer::GpuBuffer;
-pub use kernel_launch::{KernelLaunchConfig, KernelLauncher};
+pub use kernel_launch::{KernelLaunchConfig, KernelLauncher, Kernel};
 pub use stream::Stream;
 
 #[cfg(test)]
