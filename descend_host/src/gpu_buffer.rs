@@ -74,4 +74,58 @@ mod tests {
         let bx: Box<[i32; 10]> = vec![1i32; 10].into_boxed_slice().try_into().unwrap();
         let _buf2 = GpuBuffer::from_host(&bx, &stream).unwrap();
     }
+
+    #[test]
+    fn test_reject_zero_extent() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+        let arr = [1i32; 0];
+        let res = GpuBuffer::from_host(&arr, &stream);
+        assert!(matches!(res, Err(HostError::InvalidSize("N == 0 is not supported"))));
+    }
+
+    #[derive(Clone, Copy)]
+    struct ZST;
+    unsafe impl DeviceCopy for ZST {}
+
+    #[test]
+    fn test_reject_zst() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+        let arr = [ZST; 10];
+        let res = GpuBuffer::from_host(&arr, &stream);
+        assert!(matches!(res, Err(HostError::InvalidSize("Zero-sized types are not supported"))));
+    }
+
+    #[derive(Clone, Copy)]
+    #[repr(align(512))]
+    struct OverAligned(i32);
+    unsafe impl DeviceCopy for OverAligned {}
+
+    #[test]
+    fn test_reject_over_aligned() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+        let arr = [OverAligned(1); 10];
+        let res = GpuBuffer::from_host(&arr, &stream);
+        assert!(matches!(res, Err(HostError::InvalidAlignment(_))));
+    }
+
+    #[test]
+    fn test_context_mismatch_readback() {
+        // Attempt to create two contexts (fails gracefully if only 1 GPU, so we mock or skip if ctx1 fails)
+        let ctx0 = Context::new(0).unwrap();
+        let stream0 = ctx0.new_stream().unwrap();
+        
+        // Let's just create a second context on device 0 again. It'll be a different Context instance.
+        let ctx1 = Context::new(0).unwrap();
+        let stream1 = ctx1.new_stream().unwrap();
+
+        let arr = [1i32; 10];
+        let buf = GpuBuffer::from_host(&arr, &stream0).unwrap();
+
+        // Try to read back using a stream from a different context
+        let res = buf.to_host(&stream1);
+        assert!(matches!(res, Err(HostError::ContextMismatch(_))));
+    }
 }
