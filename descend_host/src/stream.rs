@@ -7,10 +7,12 @@ pub struct Stream {
     pub(crate) context: Context,
 }
 
+use crate::error::HostError;
+
 impl Stream {
-    pub fn synchronize(&self) {
+    pub fn synchronize(&self) -> Result<(), HostError> {
         self.inner
             .synchronize()
-            .expect("Failed to synchronize stream");
+            .map_err(|e| HostError::Driver(e, "stream synchronize"))
     }
 }

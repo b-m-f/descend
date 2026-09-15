@@ -2,28 +2,26 @@ use crate::stream::Stream;
 use cuda_core::simt::CudaContext;
 use std::sync::Arc;
 
+use crate::error::HostError;
+
 #[derive(Clone)]
 pub struct Context {
     pub(crate) inner: Arc<CudaContext>,
 }
 
-impl Default for Context {
-    fn default() -> Self {
-        Self::new(0)
-    }
-}
-
 impl Context {
-    pub fn new(device_id: u32) -> Self {
-        Self {
-            inner: CudaContext::new(device_id as usize).expect("Failed to create CUDA context"),
-        }
+    pub fn new(device_id: u32) -> Result<Self, HostError> {
+        let inner = CudaContext::new(device_id as usize)
+            .map_err(|e| HostError::Driver(e, "context creation"))?;
+        Ok(Self { inner })
     }
 
-    pub fn new_stream(&self) -> Stream {
-        Stream {
-            inner: self.inner.new_stream().expect("Failed to create stream"),
+    pub fn new_stream(&self) -> Result<Stream, HostError> {
+        let inner = self.inner.new_stream()
+            .map_err(|e| HostError::Driver(e, "stream creation"))?;
+        Ok(Stream {
+            inner,
             context: self.clone(),
-        }
+        })
     }
 }

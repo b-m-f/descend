@@ -30,26 +30,32 @@ impl<'a> Kernel<'a> {
     }
 }
 
+use crate::error::HostError;
+
 pub struct KernelLauncher<'a> {
     stream: &'a Stream,
     module: Arc<CudaModule>,
 }
 
 impl<'a> KernelLauncher<'a> {
-    pub fn new(stream: &'a Stream, ptx_str: &str) -> Self {
+    pub fn new(stream: &'a Stream, ptx_str: &str) -> Result<Self, HostError> {
+        std::ffi::CString::new(ptx_str).map_err(|e| HostError::NulError(e, "PTX source"))?;
         let module = stream
             .context
             .inner
             .load_module_from_ptx_src(ptx_str)
-            .expect("Failed to load PTX");
-        Self { stream, module }
+            .map_err(|e| HostError::Driver(e, "load module"))?;
+        Ok(Self { stream, module })
     }
 
-    pub fn launch(&self, mut kernel: Kernel) {
+    /// # Safety
+    /// The caller must ensure that kernel arguments, bounds, types, grids, blocks, and shared memory sizes are correct.
+    pub unsafe fn launch(&self, mut kernel: Kernel) -> Result<(), HostError> {
+        std::ffi::CString::new(kernel.fn_name).map_err(|e| HostError::NulError(e, "kernel function name"))?;
         let f = self
             .module
             .load_function(kernel.fn_name)
-            .expect("Failed to get function");
+            .map_err(|e| HostError::Driver(e, "load function"))?;
 
         let mut ptrs: Vec<*mut std::ffi::c_void> = kernel
             .cu_params
@@ -67,6 +73,8 @@ impl<'a> KernelLauncher<'a> {
                 &mut ptrs,
             )
         }
-        .expect("Kernel launch failed");
+        .map_err(|e| HostError::Driver(e, "kernel launch"))?;
+        
+        Ok(())
     }
 }
