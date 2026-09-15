@@ -49,7 +49,7 @@ pub fn generate_host_wrapper(
             block.extend(TokenStream::from_str(";").unwrap());
         }
 
-        param_pointers.push(format!("kernel.push_arg(arg_{});", i));
+        param_pointers.push(format!("kernel.push_arg(arg_{})?;", i));
     }
 
     let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
