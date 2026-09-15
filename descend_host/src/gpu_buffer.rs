@@ -16,12 +16,36 @@ impl<T: DeviceCopy, const N: usize> GpuBuffer<T, N> {
     }
 
     pub fn from_host(data: &[T; N], stream: &Stream) -> Result<Self, HostError> {
+        if N == 0 {
+            return Err(HostError::InvalidSize("N == 0 is not supported"));
+        }
+        let size = std::mem::size_of::<T>();
+        if size == 0 {
+            return Err(HostError::InvalidSize("Zero-sized types are not supported"));
+        }
+        if size.checked_mul(N).is_none() {
+            return Err(HostError::InvalidSize("Byte size overflow"));
+        }
+        
+        // cuda-core guarantees alignment to 256 for malloc, but let's just reject anything > 256
+        let align = std::mem::align_of::<T>();
+        if align > 256 {
+            return Err(HostError::InvalidAlignment("Alignment > 256 is not supported by driver"));
+        }
+
+        stream.context.inner.bind_to_thread().map_err(|e| HostError::Driver(e, "bind context for from_host"))?;
+
         let dev_buf = DeviceBuffer::from_host(&stream.inner, data)
             .map_err(|e| HostError::Driver(e, "host-to-device transfer"))?;
         Ok(Self { dev_buf })
     }
 
     pub fn to_host(&self, stream: &Stream) -> Result<Box<[T; N]>, HostError> {
+        if !std::sync::Arc::ptr_eq(&self.context().inner, &stream.context.inner) {
+            return Err(HostError::ContextMismatch("Stream context does not match buffer context"));
+        }
+        stream.context.inner.bind_to_thread().map_err(|e| HostError::Driver(e, "bind context for to_host"))?;
+
         let host_vec = self
             .dev_buf
             .to_host_vec(&stream.inner)
