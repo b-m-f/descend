@@ -13,6 +13,6 @@ impl Stream {
     pub fn synchronize(&self) -> Result<(), HostError> {
         self.inner
             .synchronize()
-            .map_err(|e| HostError::Driver(e, "stream synchronize"))
+            .map_err(|e| HostError::driver(e, "stream synchronize"))
     }
 }

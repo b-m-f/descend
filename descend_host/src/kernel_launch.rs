@@ -1,7 +1,7 @@
 use crate::gpu_buffer::GpuBuffer;
 use crate::stream::Stream;
 use cuda_core::simt::CudaModule;
-use cuda_core::simt::DeviceCopy;
+use crate::traits::DescendType;
 use std::sync::Arc;
 
 pub struct KernelLaunchConfig {
@@ -32,10 +32,10 @@ impl<'a> Kernel<'a> {
     /// Validates eagerly that all pushed arguments belong to the same context.
     /// Note: Retaining context metadata here for validation does *not*
     /// retain the allocations or extend buffer borrows.
-    pub fn push_arg<T: DeviceCopy, const N: usize>(&mut self, buf: &GpuBuffer<T, N>) -> Result<(), crate::error::HostError> {
+    pub fn push_arg<T: DescendType, const N: usize>(&mut self, buf: &GpuBuffer<T, N>) -> Result<(), crate::error::HostError> {
         if let Some(ctx) = &self.context {
-            if !std::sync::Arc::ptr_eq(&ctx.inner, &buf.context().inner) {
-                return Err(crate::error::HostError::ContextMismatch("Arguments belong to different contexts"));
+            if ctx.inner != buf.context().inner {
+                return Err(crate::error::HostError::ContextMismatch("Buffer context does not match existing kernel arguments context"));
             }
         } else {
             self.context = Some(buf.context());
@@ -59,7 +59,7 @@ impl<'a> KernelLauncher<'a> {
             .context
             .inner
             .load_module_from_ptx_src(ptx_str)
-            .map_err(|e| HostError::Driver(e, "load module"))?;
+            .map_err(|e| HostError::driver(e, "load module"))?;
         Ok(Self { stream, module })
     }
 
@@ -73,16 +73,17 @@ impl<'a> KernelLauncher<'a> {
     /// - **Execution parameters**: Geometry (grid/block dimensions) and synchronization assumptions of the kernel are satisfied.
     pub unsafe fn launch(&self, mut kernel: Kernel) -> Result<(), HostError> {
         if let Some(ctx) = &kernel.context {
-            if !std::sync::Arc::ptr_eq(&ctx.inner, &self.stream.context.inner) {
-                return Err(HostError::ContextMismatch("Kernel argument context does not match stream context"));
+            if ctx.inner != self.stream.context.inner {
+                return Err(crate::error::HostError::ContextMismatch(
+                    "Kernel arguments context does not match execution stream context",
+                ));
             }
         }
-
         std::ffi::CString::new(kernel.fn_name).map_err(|e| HostError::NulError(e, "kernel function name"))?;
         let f = self
             .module
             .load_function(kernel.fn_name)
-            .map_err(|e| HostError::Driver(e, "load function"))?;
+            .map_err(|e| HostError::driver(e, "load function"))?;
 
         let mut ptrs: Vec<*mut std::ffi::c_void> = kernel
             .cu_params
@@ -100,7 +101,7 @@ impl<'a> KernelLauncher<'a> {
                 &mut ptrs,
             )
         }
-        .map_err(|e| HostError::Driver(e, "kernel launch"))?;
+        .map_err(|e| HostError::driver(e, "kernel launch"))?;
         
         Ok(())
     }
