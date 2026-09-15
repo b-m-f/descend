@@ -121,9 +121,10 @@ pub fn generate_host_wrapper(
 
     let core_str = format!(
         "
-        let fn_name_str = unsafe {{
-            std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
-        }};
+        (|| -> Result<(), ::descend_host::error::HostError> {{
+            let fn_name_str = unsafe {{
+                std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
+            }};
         let ptx_str = std::str::from_utf8({}).unwrap();
         
         let config = ::descend_host::KernelLaunchConfig {{
@@ -135,8 +136,9 @@ pub fn generate_host_wrapper(
         let mut kernel = ::descend_host::Kernel::new(fn_name_str, config);
         {}
         
-        let launcher = ::descend_host::KernelLauncher::new(__STREAM_EXPR__, ptx_str);
-        launcher.launch(kernel);
+        let launcher = ::descend_host::KernelLauncher::new(__STREAM_EXPR__, ptx_str)?;
+        launcher.launch(kernel)
+    }})()
     ",
         mangled_name,
         ptx_byte_literal,

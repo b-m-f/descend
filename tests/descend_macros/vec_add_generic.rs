@@ -17,17 +17,19 @@ descend! {
 
 #[test]
 fn test_vec_add_generic() {
-    let ctx = Context::new(0);
-    let stream = ctx.new_stream();
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
 
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
-    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream);
-    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream);
+    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
+    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
-    descend_launch!(gpu_vec_add, &stream, <N: 16384>, &mut a_gpu, &b_gpu);
+    unsafe {
+        descend_launch!(gpu_vec_add, &stream, <N: 16384>, &mut a_gpu, &b_gpu).unwrap();
+    }
 
-    let a_cpu_back = a_gpu.to_host(&stream);
+    let a_cpu_back = a_gpu.to_host(&stream).unwrap();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }

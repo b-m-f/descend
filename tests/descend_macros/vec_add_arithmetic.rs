@@ -19,20 +19,22 @@ descend! {
 
 #[test]
 fn test_vec_add_arithmetic() {
-    let ctx = Context::new(0);
-    let stream = ctx.new_stream();
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
 
     // Provide values that make (N * M) + O == 16384 and (N / M) - (O % 3) == 16384
     // E.g. N = 16384, M = 1, O = 0 -> (16384 * 1) + 0 = 16384, (16384 / 1) - 0 = 16384
     let a_array = [20i32; 16384];
     let b_array = [10i32; 16384];
 
-    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream);
-    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream);
+    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
+    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
     // Testing parsing of multiple generics and their multiplication inside the Descend AST!
-    descend_launch!(gpu_vec_add_arithmetic, &stream, <N: 16384, M: 1, O: 0>, &mut a_gpu, &b_gpu);
+    unsafe {
+        descend_launch!(gpu_vec_add_arithmetic, &stream, <N: 16384, M: 1, O: 0>, &mut a_gpu, &b_gpu).unwrap();
+    }
 
-    let a_cpu_back = a_gpu.to_host(&stream);
+    let a_cpu_back = a_gpu.to_host(&stream).unwrap();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }
