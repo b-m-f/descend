@@ -13,7 +13,8 @@ pub struct KernelLaunchConfig {
 pub struct Kernel<'a> {
     pub fn_name: &'a str,
     pub config: KernelLaunchConfig,
-    pub cu_params: Vec<u64>,
+    cu_params: Vec<u64>,
+    context: Option<crate::context::Context>,
 }
 
 impl<'a> Kernel<'a> {
@@ -22,11 +23,25 @@ impl<'a> Kernel<'a> {
             fn_name,
             config,
             cu_params: Vec::new(),
+            context: None,
         }
     }
 
-    pub fn push_arg<T: DeviceCopy, const N: usize>(&mut self, buf: &GpuBuffer<T, N>) {
+    /// Pushes a device-pointer argument from a GpuBuffer.
+    ///
+    /// Validates eagerly that all pushed arguments belong to the same context.
+    /// Note: Retaining context metadata here for validation does *not*
+    /// retain the allocations or extend buffer borrows.
+    pub fn push_arg<T: DeviceCopy, const N: usize>(&mut self, buf: &GpuBuffer<T, N>) -> Result<(), crate::error::HostError> {
+        if let Some(ctx) = &self.context {
+            if !std::sync::Arc::ptr_eq(&ctx.inner, &buf.context().inner) {
+                return Err(crate::error::HostError::ContextMismatch("Arguments belong to different contexts"));
+            }
+        } else {
+            self.context = Some(buf.context());
+        }
         self.cu_params.push(buf.dev_buf.cu_deviceptr());
+        Ok(())
     }
 }
 
@@ -50,7 +65,19 @@ impl<'a> KernelLauncher<'a> {
 
     /// # Safety
     /// The caller must ensure that kernel arguments, bounds, types, grids, blocks, and shared memory sizes are correct.
+    ///
+    /// Specifically, the caller (usually a generated macro) must guarantee:
+    /// - **Signature matching**: Selected kernel, argument count/order, ABI, size, alignment, and representation match the PTX.
+    /// - **Memory validity**: Valid initialized inputs, device addresses, extents, and address spaces.
+    /// - **Aliasing**: Permitted aliasing (borrowing modes like `uniq` vs `shrd`) and kernel-produced value validity.
+    /// - **Execution parameters**: Geometry (grid/block dimensions) and synchronization assumptions of the kernel are satisfied.
     pub unsafe fn launch(&self, mut kernel: Kernel) -> Result<(), HostError> {
+        if let Some(ctx) = &kernel.context {
+            if !std::sync::Arc::ptr_eq(&ctx.inner, &self.stream.context.inner) {
+                return Err(HostError::ContextMismatch("Kernel argument context does not match stream context"));
+            }
+        }
+
         std::ffi::CString::new(kernel.fn_name).map_err(|e| HostError::NulError(e, "kernel function name"))?;
         let f = self
             .module
