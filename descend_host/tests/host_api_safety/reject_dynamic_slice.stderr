@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: associated function defined here
   --> src/gpu_buffer.rs
    |
-   |     pub fn from_host(data: &[T; N], stream: &Stream) -> Self {
+   |     pub fn from_host(data: &[T; N], stream: &Stream) -> Result<Self, HostError> {
    |            ^^^^^^^^^

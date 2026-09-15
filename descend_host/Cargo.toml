@@ -8,4 +8,5 @@ cuda-core = { git = "https://github.com/nvlabs/cutile-rs", rev = "2eed75e8f552be
 
 
 [dev-dependencies]
+descend_macros = { path = "../descend_macros" }
 trybuild = "1.0"

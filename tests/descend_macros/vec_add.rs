@@ -32,4 +32,7 @@ fn test_vec_add() {
 
     let a_cpu_back = a_gpu.to_host(&stream).unwrap();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
+    
+    // Ensure the original host input remains completely unchanged
+    assert_eq!(a_array, [20i32; 16384]);
 }
