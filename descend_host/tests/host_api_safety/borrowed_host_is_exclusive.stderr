@@ -1,0 +1,9 @@
+error[E0506]: cannot assign to `host[_]` because it is borrowed
+ --> tests/host_api_safety/borrowed_host_is_exclusive.rs:5:5
+  |
+4 |     let buffer = GpuBuffer::from_host_mut(host, stream).unwrap();
+  |                                           ---- `host[_]` is borrowed here
+5 |     host[0] = 7;
+  |     ^^^^^^^^^^^ `host[_]` is assigned to here but it was already borrowed
+6 |     let _still_alive = buffer.gpu_buffer();
+  |                        ------ borrow later used here

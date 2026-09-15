@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::kernel_ir::Kernel;
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 pub fn generate_host_wrapper(
@@ -11,8 +11,22 @@ pub fn generate_host_wrapper(
     mangled_name: &str,
     generic_to_size: &HashMap<String, String>,
 ) -> TokenStream {
-    if args.is_empty() {
-        return TokenStream::from_str("compile_error!(\"Descend kernels must take at least one array argument to operate upon.\");").unwrap();
+    let function = &kernel.function_name;
+
+    if let Some(param) = kernel.params.iter().find(|p| p.is_shared_mem) {
+        return compile_error(&format!(
+            "kernel `{function}`: parameter `{}` uses gpu.shared memory, which is not supported \
+             until a shared-memory layout contract exists",
+            param.name
+        ));
+    }
+
+    if args.len() != kernel.params.len() {
+        return compile_error(&format!(
+            "kernel `{function}` expects {} buffer argument(s), found {}",
+            kernel.params.len(),
+            args.len()
+        ));
     }
 
     let mut out = TokenStream::new();
@@ -20,71 +34,52 @@ pub fn generate_host_wrapper(
 
     let mut param_pointers = Vec::new();
 
-    for (i, param) in kernel.params.iter().enumerate() {
-        if i >= args.len() {
-            break;
-        }
-        let arg_expr = &args[i];
+    for (i, (param, arg_expr)) in kernel.params.iter().zip(&args).enumerate() {
+        let Some(elem_ty) = &param.elem_base_ty else {
+            return compile_error(&format!(
+                "kernel `{function}`: parameter `{}` has an element type without a supported \
+                 host representation",
+                param.name
+            ));
+        };
 
         let mut expected_size_str = param.size_str.clone();
         for (gen, size) in generic_to_size {
             expected_size_str = substitute_word(&expected_size_str, gen, size);
         }
 
-        if param.is_uniq {
-            let decl = format!(
-                "let mut arg_{}: &mut ::descend_host::GpuBuffer<_, {{ {} }}> =",
-                i, expected_size_str
-            );
-            block.extend(TokenStream::from_str(&decl).unwrap());
-            block.extend(arg_expr.clone());
-            block.extend(TokenStream::from_str(";").unwrap());
+        let (reference, push) = if param.is_uniq {
+            ("&mut", "push_arg_mut")
         } else {
-            let decl = format!(
-                "let arg_{}: &::descend_host::GpuBuffer<_, {{ {} }}> =",
-                i, expected_size_str
-            );
-            block.extend(TokenStream::from_str(&decl).unwrap());
-            block.extend(arg_expr.clone());
-            block.extend(TokenStream::from_str(";").unwrap());
-        }
+            ("&", "push_arg")
+        };
+        let decl = format!(
+            "let arg_{i}: {reference} ::descend_host::GpuBuffer<{elem_ty}, {{ {expected_size_str} }}> ="
+        );
+        block.extend(TokenStream::from_str(&decl).unwrap());
+        block.extend(arg_expr.clone());
+        block.extend(TokenStream::from_str(";").unwrap());
 
-        param_pointers.push(format!("kernel.push_arg(arg_{})?;", i));
+        param_pointers.push(format!("kernel.{push}(arg_{i})?;"));
     }
 
     let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
 
-    let grid_dim = if let Some(g) = &kernel.grid_dim {
-        eval_dim(g, generic_to_size)
-    } else {
-        panic!("Kernel must specify explicit grid dimensions in AST")
+    let (Some(grid), Some(block_ast)) = (&kernel.grid_dim, &kernel.block_dim) else {
+        return compile_error(&format!(
+            "kernel `{function}` must declare explicit grid and block dimensions"
+        ));
+    };
+    let grid_dim = match eval_dim(grid, generic_to_size) {
+        Ok(dim) => dim,
+        Err(error) => return compile_error(&error),
+    };
+    let block_dim = match eval_dim(block_ast, generic_to_size) {
+        Ok(dim) => dim,
+        Err(error) => return compile_error(&error),
     };
 
-    let block_dim = if let Some(b) = &kernel.block_dim {
-        eval_dim(b, generic_to_size)
-    } else {
-        panic!("Kernel must specify explicit block dimensions in AST")
-    };
-
-    let mut shared_mem_exprs = vec![];
-    for param in &kernel.params {
-        if param.is_shared_mem {
-            let mut sz = param.size_str.clone();
-            for (gen, size) in generic_to_size {
-                sz = substitute_word(&sz, gen, size);
-            }
-            shared_mem_exprs.push(format!(
-                "({} * std::mem::size_of::<{}>())",
-                sz, param.elem_base_ty
-            ));
-        }
-    }
-
-    let shared_mem_bytes = if shared_mem_exprs.is_empty() {
-        "0".to_string()
-    } else {
-        shared_mem_exprs.join(" + ")
-    };
+    let shared_mem_bytes = "0";
 
     let ptrs = param_pointers.join("\n        ");
 
@@ -173,8 +168,6 @@ fn escape_bytes(bytes: &[u8]) -> String {
     s
 }
 
-
-
 pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut last_end = 0;
@@ -211,40 +204,59 @@ pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
 }
 use descend::ast::Nat;
 
-pub fn eval_nat(nat: &Nat, bindings: &HashMap<String, String>) -> u32 {
+fn compile_error(message: &str) -> TokenStream {
+    let escaped = format!("compile_error!({message:?})");
+    TokenStream::from_str(&escaped).expect("compile_error token generation must succeed")
+}
+
+pub fn eval_nat(nat: &Nat, bindings: &HashMap<String, String>) -> Result<u32, String> {
     match nat {
-        Nat::Lit(val) => *val as u32,
+        Nat::Lit(val) => {
+            u32::try_from(*val).map_err(|_| format!("dimension literal {val} exceeds u32::MAX"))
+        }
         Nat::Ident(ident) => {
             let name = ident.name.to_string();
             if let Some(val_str) = bindings.get(&name) {
-                val_str.parse::<u32>().unwrap_or_else(|_| panic!("Failed to parse bound generic {} as u32", name))
+                val_str
+                    .parse::<u32>()
+                    .map_err(|_| format!("generic dimension {name}={val_str:?} is not a valid u32"))
             } else {
-                panic!("Unknown identifier in Nat expression: {}", name)
+                Err(format!(
+                    "unknown identifier in dimension expression: {name}"
+                ))
             }
-        },
+        }
         Nat::BinOp(op, lhs, rhs) => {
-            let l = eval_nat(lhs, bindings);
-            let r = eval_nat(rhs, bindings);
+            let l = eval_nat(lhs, bindings)?;
+            let r = eval_nat(rhs, bindings)?;
             match op {
-                descend::ast::BinOpNat::Add => l + r,
-                descend::ast::BinOpNat::Sub => l - r,
-                descend::ast::BinOpNat::Mul => l * r,
-                descend::ast::BinOpNat::Div => l / r,
-                descend::ast::BinOpNat::Mod => l % r,
+                descend::ast::BinOpNat::Add => l.checked_add(r),
+                descend::ast::BinOpNat::Sub => l.checked_sub(r),
+                descend::ast::BinOpNat::Mul => l.checked_mul(r),
+                descend::ast::BinOpNat::Div => l.checked_div(r),
+                descend::ast::BinOpNat::Mod => l.checked_rem(r),
             }
-        },
-        _ => panic!("Unsupported Nat expression type for dimension evaluation: {:?}", nat),
+            .ok_or_else(|| format!("invalid or overflowing dimension expression: {l} {op:?} {r}"))
+        }
+        _ => Err(format!("unsupported dimension expression: {nat:?}")),
     }
 }
 
-pub fn eval_dim(dim: &descend::ast::Dim, bindings: &HashMap<String, String>) -> (u32, u32, u32) {
-    match dim {
-        descend::ast::Dim::X(n) => (eval_nat(&n.0, bindings), 1, 1),
-        descend::ast::Dim::Y(n) => (1, eval_nat(&n.0, bindings), 1),
-        descend::ast::Dim::Z(n) => (1, 1, eval_nat(&n.0, bindings)),
-        descend::ast::Dim::XY(d) => (eval_nat(&d.0, bindings), eval_nat(&d.1, bindings), 1),
-        descend::ast::Dim::XZ(d) => (eval_nat(&d.0, bindings), 1, eval_nat(&d.1, bindings)),
-        descend::ast::Dim::YZ(d) => (1, eval_nat(&d.0, bindings), eval_nat(&d.1, bindings)),
-        descend::ast::Dim::XYZ(d) => (eval_nat(&d.0, bindings), eval_nat(&d.1, bindings), eval_nat(&d.2, bindings)),
-    }
+pub fn eval_dim(
+    dim: &descend::ast::Dim,
+    bindings: &HashMap<String, String>,
+) -> Result<(u32, u32, u32), String> {
+    Ok(match dim {
+        descend::ast::Dim::X(n) => (eval_nat(&n.0, bindings)?, 1, 1),
+        descend::ast::Dim::Y(n) => (1, eval_nat(&n.0, bindings)?, 1),
+        descend::ast::Dim::Z(n) => (1, 1, eval_nat(&n.0, bindings)?),
+        descend::ast::Dim::XY(d) => (eval_nat(&d.0, bindings)?, eval_nat(&d.1, bindings)?, 1),
+        descend::ast::Dim::XZ(d) => (eval_nat(&d.0, bindings)?, 1, eval_nat(&d.1, bindings)?),
+        descend::ast::Dim::YZ(d) => (1, eval_nat(&d.0, bindings)?, eval_nat(&d.1, bindings)?),
+        descend::ast::Dim::XYZ(d) => (
+            eval_nat(&d.0, bindings)?,
+            eval_nat(&d.1, bindings)?,
+            eval_nat(&d.2, bindings)?,
+        ),
+    })
 }

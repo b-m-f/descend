@@ -16,13 +16,13 @@ fn main() {
         }
     }
 
-    let ctx = Context::new(0);
-    let stream = ctx.new_stream();
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
     let a_array = [20i32; 100];
-    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream);
+    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
     let b_array = [20i32; 100];
-    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream);
+    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
     // Bad Size! 10 * 20 = 200, but our GpuBuffer is 100.
-    descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
+    let _ = unsafe { descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu) };
 }

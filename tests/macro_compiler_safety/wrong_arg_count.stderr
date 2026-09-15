@@ -1,0 +1,15 @@
+error: kernel `gpu_arg_count` expects 2 buffer argument(s), found 1
+  --> tests/macro_compiler_safety/wrong_arg_count.rs:5:5
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_arg_count<r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; 100],
+ 8 | |             b_array: &r shrd gpu.global [i32; 100]
+...  |
+17 | |     }
+   | |_____^
+...
+24 |       let _ = unsafe { descend_launch!(gpu_arg_count, &stream, , &mut a_gpu) };
+   |                        ----------------------------------------------------- in this macro invocation
+   |
+   = note: this error originates in the macro `::descend_macros::_descend_launch_internal` which comes from the expansion of the macro `descend_launch` (in Nightly builds, run with -Z macro-backtrace for more info)
