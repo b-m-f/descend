@@ -2,11 +2,18 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum HostError {
-    Driver(cuda_core::DriverError, &'static str),
+    Driver(Box<dyn std::error::Error + Send + Sync>, &'static str),
     NulError(std::ffi::NulError, &'static str),
     InvalidSize(&'static str),
     InvalidAlignment(&'static str),
     ContextMismatch(&'static str),
+    ConversionError(&'static str),
+}
+
+impl HostError {
+    pub(crate) fn driver<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E, op: &'static str) -> Self {
+        HostError::Driver(e.into(), op)
+    }
 }
 
 impl fmt::Display for HostError {
@@ -17,6 +24,7 @@ impl fmt::Display for HostError {
             HostError::InvalidSize(msg) => write!(f, "Invalid size: {}", msg),
             HostError::InvalidAlignment(msg) => write!(f, "Invalid alignment: {}", msg),
             HostError::ContextMismatch(msg) => write!(f, "Context mismatch: {}", msg),
+            HostError::ConversionError(msg) => write!(f, "Conversion error: {}", msg),
         }
     }
 }
@@ -24,7 +32,7 @@ impl fmt::Display for HostError {
 impl std::error::Error for HostError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            HostError::Driver(e, _) => Some(e),
+            HostError::Driver(e, _) => Some(e.as_ref()),
             HostError::NulError(e, _) => Some(e),
             _ => None,
         }

@@ -1,15 +1,15 @@
-pub use cuda_core;
-
 pub mod context;
 pub mod error;
 pub mod gpu_buffer;
 pub mod kernel_launch;
 pub mod stream;
+pub mod traits;
 
 pub use context::Context;
 pub use gpu_buffer::GpuBuffer;
 pub use kernel_launch::{KernelLaunchConfig, KernelLauncher, Kernel};
 pub use stream::Stream;
+pub use traits::DescendType;
 
 #[cfg(test)]
 mod tests {
