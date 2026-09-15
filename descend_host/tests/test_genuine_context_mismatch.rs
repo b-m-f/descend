@@ -1,18 +1,22 @@
 use descend_host::{Context, GpuBuffer};
+use descend_host::error::HostError;
 
-// TODO: update readme that not all machines can run all tests
 #[test]
 fn test_genuine_mismatch() {
-    // Attempt to create context on device 0 and device 1.
-    // If device 1 fails (e.g. only 1 GPU in system), we successfully exit.
     let ctx0 = Context::new(0).unwrap();
 
     let ctx1 = match Context::new(1) {
         Ok(c) => c,
-        Err(_) => {
-            println!("Skipping genuine context mismatch test: only 1 GPU available.");
-            return;
-        }
+        Err(HostError::Driver(source, _)) => {
+            let error_str = source.to_string();
+            if error_str.contains("invalid device ordinal") {
+                println!("Skipping genuine context mismatch test: device 1 not available.");
+                return;
+            } else {
+                panic!("Failed to create device 1 context for unexpected reason: {}", error_str);
+            }
+        },
+        Err(e) => panic!("Unexpected error type: {:?}", e),
     };
 
     let stream0 = ctx0.new_stream().unwrap();
@@ -21,10 +25,12 @@ fn test_genuine_mismatch() {
     let arr = [1i32; 10];
     let buf = GpuBuffer::from_host(&arr, &stream0).unwrap();
 
-    // They are on different devices, so to_host should definitively fail!
     let res = buf.to_host(&stream1);
-    assert!(
-        res.is_err(),
-        "Expected mismatch error when mixing device 0 buffer with device 1 stream"
-    );
+    match res {
+        Err(HostError::ContextMismatch(_)) => {
+            // This is the exactly expected behavior!
+        },
+        Err(e) => panic!("Expected ContextMismatch, got: {:?}", e),
+        Ok(_) => panic!("Expected mismatch error, but it succeeded!"),
+    }
 }

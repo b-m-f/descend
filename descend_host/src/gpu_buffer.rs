@@ -64,10 +64,14 @@ impl<T: DescendType, const N: usize> GpuBuffer<T, N> {
         let cap = host_vec.capacity();
         let host_vec_t = unsafe { Vec::from_raw_parts(ptr, len, cap) };
 
-        Ok(host_vec_t
+        Self::validate_readback(host_vec_t)
+    }
+
+    pub fn validate_readback(host_vec_t: Vec<T>) -> Result<Box<[T; N]>, HostError> {
+        host_vec_t
             .into_boxed_slice()
             .try_into()
-            .map_err(|_| HostError::ConversionError("Size mismatch on array conversion"))?)
+            .map_err(|_| HostError::ConversionError("Size mismatch on array conversion"))
     }
 }
 

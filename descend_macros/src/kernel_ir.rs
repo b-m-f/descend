@@ -18,6 +18,8 @@ pub struct KernelParam {
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub function_name: String,
+    pub grid_dim: Option<descend::ast::Dim>,
+    pub block_dim: Option<descend::ast::Dim>,
     pub grid_dim_str: String,
     pub generic_params_str: String,
     pub generic_size_bindings: Vec<(String, String)>,
@@ -38,8 +40,14 @@ impl Kernel {
                     continue;
                 }
 
-                let grid_dim_str =
-                    parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
+                let mut grid_dim = None;
+                let mut block_dim = None;
+                if let descend::ast::BaseExec::GpuGrid(g, b) = &f.exec.exec.base {
+                    grid_dim = Some(g.clone());
+                    block_dim = Some(b.clone());
+                }
+                
+                let grid_dim_str = parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
 
                 let mut generic_args = Vec::new();
                 for param in &f.generic_params {
@@ -92,6 +100,8 @@ impl Kernel {
 
                 return Ok(Kernel {
                     function_name,
+                    grid_dim,
+                    block_dim,
                     grid_dim_str,
                     generic_params_str,
                     params,
@@ -112,23 +122,7 @@ impl Kernel {
     /// What it does: Computes grid limits mathematically.
     /// Why it is needed: Determines exact sizes for host orchestrator data movement buffering.
     pub fn grid_total_size(&self) -> String {
-        let mut product = 1usize;
-        let mut found_any = false;
-
-        for part in self.grid_dim_str.split(',') {
-            let s = part.trim();
-            if let Some(inner) = s.strip_prefix("X<").and_then(|s| s.strip_suffix('>')) {
-                if let Ok(val) = inner.parse::<usize>() {
-                    product *= val;
-                    found_any = true;
-                }
-            }
-        }
-
-        if found_any {
-            product.to_string()
-        } else {
-            "16384".to_string()
-        }
+        // Return a dummy value as dynamic sizes are now explicitly evaluated inside the wrapper generator.
+        "16384".to_string()
     }
 }

@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use crate::kernel_ir::Kernel;
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
-use std::collections::HashMap;
 use std::str::FromStr;
 
 pub fn generate_host_wrapper(
@@ -54,46 +54,17 @@ pub fn generate_host_wrapper(
 
     let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
 
-    let mut grid_dim = (1, 1, 1);
-    let mut block_dim = (1, 1, 1);
+    let grid_dim = if let Some(g) = &kernel.grid_dim {
+        eval_dim(g, generic_to_size)
+    } else {
+        panic!("Kernel must specify explicit grid dimensions in AST")
+    };
 
-    let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
-    for (gen, size) in generic_to_size {
-        actual_grid_dim_str = substitute_word(&actual_grid_dim_str, gen, size);
-    }
-    let grid_block_parts: Vec<&str> = actual_grid_dim_str.split(">,").collect();
-    let mut gb_parsed = Vec::new();
-    for part in grid_block_parts {
-        let s = part
-            .replace("XYZ<", "")
-            .replace("XY<", "")
-            .replace("XZ<", "")
-            .replace("YZ<", "")
-            .replace("X<", "")
-            .replace("Y<", "")
-            .replace("Z<", "")
-            .replace(">", "")
-            .replace(" ", "");
-        let mut dims = (1, 1, 1);
-        let vals: Vec<&str> = s.split(',').collect();
-        if vals.len() > 0 {
-            dims.0 = eval_math(vals[0]).unwrap_or(1);
-        }
-        if vals.len() > 1 {
-            dims.1 = eval_math(vals[1]).unwrap_or(1);
-        }
-        if vals.len() > 2 {
-            dims.2 = eval_math(vals[2]).unwrap_or(1);
-        }
-        gb_parsed.push(dims);
-    }
-
-    if gb_parsed.len() > 0 {
-        grid_dim = gb_parsed[0];
-    }
-    if gb_parsed.len() > 1 {
-        block_dim = gb_parsed[1];
-    }
+    let block_dim = if let Some(b) = &kernel.block_dim {
+        eval_dim(b, generic_to_size)
+    } else {
+        panic!("Kernel must specify explicit block dimensions in AST")
+    };
 
     let mut shared_mem_exprs = vec![];
     for param in &kernel.params {
@@ -102,12 +73,10 @@ pub fn generate_host_wrapper(
             for (gen, size) in generic_to_size {
                 sz = substitute_word(&sz, gen, size);
             }
-            if let Some(num_elements) = eval_math(&sz) {
-                shared_mem_exprs.push(format!(
-                    "({} * std::mem::size_of::<{}>())",
-                    num_elements, param.elem_base_ty
-                ));
-            }
+            shared_mem_exprs.push(format!(
+                "({} * std::mem::size_of::<{}>())",
+                sz, param.elem_base_ty
+            ));
         }
     }
 
@@ -204,27 +173,7 @@ fn escape_bytes(bytes: &[u8]) -> String {
     s
 }
 
-fn eval_math(expr: &str) -> Option<u32> {
-    if expr.contains('*') {
-        let parts: Vec<&str> = expr.split('*').collect();
-        if parts.len() == 2 {
-            let left = parts[0].trim().parse::<u32>().unwrap_or(1);
-            let right = parts[1].trim().parse::<u32>().unwrap_or(1);
-            return Some(left * right);
-        }
-    }
-    if expr.contains('/') {
-        let parts: Vec<&str> = expr.split('/').collect();
-        if parts.len() == 2 {
-            let left = parts[0].trim().parse::<u32>().unwrap_or(1);
-            let right = parts[1].trim().parse::<u32>().unwrap_or(1);
-            if right != 0 {
-                return Some(left / right);
-            }
-        }
-    }
-    expr.trim().parse::<u32>().ok()
-}
+
 
 pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -259,4 +208,43 @@ pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
     }
     result.push_str(&s[last_end..]);
     result
+}
+use descend::ast::Nat;
+
+pub fn eval_nat(nat: &Nat, bindings: &HashMap<String, String>) -> u32 {
+    match nat {
+        Nat::Lit(val) => *val as u32,
+        Nat::Ident(ident) => {
+            let name = ident.name.to_string();
+            if let Some(val_str) = bindings.get(&name) {
+                val_str.parse::<u32>().unwrap_or_else(|_| panic!("Failed to parse bound generic {} as u32", name))
+            } else {
+                panic!("Unknown identifier in Nat expression: {}", name)
+            }
+        },
+        Nat::BinOp(op, lhs, rhs) => {
+            let l = eval_nat(lhs, bindings);
+            let r = eval_nat(rhs, bindings);
+            match op {
+                descend::ast::BinOpNat::Add => l + r,
+                descend::ast::BinOpNat::Sub => l - r,
+                descend::ast::BinOpNat::Mul => l * r,
+                descend::ast::BinOpNat::Div => l / r,
+                descend::ast::BinOpNat::Mod => l % r,
+            }
+        },
+        _ => panic!("Unsupported Nat expression type for dimension evaluation: {:?}", nat),
+    }
+}
+
+pub fn eval_dim(dim: &descend::ast::Dim, bindings: &HashMap<String, String>) -> (u32, u32, u32) {
+    match dim {
+        descend::ast::Dim::X(n) => (eval_nat(&n.0, bindings), 1, 1),
+        descend::ast::Dim::Y(n) => (1, eval_nat(&n.0, bindings), 1),
+        descend::ast::Dim::Z(n) => (1, 1, eval_nat(&n.0, bindings)),
+        descend::ast::Dim::XY(d) => (eval_nat(&d.0, bindings), eval_nat(&d.1, bindings), 1),
+        descend::ast::Dim::XZ(d) => (eval_nat(&d.0, bindings), 1, eval_nat(&d.1, bindings)),
+        descend::ast::Dim::YZ(d) => (1, eval_nat(&d.0, bindings), eval_nat(&d.1, bindings)),
+        descend::ast::Dim::XYZ(d) => (eval_nat(&d.0, bindings), eval_nat(&d.1, bindings), eval_nat(&d.2, bindings)),
+    }
 }
