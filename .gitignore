@@ -1,6 +1,5 @@
 /target
 /.idea
-Cargo.lock
 /.vscode
 *.out
 .cargo/config.toml
