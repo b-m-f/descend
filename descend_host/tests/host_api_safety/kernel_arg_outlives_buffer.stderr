@@ -1,0 +1,11 @@
+error[E0505]: cannot move out of `buffer` because it is borrowed
+  --> tests/host_api_safety/kernel_arg_outlives_buffer.rs:12:10
+   |
+10 |     let buffer = GpuBuffer::from_host(&[0i32; 4], stream).unwrap();
+   |         ------ binding `buffer` declared here
+11 |     kernel.push_arg(&buffer).unwrap();
+   |                     ------- borrow of `buffer` occurs here
+12 |     drop(buffer);
+   |          ^^^^^^ move out of `buffer` occurs here
+13 |     let _ = unsafe { launcher.launch(kernel) };
+   |                                      ------ borrow later used here

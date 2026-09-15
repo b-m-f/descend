@@ -33,7 +33,7 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
     file.write_all(final_cpp_code.as_bytes())
         .map_err(|e| format!("Failed to write to .cu file: {}", e))?;
 
-    let nvcc_args = resolve_nvcc_options();
+    let nvcc_args = resolve_nvcc_options()?;
 
     let mut cmd = Command::new("nvcc");
     cmd.arg("-ptx").arg(&cu_path).arg("-o").arg(&ptx_path);
@@ -111,7 +111,7 @@ fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str
     )
 }
 
-fn resolve_nvcc_options() -> Vec<String> {
+fn resolve_nvcc_options() -> Result<Vec<String>, String> {
     let flags_env = std::env::var("DESCEND_NVCC_FLAGS").unwrap_or_default();
     let mut options: Vec<String> = flags_env
         .split_whitespace()
@@ -119,19 +119,44 @@ fn resolve_nvcc_options() -> Vec<String> {
         .collect();
 
     // Default to the architecture of the current machine if possible
-    if !options.iter().any(|opt| opt.starts_with("-arch=")) {
-        if let Ok(output) = std::process::Command::new("nvidia-smi")
+    if !options
+        .iter()
+        .any(|opt| opt.starts_with("-arch=") || opt.starts_with("--gpu-architecture="))
+    {
+        let output = std::process::Command::new("nvidia-smi")
             .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
             .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let cap = stdout.lines().next().unwrap_or("").trim().replace('.', "");
-            if !cap.is_empty() {
-                options.push(format!("-arch=compute_{}", cap));
-            }
+            .map_err(|error| format!(
+                "Could not detect a CUDA architecture with nvidia-smi ({error}). Set DESCEND_NVCC_FLAGS=-arch=compute_<capability>."
+            ))?;
+        if !output.status.success() {
+            return Err(format!(
+                "nvidia-smi could not detect a CUDA architecture. Set DESCEND_NVCC_FLAGS=-arch=compute_<capability>. Details: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
+        let capability = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        let mut parts = capability.split('.');
+        let major = parts.next().unwrap_or("");
+        let minor = parts.next().unwrap_or("");
+        if parts.next().is_some()
+            || major.is_empty()
+            || minor.is_empty()
+            || !major.chars().all(|c| c.is_ascii_digit())
+            || !minor.chars().all(|c| c.is_ascii_digit())
+        {
+            return Err(format!(
+                "nvidia-smi returned invalid compute capability {capability:?}. Set DESCEND_NVCC_FLAGS=-arch=compute_<capability>."
+            ));
+        }
+        options.push(format!("-arch=compute_{major}{minor}"));
     }
-    options
+    Ok(options)
 }
 
 fn extract_mangled_name(ptx_string: &str, original_fn_name: &str) -> String {

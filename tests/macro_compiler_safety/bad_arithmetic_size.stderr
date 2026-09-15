@@ -1,5 +1,5 @@
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:27:66
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:27:83
    |
  5 | /     descend! {
  6 | |         fn gpu_bad_arithmetic<N: nat, M: nat, r: prv>(
@@ -9,14 +9,14 @@ error[E0308]: mismatched types
 17 | |     }
    | |_____- expected due to this
 ...
-27 |       descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
-   |                                                                    ^^^^^^^^^^ expected `200`, found `100`
+27 |       let _ = unsafe { descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu) };
+   |                                                                                     ^^^^^^^^^^ expected `200`, found `100`
    |
-   = note: expected mutable reference `&mut GpuBuffer<_, 200>`
+   = note: expected mutable reference `&mut GpuBuffer<i32, 200>`
               found mutable reference `&mut GpuBuffer<i32, 100>`
 
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:27:78
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:27:95
    |
  5 | /     descend! {
  6 | |         fn gpu_bad_arithmetic<N: nat, M: nat, r: prv>(
@@ -26,8 +26,8 @@ error[E0308]: mismatched types
 17 | |     }
    | |_____- expected due to this
 ...
-27 |       descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu);
-   |                                                                                ^^^^^^ expected `200`, found `100`
+27 |       let _ = unsafe { descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu) };
+   |                                                                                                 ^^^^^^ expected `200`, found `100`
    |
-   = note: expected reference `&GpuBuffer<_, 200>`
+   = note: expected reference `&GpuBuffer<i32, 200>`
               found reference `&GpuBuffer<i32, 100>`

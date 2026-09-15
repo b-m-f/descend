@@ -7,11 +7,13 @@ pub enum HostError {
     InvalidSize(&'static str),
     InvalidAlignment(&'static str),
     ContextMismatch(&'static str),
-    ConversionError(&'static str),
 }
 
 impl HostError {
-    pub(crate) fn driver<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E, op: &'static str) -> Self {
+    pub(crate) fn driver<E: Into<Box<dyn std::error::Error + Send + Sync>>>(
+        e: E,
+        op: &'static str,
+    ) -> Self {
         HostError::Driver(e.into(), op)
     }
 }
@@ -24,7 +26,6 @@ impl fmt::Display for HostError {
             HostError::InvalidSize(msg) => write!(f, "Invalid size: {}", msg),
             HostError::InvalidAlignment(msg) => write!(f, "Invalid alignment: {}", msg),
             HostError::ContextMismatch(msg) => write!(f, "Context mismatch: {}", msg),
-            HostError::ConversionError(msg) => write!(f, "Conversion error: {}", msg),
         }
     }
 }
@@ -36,5 +37,36 @@ impl std::error::Error for HostError {
             HostError::NulError(e, _) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HostError;
+    use std::error::Error;
+
+    #[derive(Debug)]
+    struct Sentinel;
+
+    impl std::fmt::Display for Sentinel {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("sentinel")
+        }
+    }
+
+    impl Error for Sentinel {}
+
+    #[test]
+    fn driver_error_preserves_operation_and_source() {
+        let error = HostError::driver(Sentinel, "test operation");
+        assert!(error.to_string().contains("test operation"));
+        assert_eq!(error.source().unwrap().to_string(), "sentinel");
+    }
+
+    #[test]
+    fn nul_error_preserves_source() {
+        let nul = std::ffi::CString::new(b"bad\0value".to_vec()).unwrap_err();
+        let error = HostError::NulError(nul, "test string");
+        assert!(error.source().is_some());
     }
 }

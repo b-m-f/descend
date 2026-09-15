@@ -17,17 +17,15 @@ fn main() {
         }
     }
 
-    let ctx = Context::new(0);
-    let stream = ctx.new_stream();
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
 
     let a_array = [20i32; 1024];
     let b_array = [10i32; 1024];
 
-    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream);
-    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream);
+    let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
+    let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
     // This will trigger the compile error E0308 because N: 16384 does not match GpuBuffer<i32, 1024>
-    descend_launch!(gpu_vec_add_bad_size, <N: 16384>, &mut a_gpu, &b_gpu);
-
-    let a_cpu_back = a_gpu.to_host(&stream);
+    let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
 }

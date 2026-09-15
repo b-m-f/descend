@@ -20,17 +20,3 @@ fn test_multiplication_overflow() {
         _ => panic!("Expected multiplication overflow error"),
     }
 }
-
-#[test]
-fn test_wrong_conversion_length() {
-    // Pass a vector of length 3 to validate_readback where N=4 is expected
-    let bad_vec = vec![OverflowType(1, 1, 1, 1); 3];
-    
-    let res = GpuBuffer::<OverflowType, 4>::validate_readback(bad_vec);
-    match res {
-        Err(HostError::ConversionError(msg)) => {
-            assert!(msg.contains("Size mismatch"), "Expected size mismatch error, got: {}", msg);
-        }
-        _ => panic!("Expected size mismatch error"),
-    }
-}

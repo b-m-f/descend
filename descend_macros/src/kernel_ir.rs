@@ -9,7 +9,7 @@ pub struct KernelParam {
     pub is_uniq: bool,
     pub is_shared_mem: bool,
     pub size_str: String,
-    pub elem_base_ty: String,
+    pub elem_base_ty: Option<String>,
     pub cpu_ty_str: String,
     pub shared_ty_str: String,
 }
