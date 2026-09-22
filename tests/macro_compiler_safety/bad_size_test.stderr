@@ -1,5 +1,5 @@
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/bad_size_test.rs:30:81
+  --> tests/macro_compiler_safety/bad_size_test.rs:31:81
    |
  6 | /     descend! {
  7 | |         fn gpu_vec_add_bad_size<N: nat, r: prv>(
@@ -9,14 +9,14 @@ error[E0308]: mismatched types
 18 | |     }
    | |_____- expected due to this
 ...
-30 |       let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
-   |                                                                                   ^^^^^^^^^^ expected `16384`, found `1024`
+31 |       let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
+   |                                                                                   ^^^^^^^^^^ expected an array with a size of 16384, found one with a size of 1024
    |
-   = note: expected mutable reference `&mut GpuBuffer<i32, 16384>`
-              found mutable reference `&mut GpuBuffer<i32, 1024>`
+   = note: expected mutable reference `&mut GpuBuffer<[i32; 16384]>`
+              found mutable reference `&mut GpuBuffer<[i32; 1024]>`
 
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/bad_size_test.rs:30:93
+  --> tests/macro_compiler_safety/bad_size_test.rs:31:93
    |
  6 | /     descend! {
  7 | |         fn gpu_vec_add_bad_size<N: nat, r: prv>(
@@ -26,8 +26,8 @@ error[E0308]: mismatched types
 18 | |     }
    | |_____- expected due to this
 ...
-30 |       let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
-   |                                                                                               ^^^^^^ expected `16384`, found `1024`
+31 |       let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
+   |                                                                                               ^^^^^^ expected an array with a size of 16384, found one with a size of 1024
    |
-   = note: expected reference `&GpuBuffer<i32, 16384>`
-              found reference `&GpuBuffer<i32, 1024>`
+   = note: expected reference `&GpuBuffer<[i32; 16384]>`
+              found reference `&GpuBuffer<[i32; 1024]>`

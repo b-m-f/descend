@@ -54,7 +54,7 @@ pub fn generate_host_wrapper(
             ("&", "push_arg")
         };
         let decl = format!(
-            "let arg_{i}: {reference} ::descend_host::GpuBuffer<{elem_ty}, {{ {expected_size_str} }}> ="
+            "let arg_{i}: {reference} ::descend_host::GpuBuffer<[{elem_ty}; {{ {expected_size_str} }}]> ="
         );
         block.extend(TokenStream::from_str(&decl).unwrap());
         block.extend(arg_expr.clone());

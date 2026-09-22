@@ -26,6 +26,7 @@ fn main() {
     let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
-    // This will trigger the compile error E0308 because N: 16384 does not match GpuBuffer<i32, 1024>
+    // This will trigger the compile error E0308 because N: 16384 does not match
+    // GpuBuffer<[i32; 1024]>, the buffer's contents type.
     let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
 }

@@ -10,10 +10,10 @@ error[E0308]: mismatched types
    | |_____- expected due to this
 ...
 27 |       let _ = unsafe { descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu) };
-   |                                                                                     ^^^^^^^^^^ expected `200`, found `100`
+   |                                                                                     ^^^^^^^^^^ expected an array with a size of 200, found one with a size of 100
    |
-   = note: expected mutable reference `&mut GpuBuffer<i32, 200>`
-              found mutable reference `&mut GpuBuffer<i32, 100>`
+   = note: expected mutable reference `&mut GpuBuffer<[i32; 200]>`
+              found mutable reference `&mut GpuBuffer<[i32; 100]>`
 
 error[E0308]: mismatched types
   --> tests/macro_compiler_safety/bad_arithmetic_size.rs:27:95
@@ -27,7 +27,7 @@ error[E0308]: mismatched types
    | |_____- expected due to this
 ...
 27 |       let _ = unsafe { descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu) };
-   |                                                                                                 ^^^^^^ expected `200`, found `100`
+   |                                                                                                 ^^^^^^ expected an array with a size of 200, found one with a size of 100
    |
-   = note: expected reference `&GpuBuffer<i32, 200>`
-              found reference `&GpuBuffer<i32, 100>`
+   = note: expected reference `&GpuBuffer<[i32; 200]>`
+              found reference `&GpuBuffer<[i32; 100]>`
