@@ -1,129 +1,56 @@
-#![allow(dead_code)]
 #![allow(unreachable_patterns)]
 use descend::ast::*;
 use proc_macro::{TokenStream, TokenTree};
 use std::collections::HashMap;
 
-pub struct LaunchConfig {
-    pub stream_expr: proc_macro::TokenStream,
-    pub generic_to_size: HashMap<String, String>,
-    pub array_args: Vec<proc_macro::TokenStream>,
-}
-
-impl LaunchConfig {
-    /// Parses the launch configuration block from the `descend_launch!` internal macro invocation.
-    ///
-    /// What it does: Extracts the generic bindings (like `<N: 256>`) and runtime arguments (like `&mut a_gpu`) into a `LaunchConfig` struct.
-    /// Why it is needed: Necessary to resolve abstract macro sizes to concrete integer bounds required for NVCC compilation and to capture the host runtime parameters to embed back into the CUDA call.
-    pub fn parse(input: TokenStream) -> Result<Self, String> {
-        let mut tokens = input.into_iter().peekable();
-
-        // Parse stream_expr until the first comma
-        let mut stream_tokens = Vec::new();
-        while let Some(tt) = tokens.peek() {
-            if let proc_macro::TokenTree::Punct(p) = tt {
-                if p.as_char() == ',' {
-                    break;
-                }
-            }
-            stream_tokens.push(tokens.next().unwrap());
-        }
-
-        if let Some(proc_macro::TokenTree::Punct(p)) = tokens.peek() {
-            if p.as_char() == ',' {
-                tokens.next(); // consume the comma
-            }
-        }
-
-        let mut stream_expr = proc_macro::TokenStream::new();
-        stream_expr.extend(stream_tokens);
-
-        let mut generic_to_size = HashMap::new();
-
-        // Check if there is `<` next
-        if let Some(TokenTree::Punct(p)) = tokens.peek() {
-            if p.as_char() == '<' {
-                tokens.next(); // consume `<`
-
-                // Read generic key-value pairs until `>`
-                while let Some(tt) = tokens.peek() {
-                    if let TokenTree::Punct(p) = tt {
-                        if p.as_char() == '>' {
-                            tokens.next(); // consume `>`
-                            break;
-                        }
-                    }
-
-                    let gen_ident = match tokens.next() {
-                        Some(TokenTree::Ident(id)) => id,
-                        _ => return Err("Expected generic identifier in launch config".to_string()),
-                    };
-
-                    match tokens.next() {
-                        Some(TokenTree::Punct(p)) if p.as_char() == ':' => {}
-                        _ => return Err("Expected ':' in generic argument".to_string()),
-                    }
-
-                    let val = match tokens.next() {
-                        Some(TokenTree::Literal(lit)) => lit.to_string(),
-                        _ => return Err("Expected integer literal for generic value".to_string()),
-                    };
-
-                    generic_to_size.insert(gen_ident.to_string(), val);
-
-                    if let Some(TokenTree::Punct(p)) = tokens.peek() {
-                        if p.as_char() == ',' {
-                            tokens.next(); // consume `,`
-                        }
-                    }
-                }
-            }
-        }
-
-        // if there's a comma after generics, consume it
-        if let Some(TokenTree::Punct(p)) = tokens.peek() {
-            if p.as_char() == ',' {
-                tokens.next();
-            }
-        }
-
-        let mut args = Vec::new();
-        while let Some(tt) = tokens.next() {
-            if let TokenTree::Punct(p) = &tt {
-                if p.as_char() == ',' {
-                    continue;
-                }
-            }
-
-            // Collect tokens until the next comma
-            let mut arg_tokens = vec![tt];
-            while let Some(next_tt) = tokens.peek() {
-                if let TokenTree::Punct(p) = next_tt {
-                    if p.as_char() == ',' {
-                        break;
-                    }
-                }
-                arg_tokens.push(tokens.next().unwrap());
-            }
-
-            let mut arg_ts = TokenStream::new();
-            for t in arg_tokens {
-                arg_ts.extend(std::iter::once(t));
-            }
-            args.push(arg_ts);
-        }
-
-        Ok(LaunchConfig {
-            stream_expr,
-            generic_to_size,
-            array_args: args,
-        })
-    }
-}
-
-/// Wraps the invocation of the Descend language parser.
+/// Parses a `<N: 16384, bs: 16>` block of generic bindings.
 ///
-/// What it does: Calls the `descend::parser::parse` method to extract the Abstract Syntax Tree (AST).
+/// Both a launch site and an instantiation name a generic kernel's `nat`
+/// parameters this way, and both need them as literals: they are substituted
+/// into the Descend source before it is compiled.
+pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, String>, String> {
+    let mut bindings = HashMap::new();
+    let mut tokens = input.into_iter().peekable();
+
+    match tokens.next() {
+        Some(TokenTree::Punct(p)) if p.as_char() == '<' => {}
+        None => return Ok(bindings),
+        Some(other) => {
+            return Err(format!(
+                "expected `<` to open the generic bindings, found `{other}`"
+            ))
+        }
+    }
+
+    loop {
+        match tokens.next() {
+            Some(TokenTree::Punct(p)) if p.as_char() == '>' => break,
+            Some(TokenTree::Punct(p)) if p.as_char() == ',' => continue,
+            Some(TokenTree::Ident(name)) => {
+                match tokens.next() {
+                    Some(TokenTree::Punct(p)) if p.as_char() == ':' => {}
+                    _ => return Err(format!("expected `:` after generic `{name}`")),
+                }
+                match tokens.next() {
+                    Some(TokenTree::Literal(value)) => {
+                        bindings.insert(name.to_string(), value.to_string());
+                    }
+                    _ => {
+                        return Err(format!(
+                            "generic `{name}` needs an integer literal: a kernel's sizes are \
+                             compiled into its code, so they cannot come from a runtime value"
+                        ))
+                    }
+                }
+            }
+            Some(other) => return Err(format!("unexpected `{other}` in the generic bindings")),
+            None => return Err("the generic bindings are not terminated by `>`".to_string()),
+        }
+    }
+
+    Ok(bindings)
+}
+
 /// Why it is needed: Safely converts the user's macro code into a semantic structure (`CompilUnit`) we can navigate to identify `Item::FunDef` nodes for code generation.
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
@@ -247,6 +174,18 @@ pub fn format_cpu_ty(ty: &Ty) -> String {
     "UNKNOWN_TY".to_string()
 }
 
+/// The type of a parameter the kernel takes by value, as both Descend and Rust
+/// spell it: `i32`, `[i32; 3]`, or a struct name. Empty for a reference
+/// parameter, which is passed as a device address instead.
+pub fn format_value_ty(ty: &Ty) -> String {
+    if let TyKind::Data(dty) = &ty.ty {
+        if !matches!(dty.dty, DataTyKind::Ref(_)) {
+            return format_array_dty(dty);
+        }
+    }
+    String::new()
+}
+
 /// Extracts the dimensionality layout of a nested shared block array.
 ///
 /// What it does: Traverses `GpuShared` AST type parameters to isolate their structure.
@@ -339,89 +278,54 @@ pub fn format_rust_struct(s: &descend::ast::StructDecl) -> String {
     out
 }
 
-/// Computes byte alignment constants for raw scalar variants.
+/// The byte size of a parameter's element type, or `None` when the Descend code
+/// generator does not define one.
 ///
-/// What it does: Multiplies element types out by bytes.
-/// Why it is needed: Needed explicitly for `cudarc` shared memory allocations.
-pub fn extract_byte_size_from_ty(ty: &Ty) -> u32 {
-    if let TyKind::Data(dty) = &ty.ty {
-        let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
-            &ref_dty.dty.dty
-        } else {
-            &dty.dty
-        };
-
-        while let DataTyKind::Array(elem_ty, _) = current_dty {
-            current_dty = &elem_ty.dty;
-        }
-
-        if let DataTyKind::Scalar(scalar) = current_dty {
-            return match scalar {
-                descend::ast::ScalarTy::U8 | descend::ast::ScalarTy::Bool => 1,
-                descend::ast::ScalarTy::U32
-                | descend::ast::ScalarTy::I32
-                | descend::ast::ScalarTy::F32 => 4,
-                descend::ast::ScalarTy::U64
-                | descend::ast::ScalarTy::I64
-                | descend::ast::ScalarTy::F64 => 8,
-                _ => 4,
-            };
-        }
+/// This mirrors `size_of_dty` in `descend::codegen` exactly, because the host's
+/// dynamic shared-memory request must agree with the packing the generated CUDA
+/// performs. In particular `u8` is *not* sized here: the code generator panics
+/// on it, so a `u8` shared parameter has to be rejected with a message rather
+/// than given a plausible-looking size.
+pub fn elem_byte_size(ty: &Ty) -> Option<u32> {
+    let TyKind::Data(dty) = &ty.ty else {
+        return None;
+    };
+    let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
+        &ref_dty.dty.dty
+    } else {
+        &dty.dty
+    };
+    while let DataTyKind::Array(elem_ty, _) = current_dty {
+        current_dty = &elem_ty.dty;
     }
-    4 // fallback
+    match current_dty {
+        DataTyKind::Scalar(ScalarTy::Bool) => Some(1),
+        DataTyKind::Scalar(ScalarTy::U32 | ScalarTy::I32 | ScalarTy::F32) => Some(4),
+        DataTyKind::Atomic(descend::ast::AtomicTy::AtomicU32) => Some(4),
+        DataTyKind::Scalar(ScalarTy::U64 | ScalarTy::I64 | ScalarTy::F64) => Some(8),
+        _ => None,
+    }
 }
 
-/// Seeks within the caller stream to locate explicitly passed `call(...)` invocations to modify kernel generation.
+/// The array dimensions of a parameter's type, outermost first.
 ///
-/// What it does: Parses inner punctuation boundaries to extract arguments dynamically.
-/// Why it is needed: Allows seamless function overriding during generic kernel implementations without rewriting tree nodes directly.
-pub fn extract_call_args_tokens(stream: &mut TokenStream) -> Vec<String> {
-    let mut call_args = Vec::new();
-    let tokens: Vec<TokenTree> = stream.clone().into_iter().collect();
-
-    let mut call_idx = None;
-    for (i, tt) in tokens.iter().enumerate() {
-        if let TokenTree::Ident(id) = tt {
-            if id.to_string() == "call" {
-                if i + 1 < tokens.len() {
-                    if let TokenTree::Group(g) = &tokens[i + 1] {
-                        if g.delimiter() == proc_macro::Delimiter::Parenthesis {
-                            call_idx = Some(i);
-
-                            // parse args from the group
-                            let mut current_arg = String::new();
-                            for arg_tt in g.stream() {
-                                if let TokenTree::Punct(p) = &arg_tt {
-                                    if p.as_char() == ',' {
-                                        call_args.push(current_arg.trim().to_string());
-                                        current_arg = String::new();
-                                        continue;
-                                    }
-                                }
-                                current_arg.push_str(&arg_tt.to_string());
-                            }
-                            if !current_arg.trim().is_empty() {
-                                call_args.push(current_arg.trim().to_string());
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+/// Empty for a parameter that is not an array. Unlike [`extract_size_from_ty`],
+/// which renders the dimensions as text for substitution into generated source,
+/// this keeps the `Nat`s so they can be evaluated against the launch's generic
+/// bindings.
+pub fn extract_dim_nats(ty: &Ty) -> Vec<Nat> {
+    let TyKind::Data(dty) = &ty.ty else {
+        return Vec::new();
+    };
+    let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
+        &ref_dty.dty.dty
+    } else {
+        &dty.dty
+    };
+    let mut dims = Vec::new();
+    while let DataTyKind::Array(elem_ty, nat) = current_dty {
+        dims.push(nat.clone());
+        current_dty = &elem_ty.dty;
     }
-
-    if let Some(idx) = call_idx {
-        // Remove `call(...)` from the stream
-        let mut new_stream = TokenStream::new();
-        for i in 0..idx {
-            new_stream.extend(std::iter::once(tokens[i].clone()));
-        }
-        for i in idx + 2..tokens.len() {
-            new_stream.extend(std::iter::once(tokens[i].clone()));
-        }
-        *stream = new_stream;
-    }
-
-    call_args
+    dims
 }

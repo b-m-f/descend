@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::descend;
 
 fn main() {
     descend! {
@@ -21,5 +21,5 @@ fn main() {
     let mut a_gpu = GpuBuffer::from_host(&[1i32; 100], &stream).unwrap();
 
     // The kernel has two parameters but only one buffer is passed.
-    let _ = unsafe { descend_launch!(gpu_arg_count, &stream, , &mut a_gpu) };
+    let _ = gpu_arg_count(&stream, &mut a_gpu);
 }

@@ -1,0 +1,12 @@
+error: kernel `gpu_shared_first`: parameter `vec` follows a gpu.shared parameter. Shared-memory parameters must come last, because the compiler removes them from the end of the kernel signature
+  --> tests/macro_compiler_safety/shared_param_not_last.rs:4:5
+   |
+ 4 | /     descend! {
+ 5 | |         fn gpu_shared_first<r1: prv, r2: prv>(
+ 6 | |             [grid.forall(X)] tmp: &r2 uniq gpu.shared [i32; 64],
+ 7 | |             vec: &r1 uniq gpu.global [i32; 64]
+...  |
+21 | |     }
+   | |_____^
+   |
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

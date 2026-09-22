@@ -1,5 +1,15 @@
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/wrong_element_type.rs:25:76
+  --> tests/macro_compiler_safety/wrong_element_type.rs:25:48
+   |
+25 |     let _ = gpu_elem_type(&stream, &mut a_gpu, &b_gpu);
+   |             -------------                      ^^^^^^ expected `&GpuBuffer<[i32; 100]>`, found `&GpuBuffer<[f32; 100]>`
+   |             |
+   |             arguments to this function are incorrect
+   |
+   = note: expected reference `&GpuBuffer<[i32; 100]>`
+              found reference `&GpuBuffer<[f32; 100]>`
+note: function defined here
+  --> tests/macro_compiler_safety/wrong_element_type.rs:5:5
    |
  5 | /     descend! {
  6 | |         fn gpu_elem_type<r: prv>(
@@ -7,10 +17,5 @@ error[E0308]: mismatched types
  8 | |             b_array: &r shrd gpu.global [i32; 100]
 ...  |
 17 | |     }
-   | |_____- expected due to this
-...
-25 |       let _ = unsafe { descend_launch!(gpu_elem_type, &stream, , &mut a_gpu, &b_gpu) };
-   |                                                                              ^^^^^^ expected `&GpuBuffer<[i32; 100]>`, found `&GpuBuffer<[f32; 100]>`
-   |
-   = note: expected reference `&GpuBuffer<[i32; 100]>`
-              found reference `&GpuBuffer<[f32; 100]>`
+   | |_____^
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

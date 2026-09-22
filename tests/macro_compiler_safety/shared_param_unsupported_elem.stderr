@@ -1,0 +1,12 @@
+error: kernel `gpu_shared_bytes`: shared parameter `tmp` has an element type whose byte size the Descend compiler does not define, so its shared-memory allocation cannot be sized
+  --> tests/macro_compiler_safety/shared_param_unsupported_elem.rs:4:5
+   |
+ 4 | /     descend! {
+ 5 | |         fn gpu_shared_bytes<r1: prv, r2: prv>(
+ 6 | |             vec: &r1 uniq gpu.global [u8; 64],
+ 7 | |             [grid.forall(X)] tmp: &r2 uniq gpu.shared [u8; 64]
+...  |
+21 | |     }
+   | |_____^
+   |
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

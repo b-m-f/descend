@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::descend;
 
 fn main() {
     descend! {
@@ -22,5 +22,5 @@ fn main() {
     let b_gpu = GpuBuffer::from_host(&[1.0f32; 100], &stream).unwrap();
 
     // The second kernel parameter holds i32, not f32.
-    let _ = unsafe { descend_launch!(gpu_elem_type, &stream, , &mut a_gpu, &b_gpu) };
+    let _ = gpu_elem_type(&stream, &mut a_gpu, &b_gpu);
 }

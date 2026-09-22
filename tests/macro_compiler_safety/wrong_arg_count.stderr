@@ -1,4 +1,10 @@
-error: kernel `gpu_arg_count` expects 2 buffer argument(s), found 1
+error[E0061]: this function takes 3 arguments but 2 arguments were supplied
+  --> tests/macro_compiler_safety/wrong_arg_count.rs:24:13
+   |
+24 |     let _ = gpu_arg_count(&stream, &mut a_gpu);
+   |             ^^^^^^^^^^^^^--------------------- argument #3 of type `&GpuBuffer<[i32; 100]>` is missing
+   |
+note: function defined here
   --> tests/macro_compiler_safety/wrong_arg_count.rs:5:5
    |
  5 | /     descend! {
@@ -8,8 +14,8 @@ error: kernel `gpu_arg_count` expects 2 buffer argument(s), found 1
 ...  |
 17 | |     }
    | |_____^
-...
-24 |       let _ = unsafe { descend_launch!(gpu_arg_count, &stream, , &mut a_gpu) };
-   |                        ----------------------------------------------------- in this macro invocation
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: provide the argument
    |
-   = note: this error originates in the macro `::descend_macros::_descend_launch_internal` which comes from the expansion of the macro `descend_launch` (in Nightly builds, run with -Z macro-backtrace for more info)
+24 |     let _ = gpu_arg_count(&stream, &mut a_gpu, /* &GpuBuffer<[i32; 100]> */);
+   |                                              ++++++++++++++++++++++++++++++

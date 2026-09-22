@@ -12,31 +12,31 @@ const PTX: &str = "
 .target sm_52
 .address_size 64
 
-.visible .entry buffer_then_scalar(
-    .param .u64 buffer_then_scalar_param_0,
-    .param .u32 buffer_then_scalar_param_1
+.visible .entry buffer_then_val(
+    .param .u64 buffer_then_val_param_0,
+    .param .u32 buffer_then_val_param_1
 )
 {
     .reg .b32 %r<2>;
     .reg .b64 %rd<3>;
 
-    ld.param.u64 %rd1, [buffer_then_scalar_param_0];
+    ld.param.u64 %rd1, [buffer_then_val_param_0];
     cvta.to.global.u64 %rd2, %rd1;
-    ld.param.u32 %r1, [buffer_then_scalar_param_1];
+    ld.param.u32 %r1, [buffer_then_val_param_1];
     st.global.u32 [%rd2], %r1;
     ret;
 }
 
-.visible .entry scalar_then_buffer(
-    .param .f32 scalar_then_buffer_param_0,
-    .param .u64 scalar_then_buffer_param_1
+.visible .entry val_then_buffer(
+    .param .f32 val_then_buffer_param_0,
+    .param .u64 val_then_buffer_param_1
 )
 {
     .reg .f32 %f<2>;
     .reg .b64 %rd<3>;
 
-    ld.param.f32 %f1, [scalar_then_buffer_param_0];
-    ld.param.u64 %rd1, [scalar_then_buffer_param_1];
+    ld.param.f32 %f1, [val_then_buffer_param_0];
+    ld.param.u64 %rd1, [val_then_buffer_param_1];
     cvta.to.global.u64 %rd2, %rd1;
     st.global.f32 [%rd2], %f1;
     ret;
@@ -79,9 +79,9 @@ fn value_after_buffer_reaches_the_device() {
     let mut out = GpuBuffer::from_host(&[0u32; 1], &stream).unwrap();
     let value = 0xDEAD_BEEFu32;
 
-    let mut kernel = Kernel::new("buffer_then_scalar", single_thread());
-    kernel.push_arg_mut(&mut out).unwrap();
-    kernel.push_scalar(&value).unwrap();
+    let mut kernel = Kernel::new("buffer_then_val", single_thread());
+    kernel.push_arg_uniq(&mut out).unwrap();
+    kernel.push_arg_val(&value).unwrap();
     // SAFETY: the entry above takes exactly this buffer and this by-value
     // parameter, in this order, writes only the buffer, and one thread is
     // enough for its single store.
@@ -99,9 +99,9 @@ fn value_before_buffer_keeps_positional_order() {
     let mut out = GpuBuffer::from_host(&[0.0f32; 1], &stream).unwrap();
     let value = 1.5f32;
 
-    let mut kernel = Kernel::new("scalar_then_buffer", single_thread());
-    kernel.push_scalar(&value).unwrap();
-    kernel.push_arg_mut(&mut out).unwrap();
+    let mut kernel = Kernel::new("val_then_buffer", single_thread());
+    kernel.push_arg_val(&value).unwrap();
+    kernel.push_arg_uniq(&mut out).unwrap();
     // SAFETY: as above, with the by-value parameter first — the order the
     // pushes use.
     unsafe { launcher.launch(kernel) }.unwrap();
@@ -119,8 +119,8 @@ fn array_is_marshaled_by_value() {
     let values = [11i32, 22, 33];
 
     let mut kernel = Kernel::new("array_by_value", single_thread());
-    kernel.push_arg_mut(&mut out).unwrap();
-    kernel.push_scalar(&values).unwrap();
+    kernel.push_arg_uniq(&mut out).unwrap();
+    kernel.push_arg_val(&values).unwrap();
     // SAFETY: the entry takes a 12-byte by-value parameter with 4-byte
     // alignment, which is the layout of `[i32; 3]`, and writes only the buffer.
     unsafe { launcher.launch(kernel) }.unwrap();

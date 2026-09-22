@@ -1,8 +1,8 @@
 error[E0502]: cannot borrow `buffer` as immutable because it is also borrowed as mutable
-  --> tests/host_api_safety/mut_arg_is_exclusive.rs:12:13
+  --> tests/host_api_safety/uniq_arg_is_exclusive.rs:12:13
    |
-11 |     kernel.push_arg_mut(&mut buffer).unwrap();
-   |                         ----------- mutable borrow occurs here
+11 |     kernel.push_arg_uniq(&mut buffer).unwrap();
+   |                          ----------- mutable borrow occurs here
 12 |     let _ = buffer.to_host(stream);
    |             ^^^^^^ immutable borrow occurs here
 13 |     let _ = unsafe { launcher.launch(kernel) };

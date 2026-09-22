@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::{descend, descend_fn};
 
 descend! {
     fn gpu_matmul<bs: nat, m: nat, n: nat, k: nat, r: prv>(
@@ -27,6 +27,8 @@ descend! {
     }
 }
 
+descend_fn!(gpu_matmul as matmul_64x128x64, <bs: 16, m: 64, n: 128, k: 64>);
+
 #[test]
 fn test_matmul() {
     let ctx = Context::new(0).unwrap();
@@ -40,9 +42,7 @@ fn test_matmul() {
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
     let mut c_gpu = GpuBuffer::from_host(&Box::new(c_array), &stream).unwrap();
 
-    unsafe {
-        descend_launch!(gpu_matmul, &stream, <bs: 16, m: 64, n: 128, k: 64>, &a_gpu, &b_gpu, &mut c_gpu).unwrap();
-    }
+    matmul_64x128x64(&stream, &a_gpu, &b_gpu, &mut c_gpu).unwrap();
 
     let c_cpu_back = c_gpu.to_host(&stream).unwrap();
     assert_eq!(*c_cpu_back, [20i32 * 10i32 * 128i32; 64 * 64]);

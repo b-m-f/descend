@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::{descend, descend_fn};
 
 descend! {
     // Tests: Mul (*), Add (+), Div (/), Sub (-), Mod (%)
@@ -17,6 +17,8 @@ descend! {
     }
 }
 
+descend_fn!(gpu_vec_add_arithmetic as vec_add_arithmetic_16k, <N: 16384, M: 1, O: 0>);
+
 #[test]
 fn test_vec_add_arithmetic() {
     let ctx = Context::new(0).unwrap();
@@ -31,9 +33,7 @@ fn test_vec_add_arithmetic() {
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
     // Testing parsing of multiple generics and their multiplication inside the Descend AST!
-    unsafe {
-        descend_launch!(gpu_vec_add_arithmetic, &stream, <N: 16384, M: 1, O: 0>, &mut a_gpu, &b_gpu).unwrap();
-    }
+    vec_add_arithmetic_16k(&stream, &mut a_gpu, &b_gpu).unwrap();
 
     let a_cpu_back = a_gpu.to_host(&stream).unwrap();
     assert_eq!(*a_cpu_back, [30i32; 16384]);

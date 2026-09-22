@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::descend;
 
 #[test]
 fn test_vec_add() {
@@ -27,9 +27,7 @@ fn test_vec_add() {
     let mut a_gpu = GpuBuffer::from_host_mut(&mut a_array, &stream).unwrap();
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
-    unsafe {
-        descend_launch!(gpu_vec_add, &stream, , &mut a_gpu, &b_gpu).unwrap();
-    }
+    gpu_vec_add(&stream, &mut a_gpu, &b_gpu).unwrap();
 
     let a_cpu_back = a_gpu.read_back(&stream).unwrap();
     assert_eq!(a_cpu_back.as_ptr(), original_address);

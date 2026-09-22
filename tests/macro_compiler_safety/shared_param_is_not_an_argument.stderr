@@ -1,0 +1,22 @@
+error[E0061]: this function takes 2 arguments but 3 arguments were supplied
+  --> tests/macro_compiler_safety/shared_param_is_not_an_argument.rs:31:13
+   |
+31 |     let _ = gpu_shared_tmp(&stream, &mut vec_gpu, &mut tmp_gpu);
+   |             ^^^^^^^^^^^^^^                        ------------ unexpected argument #3 of type `&mut GpuBuffer<[i32; 64]>`
+   |
+note: function defined here
+  --> tests/macro_compiler_safety/shared_param_is_not_an_argument.rs:5:5
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_shared_tmp<r1: prv, r2: prv>(
+ 7 | |             vec: &r1 uniq gpu.global [i32; 64],
+ 8 | |             [grid.forall(X)] tmp: &r2 uniq gpu.shared [i32; 64]
+...  |
+22 | |     }
+   | |_____^
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: remove the extra argument
+   |
+31 -     let _ = gpu_shared_tmp(&stream, &mut vec_gpu, &mut tmp_gpu);
+31 +     let _ = gpu_shared_tmp(&stream, &mut vec_gpu);
+   |

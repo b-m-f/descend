@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::descend;
 
 fn main() {
     descend! {
@@ -26,5 +26,5 @@ fn main() {
 
     // Bad Mutability! Expects `uniq` (mut) for the first argument, but we give it an immutable `&a_gpu`.
     // Passing `&mut b_gpu` to the `shrd` parameter is accepted: it coerces to a shared reference.
-    let _ = unsafe { descend_launch!(gpu_bad_mut, &stream, , &a_gpu, &mut b_gpu) };
+    let _ = gpu_bad_mut(&stream, &a_gpu, &mut b_gpu);
 }

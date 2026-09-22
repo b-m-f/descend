@@ -37,6 +37,20 @@ pub fn synthesize_main_program(
             shared_mem_configs.push(actual_shared_ty);
             continue;
         }
+
+        if param.is_by_value {
+            // The kernel takes the value itself, so the synthesized host
+            // function takes it too and hands it over unchanged: there is
+            // nothing to allocate or copy to the device.
+            let mut value_ty = param.value_ty_str.clone();
+            for (gen, size) in generic_to_size {
+                value_ty = crate::host_api::substitute_word(&value_ty, gen, size);
+            }
+            main_params.push(format!("arg{}: {}", i, value_ty));
+            main_args.push(format!("arg{}", i));
+            continue;
+        }
+
         let param_str = format!("arg{}: {}", i, actual_ty_str_cpu);
         main_params.push(param_str);
 
