@@ -20,7 +20,7 @@ unsafe impl DescendType for CustomVector {}
 
 // A generic helper to prove `GpuBuffer` bounds don't leak backend traits.
 // This function compiles strictly against `DescendType`.
-pub fn process_buffer<T: DescendType, const N: usize>(buf: &mut GpuBuffer<T, N>, _stream: &Stream) {
+pub fn process_buffer<T: DescendType>(buf: &mut GpuBuffer<T>, _stream: &Stream) {
     // We don't execute anything; this is a compile fixture.
     let _ = buf.context();
 }

@@ -4,21 +4,28 @@ use crate::error::HostError;
 use crate::stream::Stream;
 use crate::traits::{DescendType, DescendTypeWrapper};
 
-pub struct GpuBuffer<T: DescendType, const N: usize> {
+/// Device storage holding exactly one value of the contents type `T`.
+///
+/// `T` is the buffer's whole contents type, so an array buffer is
+/// `GpuBuffer<[i32; 1024]>` and its size is part of its type. The device
+/// allocation is one value of `T`, and its device address is the address of
+/// that value, which for an array is the address of its first element — the
+/// address a kernel's pointer parameter expects.
+pub struct GpuBuffer<T: DescendType> {
     pub(crate) dev_buf: DeviceBuffer<DescendTypeWrapper<T>>,
 }
 
-/// A device buffer associated with an exclusively borrowed host array.
+/// A device buffer associated with an exclusively borrowed host value.
 ///
-/// The host array is used for the initial upload and can later receive an
+/// The host value is used for the initial upload and can later receive an
 /// explicit readback without allocating another host region. The exclusive
 /// borrow prevents host access while the buffer may be used by a kernel.
-pub struct BorrowedGpuBuffer<'a, T: DescendType, const N: usize> {
-    buffer: GpuBuffer<T, N>,
-    host: &'a mut [T; N],
+pub struct BorrowedGpuBuffer<'a, T: DescendType> {
+    buffer: GpuBuffer<T>,
+    host: &'a mut T,
 }
 
-impl<T: DescendType, const N: usize> GpuBuffer<T, N> {
+impl<T: DescendType> GpuBuffer<T> {
     pub fn context(&self) -> Context {
         Context {
             inner: crate::backend::buffer_context(&self.dev_buf),
@@ -26,15 +33,9 @@ impl<T: DescendType, const N: usize> GpuBuffer<T, N> {
     }
 
     pub fn validate_buffer_params() -> Result<(), HostError> {
-        if N == 0 {
-            return Err(HostError::InvalidSize("N == 0 is not supported"));
-        }
         let size = std::mem::size_of::<T>();
         if size == 0 {
             return Err(HostError::InvalidSize("Zero-sized types are not supported"));
-        }
-        if size.checked_mul(N).is_none() {
-            return Err(HostError::InvalidSize("Byte size overflow"));
         }
         let align = std::mem::align_of::<T>();
         if align > 256 {
@@ -45,46 +46,43 @@ impl<T: DescendType, const N: usize> GpuBuffer<T, N> {
         Ok(())
     }
 
-    /// Allocates device storage and uploads `data`.
+    /// Allocates device storage and uploads the single value `data`.
     ///
     /// Validation, context binding and device allocation failures are returned
     /// as errors. Once `data` has been handed to the driver, a failure means the
     /// copy's completion is unknown, and the process terminates while `data` is
     /// still borrowed.
-    pub fn from_host(data: &[T; N], stream: &Stream) -> Result<Self, HostError> {
+    fn upload(data: &T, stream: &Stream) -> Result<Self, HostError> {
         Self::validate_buffer_params()?;
 
         crate::backend::bind_context_to_thread(&stream.context.inner)
             .map_err(|e| HostError::driver(e, "bind context for from_host"))?;
 
-        let mut dev_buf = crate::backend::buffer_uninitialized(&stream.inner, N)
+        let mut dev_buf = crate::backend::buffer_uninitialized(&stream.inner, 1)
             .map_err(|e| HostError::driver(e, "device allocation"))?;
 
         // SAFETY: DescendTypeWrapper<T> is repr(transparent) over T, so the
-        // arrays have identical layout.
-        let source: &[DescendTypeWrapper<T>; N] = unsafe { std::mem::transmute(data) };
+        // values have identical layout.
+        let source: &DescendTypeWrapper<T> =
+            unsafe { &*std::ptr::from_ref(data).cast::<DescendTypeWrapper<T>>() };
 
-        if crate::backend::buffer_copy_from_host(&mut dev_buf, &stream.inner, source).is_err() {
+        if crate::backend::buffer_copy_from_host(
+            &mut dev_buf,
+            &stream.inner,
+            std::slice::from_ref(source),
+        )
+        .is_err()
+        {
             crate::backend::fail_stop("host-to-device transfer");
         }
         Ok(Self { dev_buf })
     }
 
-    /// Uploads `data` and retains its exclusive borrow for optional in-place
-    /// readback through [`BorrowedGpuBuffer::read_back`].
-    pub fn from_host_mut<'a>(
-        data: &'a mut [T; N],
-        stream: &Stream,
-    ) -> Result<BorrowedGpuBuffer<'a, T, N>, HostError> {
-        let buffer = Self::from_host(data, stream)?;
-        Ok(BorrowedGpuBuffer { buffer, host: data })
-    }
-
     /// Copies the device contents into a new host allocation.
-    pub fn to_host(&self, stream: &Stream) -> Result<Box<[T; N]>, HostError> {
+    pub fn to_host(&self, stream: &Stream) -> Result<Box<T>, HostError> {
         // SAFETY: the DescendType contract requires the all-zero bit pattern to
-        // be a valid T, so a zeroed [T; N] is initialized.
-        let mut host = unsafe { Box::<[T; N]>::new_zeroed().assume_init() };
+        // be a valid T, so a zeroed T is initialized.
+        let mut host = unsafe { Box::<T>::new_zeroed().assume_init() };
         self.copy_into(stream, &mut host, "device-to-host transfer")?;
         Ok(host)
     }
@@ -92,7 +90,7 @@ impl<T: DescendType, const N: usize> GpuBuffer<T, N> {
     fn copy_into(
         &self,
         stream: &Stream,
-        destination: &mut [T; N],
+        destination: &mut T,
         operation: &'static str,
     ) -> Result<(), HostError> {
         if self.context().inner != stream.context.inner {
@@ -103,53 +101,79 @@ impl<T: DescendType, const N: usize> GpuBuffer<T, N> {
         crate::backend::bind_context_to_thread(&stream.context.inner)
             .map_err(|e| HostError::driver(e, "bind context for readback"))?;
 
-        // SAFETY: DescendTypeWrapper<T> is transparent over T, so the elements
+        // SAFETY: DescendTypeWrapper<T> is transparent over T, so the values
         // have identical layout. `destination` stays borrowed until this
         // function returns or the process terminates.
-        let destination = unsafe {
-            std::slice::from_raw_parts_mut(
-                destination.as_mut_ptr().cast::<DescendTypeWrapper<T>>(),
-                N,
-            )
-        };
-        if crate::backend::buffer_copy_to_host(&self.dev_buf, &stream.inner, destination).is_err() {
+        let destination: &mut DescendTypeWrapper<T> =
+            unsafe { &mut *std::ptr::from_mut(destination).cast::<DescendTypeWrapper<T>>() };
+        if crate::backend::buffer_copy_to_host(
+            &self.dev_buf,
+            &stream.inner,
+            std::slice::from_mut(destination),
+        )
+        .is_err()
+        {
             crate::backend::fail_stop(operation);
         }
         Ok(())
     }
 }
 
-impl<'a, T: DescendType, const N: usize> BorrowedGpuBuffer<'a, T, N> {
+/// Array constructors. `N` is unified from the array argument and never written
+/// by a caller, so no const generic appears in a public type or signature.
+impl<T: DescendType, const N: usize> GpuBuffer<[T; N]> {
+    /// Allocates device storage and uploads `data`.
+    ///
+    /// Validation, context binding and device allocation failures are returned
+    /// as errors. Once `data` has been handed to the driver, a failure means the
+    /// copy's completion is unknown, and the process terminates while `data` is
+    /// still borrowed.
+    pub fn from_host(data: &[T; N], stream: &Stream) -> Result<Self, HostError> {
+        Self::upload(data, stream)
+    }
+
+    /// Uploads `data` and retains its exclusive borrow for optional in-place
+    /// readback through [`BorrowedGpuBuffer::read_back`].
+    pub fn from_host_mut<'a>(
+        data: &'a mut [T; N],
+        stream: &Stream,
+    ) -> Result<BorrowedGpuBuffer<'a, [T; N]>, HostError> {
+        let buffer = Self::upload(data, stream)?;
+        Ok(BorrowedGpuBuffer { buffer, host: data })
+    }
+}
+
+impl<'a, T: DescendType> BorrowedGpuBuffer<'a, T> {
     pub fn context(&self) -> Context {
         self.buffer.context()
     }
 
-    pub fn gpu_buffer(&self) -> &GpuBuffer<T, N> {
+    pub fn gpu_buffer(&self) -> &GpuBuffer<T> {
         &self.buffer
     }
 
-    pub fn gpu_buffer_mut(&mut self) -> &mut GpuBuffer<T, N> {
+    pub fn gpu_buffer_mut(&mut self) -> &mut GpuBuffer<T> {
         &mut self.buffer
     }
 
-    /// Copies the device contents into the originally borrowed host array and
+    /// Copies the device contents into the originally borrowed host value and
     /// returns that exact reference. No host allocation is performed.
-    pub fn read_back(self, stream: &Stream) -> Result<&'a mut [T; N], HostError> {
+    pub fn read_back(self, stream: &Stream) -> Result<&'a mut T, HostError> {
         self.buffer
             .copy_into(stream, self.host, "in-place device-to-host transfer")?;
         Ok(self.host)
     }
 }
 
-impl<'a, T: DescendType, const N: usize> std::ops::Deref for BorrowedGpuBuffer<'a, T, N> {
-    type Target = GpuBuffer<T, N>;
+impl<'a, T: DescendType> std::ops::Deref for BorrowedGpuBuffer<'a, T> {
+    type Target = GpuBuffer<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.buffer
     }
 }
 
-impl<'a, T: DescendType, const N: usize> std::ops::DerefMut for BorrowedGpuBuffer<'a, T, N> {
+impl<'a, T: DescendType> std::ops::DerefMut for BorrowedGpuBuffer<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.buffer
     }
@@ -172,10 +196,10 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_zero_extent() {
+    fn test_reject_zero_size() {
         assert!(matches!(
-            GpuBuffer::<i32, 0>::validate_buffer_params(),
-            Err(HostError::InvalidSize("N == 0 is not supported"))
+            GpuBuffer::<[i32; 0]>::validate_buffer_params(),
+            Err(HostError::InvalidSize("Zero-sized types are not supported"))
         ));
     }
 
@@ -186,7 +210,7 @@ mod tests {
     #[test]
     fn test_reject_zst() {
         assert!(matches!(
-            GpuBuffer::<ZST, 10>::validate_buffer_params(),
+            GpuBuffer::<[ZST; 10]>::validate_buffer_params(),
             Err(HostError::InvalidSize("Zero-sized types are not supported"))
         ));
     }
@@ -199,7 +223,7 @@ mod tests {
     #[test]
     fn test_reject_over_aligned() {
         assert!(matches!(
-            GpuBuffer::<OverAligned, 10>::validate_buffer_params(),
+            GpuBuffer::<[OverAligned; 10]>::validate_buffer_params(),
             Err(HostError::InvalidAlignment(_))
         ));
     }

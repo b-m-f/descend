@@ -12,5 +12,5 @@ error[E0308]: mismatched types
 29 |       let _ = unsafe { descend_launch!(gpu_bad_mut, &stream, , &a_gpu, &mut b_gpu) };
    |                                                                ^^^^^^ types differ in mutability
    |
-   = note: expected mutable reference `&mut GpuBuffer<i32, 100>`
-                      found reference `&GpuBuffer<i32, 100>`
+   = note: expected mutable reference `&mut GpuBuffer<[i32; 100]>`
+                      found reference `&GpuBuffer<[i32; 100]>`

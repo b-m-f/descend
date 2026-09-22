@@ -4,6 +4,8 @@ use crate::error::HostError;
 use crate::gpu_buffer::GpuBuffer;
 use crate::stream::Stream;
 use crate::traits::DescendType;
+use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 pub struct KernelLaunchConfig {
@@ -12,16 +14,28 @@ pub struct KernelLaunchConfig {
     pub shared_mem_bytes: u32,
 }
 
+/// One argument slot, in the kernel's signature order.
+enum Param {
+    /// The slot holds the buffer's device address.
+    Device(u64),
+    /// The slot is the caller's own value.
+    Scalar(NonNull<c_void>),
+}
+
 /// Arguments and configuration for one kernel submission.
 ///
-/// Each pushed buffer stays borrowed for `'a`, i.e. until the `Kernel` is
-/// consumed by [`KernelLauncher::launch`]. Because launch is synchronous, safe
-/// code cannot drop a pushed buffer during execution, and a buffer pushed with
-/// [`Kernel::push_arg_mut`] cannot be read or pushed again until completion.
+/// Every pushed argument — a buffer or a value passed by value — stays borrowed
+/// for `'a`, i.e. until the `Kernel` is consumed by [`KernelLauncher::launch`].
+/// Because launch is synchronous, safe code cannot drop a pushed argument during
+/// execution, and a buffer pushed with [`Kernel::push_arg_mut`] cannot be read
+/// or pushed again until completion.
+///
+/// Arguments of both kinds share one positional sequence, because order across
+/// argument kinds is the kernel's signature order.
 pub struct Kernel<'a> {
     pub fn_name: &'a str,
     pub config: KernelLaunchConfig,
-    cu_params: Vec<u64>,
+    params: Vec<Param>,
     context: Option<Context>,
 }
 
@@ -30,31 +44,48 @@ impl<'a> Kernel<'a> {
         Self {
             fn_name,
             config,
-            cu_params: Vec::new(),
+            params: Vec::new(),
             context: None,
         }
     }
 
     /// Pushes a buffer for a parameter the kernel only reads (`shrd`).
-    pub fn push_arg<T: DescendType, const N: usize>(
-        &mut self,
-        buf: &'a GpuBuffer<T, N>,
-    ) -> Result<(), HostError> {
+    pub fn push_arg<T: DescendType>(&mut self, buf: &'a GpuBuffer<T>) -> Result<(), HostError> {
         self.push_device_arg(buf)
     }
 
     /// Pushes a buffer for a parameter the kernel may write (`uniq`).
-    pub fn push_arg_mut<T: DescendType, const N: usize>(
+    pub fn push_arg_mut<T: DescendType>(
         &mut self,
-        buf: &'a mut GpuBuffer<T, N>,
+        buf: &'a mut GpuBuffer<T>,
     ) -> Result<(), HostError> {
         self.push_device_arg(buf)
     }
 
-    fn push_device_arg<T: DescendType, const N: usize>(
-        &mut self,
-        buf: &GpuBuffer<T, N>,
-    ) -> Result<(), HostError> {
+    /// Pushes a value for a parameter the kernel takes by value.
+    ///
+    /// The value stays with the caller, so its storage has exactly `T`'s size
+    /// and alignment; only its address is recorded. The borrow must outlive this
+    /// `Kernel`, so safe code cannot drop or move the value before
+    /// [`KernelLauncher::launch`] consumes the kernel — a computed temporary is
+    /// therefore rejected and the caller binds a local, as it already does for
+    /// buffers. (A borrow of a literal is promoted to `'static` and is
+    /// accepted.) The driver takes the number of
+    /// bytes to read from the compiled kernel signature, so no size is recorded
+    /// here.
+    ///
+    /// A value has no device allocation and hence no context, so this records
+    /// none: a kernel whose arguments are all by value is not context-checked.
+    pub fn push_scalar<T: DescendType>(&mut self, value: &'a T) -> Result<(), HostError> {
+        if std::mem::size_of::<T>() == 0 {
+            return Err(HostError::InvalidSize("Zero-sized types are not supported"));
+        }
+        self.params
+            .push(Param::Scalar(NonNull::from(value).cast::<c_void>()));
+        Ok(())
+    }
+
+    fn push_device_arg<T: DescendType>(&mut self, buf: &GpuBuffer<T>) -> Result<(), HostError> {
         if let Some(ctx) = &self.context {
             if ctx.inner != buf.context().inner {
                 return Err(HostError::ContextMismatch(
@@ -64,9 +95,24 @@ impl<'a> Kernel<'a> {
         } else {
             self.context = Some(buf.context());
         }
-        self.cu_params
-            .push(crate::backend::buffer_device_ptr(&buf.dev_buf));
+        self.params
+            .push(Param::Device(crate::backend::buffer_device_ptr(
+                &buf.dev_buf,
+            )));
         Ok(())
+    }
+
+    /// Builds the driver's argument array: one pointer per slot, in push order.
+    /// A device slot yields the address of its own address word, a by-value slot
+    /// the address of the caller's value.
+    fn param_ptrs(&mut self) -> Vec<*mut c_void> {
+        self.params
+            .iter_mut()
+            .map(|param| match param {
+                Param::Device(address) => std::ptr::from_mut(address).cast::<c_void>(),
+                Param::Scalar(value) => value.as_ptr(),
+            })
+            .collect()
     }
 }
 
@@ -87,21 +133,33 @@ impl<'a> KernelLauncher<'a> {
     ///
     /// # Safety
     ///
-    /// The borrow checker already guarantees that every pushed buffer outlives
+    /// The borrow checker already guarantees that every pushed argument outlives
     /// this call and that buffers pushed with `push_arg_mut` are not accessed
     /// by other safe code until it returns. The caller must additionally
     /// guarantee facts that raw PTX does not expose:
     ///
-    /// - **Signature**: the named kernel exists and its argument count, order,
-    ///   ABI, element size, alignment, representation, extent and address space
-    ///   match the pushed buffers.
+    /// - **Signature**: the named kernel exists and its argument count, order
+    ///   and ABI match the pushed arguments. For a buffer, element size,
+    ///   alignment, representation, size and address space must match; for a
+    ///   value pushed with `push_scalar`, the kernel's parameter must itself be
+    ///   taken by value and its size, alignment and representation must agree
+    ///   with the pushed `T`. The driver reads a by-value argument's bytes
+    ///   according to the compiled signature, not according to the host slot, so
+    ///   a mismatch misreads host memory instead of failing.
     /// - **Permissions**: every parameter the kernel may write was pushed with
     ///   `push_arg_mut`, and no kernel running on another stream accesses the
-    ///   same buffers in a conflicting way.
+    ///   same buffers in a conflicting way. A by-value parameter cannot be
+    ///   written through and so needs no exclusivity, but the pointer handed to
+    ///   the driver for it derives from a shared reference: the kernel must only
+    ///   read that storage.
     /// - **Execution parameters**: grid, block and shared-memory sizes satisfy
     ///   the kernel's indexing assumptions.
     /// - **Output validity**: every value the kernel writes is a valid value of
     ///   its Rust `DescendType`, including the restricted encodings of `bool`.
+    ///
+    /// `push_scalar` records no context, so a kernel whose arguments are all by
+    /// value passes the context check below unexamined; its module and stream
+    /// context agreement is the caller's obligation.
     ///
     /// Success means all work submitted to the stream, including this kernel,
     /// has completed. If the driver's stream synchronization fails, completion
@@ -123,11 +181,7 @@ impl<'a> KernelLauncher<'a> {
         crate::backend::bind_context_to_thread(&self.stream.context.inner)
             .map_err(|e| HostError::driver(e, "bind context for kernel launch"))?;
 
-        let mut ptrs: Vec<*mut std::ffi::c_void> = kernel
-            .cu_params
-            .iter_mut()
-            .map(|p| p as *mut _ as *mut std::ffi::c_void)
-            .collect();
+        let mut ptrs = kernel.param_ptrs();
 
         let launch_result = unsafe {
             crate::backend::launch(
@@ -146,5 +200,118 @@ impl<'a> KernelLauncher<'a> {
         }
 
         launch_result.map_err(|e| HostError::driver(e, "kernel launch"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 16-byte value: the case a fixed-width argument slot would truncate.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct Record(i32, i32, i32, i32);
+    unsafe impl DescendType for Record {}
+
+    #[derive(Clone, Copy)]
+    struct Zst;
+    unsafe impl DescendType for Zst {}
+
+    fn config() -> KernelLaunchConfig {
+        KernelLaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (1, 1, 1),
+            shared_mem_bytes: 0,
+        }
+    }
+
+    fn address_of<T>(value: &T) -> *mut c_void {
+        std::ptr::from_ref(value).cast::<c_void>().cast_mut()
+    }
+
+    #[test]
+    fn scalar_slots_hold_the_callers_addresses() {
+        let integer = 7i32;
+        let float = 1.5f32;
+        let flag = true;
+        let array = [1i32, 2, 3];
+        let record = Record(1, 2, 3, 4);
+
+        let mut kernel = Kernel::new("kernel", config());
+        kernel.push_scalar(&integer).unwrap();
+        kernel.push_scalar(&float).unwrap();
+        kernel.push_scalar(&flag).unwrap();
+        kernel.push_scalar(&array).unwrap();
+        kernel.push_scalar(&record).unwrap();
+
+        let ptrs = kernel.param_ptrs();
+        assert_eq!(
+            ptrs,
+            vec![
+                address_of(&integer),
+                address_of(&float),
+                address_of(&flag),
+                address_of(&array),
+                address_of(&record),
+            ],
+            "each slot must hold the address of the caller's own value, in push order"
+        );
+    }
+
+    #[test]
+    fn scalar_slots_are_aligned_for_their_types() {
+        let integer = 7i32;
+        let double = 1.5f64;
+        let array = [1i32, 2, 3];
+        let record = Record(1, 2, 3, 4);
+
+        let mut kernel = Kernel::new("kernel", config());
+        kernel.push_scalar(&integer).unwrap();
+        kernel.push_scalar(&double).unwrap();
+        kernel.push_scalar(&array).unwrap();
+        kernel.push_scalar(&record).unwrap();
+
+        let ptrs = kernel.param_ptrs();
+        let alignments = [
+            std::mem::align_of::<i32>(),
+            std::mem::align_of::<f64>(),
+            std::mem::align_of::<[i32; 3]>(),
+            std::mem::align_of::<Record>(),
+        ];
+        for (ptr, align) in ptrs.iter().zip(alignments) {
+            assert_eq!(
+                *ptr as usize % align,
+                0,
+                "a by-value slot has the alignment of the caller's value"
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_rejects_zero_sized_values() {
+        let zst = Zst;
+        let mut kernel = Kernel::new("kernel", config());
+        assert!(matches!(
+            kernel.push_scalar(&zst),
+            Err(HostError::InvalidSize("Zero-sized types are not supported"))
+        ));
+        assert!(kernel.param_ptrs().is_empty());
+    }
+
+    #[test]
+    fn rejected_push_leaves_earlier_slots_in_order() {
+        let first = 1i32;
+        let zst = Zst;
+        let second = 2i32;
+
+        let mut kernel = Kernel::new("kernel", config());
+        kernel.push_scalar(&first).unwrap();
+        assert!(kernel.push_scalar(&zst).is_err());
+        kernel.push_scalar(&second).unwrap();
+
+        assert_eq!(
+            kernel.param_ptrs(),
+            vec![address_of(&first), address_of(&second)]
+        );
     }
 }
