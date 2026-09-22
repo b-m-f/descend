@@ -1,53 +1,48 @@
 extern crate proc_macro;
 
 #[macro_use]
-mod helper;
+mod diag;
 
-mod compiler;
-mod format;
-mod host_api;
-mod kernel_ir;
-mod main_workaround;
-mod parser;
+/// Descend AST helpers: reading a kernel's shape out of the parsed source.
+mod ast;
+/// Type checking, code generation, `nvcc`, and the PTX cache.
+mod compile;
+/// Tokens to Descend source text.
+mod descend_src;
+/// The Rust items a kernel becomes.
+mod emit;
+/// The kernel IR the rest of the crate works from.
+mod ir;
+/// `Nat` evaluation and the one remaining text substitution.
+mod nat;
+/// The dynamic shared-memory byte count and the checks around it.
 mod shared_mem;
+/// Specializing a kernel's sizes and synthesizing a compilable program.
+mod specialize;
 
-use compiler::compile_to_ptx;
-use kernel_ir::Kernel;
-use main_workaround::synthesize_main_program;
-use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
-use std::str::FromStr;
+use compile::compile_to_ptx;
+use ir::Kernel;
+use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
+use quote::{format_ident, quote};
+use specialize::synthesize_main_program;
 
-/// Recursively traverses a `TokenStream` to replace a specific placeholder identifier with the user's pristine code.
+/// Runs an expansion over `proc_macro2` tokens and turns its failure into a
+/// `compile_error!`.
 ///
-/// What it does:
-/// - `TokenTree::Group` match: Recursively descends into nested brackets/braces (like `{ ... }` or `( ... )`). `TokenStream`s are tree structures, not flat arrays. Without this recursion, we would fail to find placeholders hidden inside the macro's inner blocks.
-/// - `TokenTree::Ident` match: Looks for the exact literal word `_SOURCE_PLACEHOLDER_` and swaps it out for the user's untouched `TokenStream` (wrapped in braces).
-///
-/// Why it is needed: This technique allows us to use highly readable string templates (e.g. `format!("macro_rules! ...")`) for boilerplate macro generation, while cleanly injecting the user's original `TokenStream` without stringifying it. This perfectly preserves compiler span hygiene so `rustc` errors point directly to the user's specific faulty syntax rather than highlighting the entire macro block.
-fn substitute_source_placeholder(ts: TokenStream, source_ts: &TokenStream) -> TokenStream {
-    let mut out = TokenStream::new();
-    for tt in ts {
-        match tt {
-            TokenTree::Group(g) => {
-                let new_stream = substitute_source_placeholder(g.stream(), source_ts);
-                out.extend(std::iter::once(TokenTree::Group(Group::new(
-                    g.delimiter(),
-                    new_stream,
-                ))));
-            }
-            TokenTree::Ident(id) if id.to_string() == "_SOURCE_PLACEHOLDER_" => {
-                out.extend(std::iter::once(TokenTree::Group(Group::new(
-                    Delimiter::Brace,
-                    source_ts.clone(),
-                ))));
-            }
-            other => {
-                out.extend(std::iter::once(other));
-            }
-        }
+/// The three entry points are the crate's only `proc_macro` types: everything
+/// below them works on `proc_macro2`, which — unlike `proc_macro` — can be
+/// constructed outside a macro invocation and so can be unit-tested.
+fn expand_or_error(
+    input: proc_macro::TokenStream,
+    expand: fn(TokenStream) -> Result<TokenStream, String>,
+) -> proc_macro::TokenStream {
+    match expand(input.into()) {
+        Ok(tokens) => tokens,
+        Err(message) => crate::diag::compile_error_item(&message),
     }
-    out
+    .into()
 }
+use std::str::FromStr;
 
 /// The primary entry point for embedding Descend code in Rust.
 ///
@@ -61,11 +56,8 @@ fn substitute_source_placeholder(ts: TokenStream, source_ts: &TokenStream) -> To
 /// Rust as a function. Whether that function exists immediately or after an
 /// instantiation is decided by the kernel's own signature, not by the user.
 #[proc_macro]
-pub fn descend(input: TokenStream) -> TokenStream {
-    match expand_descend(input) {
-        Ok(tokens) => tokens,
-        Err(message) => crate::helper::compile_error_item(&message),
-    }
+pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    expand_or_error(input, expand_descend)
 }
 
 fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
@@ -73,10 +65,10 @@ fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
 
     // We format the raw tokens tightly (removing syntax-invalid spaces)
     // to strictly satisfy the Descend PEG parser requirements.
-    let source_str = crate::format::to_descend_string(source_ts.clone());
+    let source_str = crate::descend_src::to_descend_string(source_ts.clone());
     debug!("MACRO INPUT: {}", source_str);
     let source = descend::parser::SourceCode::new(source_str);
-    let compilation_unit = crate::parser::parse_descend_source(&source)
+    let compilation_unit = crate::ast::parse_descend_source(&source)
         .map_err(|err| format!("failed to parse the Descend source: {err}"))?;
 
     let mut output = TokenStream::new();
@@ -84,7 +76,7 @@ fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
     // Support arbitrary numbers of kernels within a single block
     for item in &compilation_unit.items {
         match item {
-            descend::ast::Item::FunDef(f) if crate::kernel_ir::is_launchable(f) => {
+            descend::ast::Item::FunDef(f) if crate::ir::is_launchable(f) => {
                 let kernel_name = f.ident.name.to_string();
                 let has_nat_generics = f
                     .generic_params
@@ -99,15 +91,19 @@ fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
                 // becomes a function straight away. A generic one waits for an
                 // instantiation to name its sizes.
                 if !has_nat_generics {
-                    output.extend(compile_kernel_fn(
-                        &kernel_name,
-                        &source_ts,
-                        &compilation_unit,
-                    )?);
+                    match compile_kernel_fn(&kernel_name, &source_ts, &compilation_unit) {
+                        Ok(tokens) => output.extend(tokens),
+                        Err(message) => {
+                            return Ok(match kernel_name_span(&source_ts, &kernel_name) {
+                                Some(span) => crate::diag::error_at(span, &message),
+                                None => crate::diag::compile_error_item(&message),
+                            })
+                        }
+                    }
                 }
             }
             descend::ast::Item::StructDecl(s) => {
-                let struct_code = crate::parser::format_rust_struct(s);
+                let struct_code = crate::ast::format_rust_struct(s);
                 output.extend(
                     struct_code
                         .parse::<TokenStream>()
@@ -123,6 +119,22 @@ fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
     Ok(output)
 }
 
+/// The span of `name` where the block declares it, so a failure about this
+/// kernel underlines its name.
+fn kernel_name_span(source_ts: &TokenStream, name: &str) -> Option<Span> {
+    let mut previous_was_fn = false;
+    for tt in source_ts.clone() {
+        match &tt {
+            TokenTree::Ident(ident) if previous_was_fn && ident == name => {
+                return Some(ident.span());
+            }
+            TokenTree::Ident(ident) => previous_was_fn = ident == "fn",
+            _ => previous_was_fn = false,
+        }
+    }
+    None
+}
+
 /// Compiles one kernel and emits the function that launches it.
 fn compile_kernel_fn(
     kernel_name: &str,
@@ -130,16 +142,16 @@ fn compile_kernel_fn(
     compilation_unit: &descend::ast::CompilUnit,
 ) -> Result<TokenStream, String> {
     let kernel = Kernel::extract(compilation_unit, kernel_name)?;
-    crate::host_api::check_shared_params(&kernel)?;
+    crate::shared_mem::check_shared_params(&kernel)?;
 
     let full_descend = synthesize_main_program(
         source_ts.clone(),
         &kernel,
         &std::collections::HashMap::new(),
-    );
+    )?;
     let compiled = compile_to_ptx(&full_descend, &kernel.function_name)?;
 
-    crate::host_api::generate_launch_fn(
+    crate::emit::generate_launch_fn(
         &kernel,
         &compiled,
         &std::collections::HashMap::new(),
@@ -157,43 +169,44 @@ fn compile_kernel_fn(
 /// launching is what the generated function is for — so every invocation other
 /// than an instantiation is rejected with a message saying so.
 fn carrier_macro_for(kernel_name: &str, source_ts: &TokenStream) -> TokenStream {
-    let template = format!(
-        "macro_rules! {0} {{ \
-           (@fn $name:ident, $($args:tt)*) => {{ \
-             ::descend_macros::_descend_fn_internal!{{ _SOURCE_PLACEHOLDER_, {0}, $name, $($args)* }} \
-           }}; \
-           ($($args:tt)*) => {{ \
-             compile_error!(concat!( \
-               \"kernel `{0}` is launched through a generated function, not through a macro. \
-                 Name an instantiation with `descend_fn!({0} as <name>, <...sizes>);` and call \
-                 `<name>(&stream, ..)`.\" \
-             )) \
-           }} \
-         }}",
-        kernel_name
+    let kernel = format_ident!("{}", kernel_name);
+    let refusal = format!(
+        "kernel `{kernel_name}` is launched through a generated function, not through a macro. \
+         Write `descend_fn!({kernel_name}, <...sizes>);` once and call \
+         `{kernel_name}(&stream, ..)`; use `descend_fn!({kernel_name} as <name>, <...sizes>);` \
+         for a second set of sizes."
     );
-    let template_ts = template
-        .parse::<TokenStream>()
-        .expect("carrier macro template must parse");
-    substitute_source_placeholder(template_ts, source_ts)
+
+    // `quote!` leaves `$` alone, so the `macro_rules!` metavariables pass
+    // through, and the kernel's source travels inside the braced group.
+    quote! {
+        macro_rules! #kernel {
+            (@fn $name:ident, $($args:tt)*) => {
+                ::descend_macros::_descend_fn_internal! {
+                    { #source_ts }, #kernel, $name, $($args)*
+                }
+            };
+            ($($args:tt)*) => {
+                compile_error!(#refusal)
+            };
+        }
+    }
 }
 
 /// Instantiates a generic kernel as a named Rust function.
 ///
-/// What it does: rewrites `descend_fn!(gpu_matmul as tile64, <bs: 16, m: 64>)`
-/// into an invocation of the `macro_rules!` that `descend!` generated for the
-/// kernel, which carries the kernel's source to this site.
+/// What it does: rewrites `descend_fn!(gpu_vec_add, <N: 16384>)` — or
+/// `descend_fn!(gpu_matmul as tile64, <bs: 16, m: 64>)` when one kernel needs
+/// several sizes — into an invocation of the `macro_rules!` that `descend!`
+/// generated for the kernel, which carries the kernel's source to this site.
 /// Why it is needed: a kernel with `nat` generics cannot be compiled where it is
 /// defined, because its sizes are baked into the generated CUDA and only become
 /// literals here. Naming an instantiation is what turns such a kernel into an
 /// ordinary function item, which — unlike a macro — can be exported from its
 /// module and called from anywhere.
 #[proc_macro]
-pub fn descend_fn(input: TokenStream) -> TokenStream {
-    match expand_descend_fn(input) {
-        Ok(tokens) => tokens,
-        Err(message) => crate::helper::compile_error_item(&message),
-    }
+pub fn descend_fn(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    expand_or_error(input, expand_descend_fn)
 }
 
 fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, String> {
@@ -201,23 +214,33 @@ fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, String> {
 
     let Some(TokenTree::Ident(kernel)) = iter.next() else {
         return Err(
-            "expected a kernel name, as in `descend_fn!(gpu_matmul as tile64, <m: 64>)`"
-                .to_string(),
+            "expected a kernel name, as in `descend_fn!(gpu_vec_add, <N: 16384>)`".to_string(),
         );
     };
-    match iter.next() {
-        Some(TokenTree::Ident(keyword)) if keyword.to_string() == "as" => {}
-        _ => return Err(format!("expected `as <name>` after the kernel `{kernel}`")),
-    }
-    let Some(TokenTree::Ident(item_name)) = iter.next() else {
-        return Err(format!(
-            "expected a name for the instantiation of `{kernel}`"
-        ));
+
+    // `descend_fn!(kernel, <sizes>)` names the function after the kernel;
+    // `descend_fn!(kernel as name, <sizes>)` names it explicitly, which is what
+    // distinguishes two instantiations of one kernel.
+    let item_name = match iter.next() {
+        Some(TokenTree::Punct(p)) if p.as_char() == ',' => kernel.clone(),
+        Some(TokenTree::Ident(keyword)) if keyword == "as" => {
+            let Some(TokenTree::Ident(alias)) = iter.next() else {
+                return Err(format!(
+                    "expected a name for the instantiation of `{kernel}`"
+                ));
+            };
+            match iter.next() {
+                Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
+                _ => return Err(format!("expected `,` after the name `{alias}`")),
+            }
+            alias
+        }
+        _ => {
+            return Err(format!(
+                "expected `,` or `as <name>` after the kernel `{kernel}`"
+            ))
+        }
     };
-    match iter.next() {
-        Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
-        _ => return Err(format!("expected `,` after the name `{item_name}`")),
-    }
 
     let bindings: TokenStream = iter.collect();
 
@@ -236,11 +259,8 @@ fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, String> {
 /// Internal counterpart of [`descend_fn`], reached through the kernel's own
 /// generated macro so that it has the kernel's source.
 #[proc_macro]
-pub fn _descend_fn_internal(input: TokenStream) -> TokenStream {
-    match fn_internal(input) {
-        Ok(tokens) => tokens,
-        Err(message) => crate::helper::compile_error_item(&message),
-    }
+pub fn _descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    expand_or_error(input, fn_internal)
 }
 
 fn fn_internal(input: TokenStream) -> Result<TokenStream, String> {
@@ -257,21 +277,47 @@ fn fn_internal(input: TokenStream) -> Result<TokenStream, String> {
         .ok_or_else(|| "expected the kernel name".to_string())?
         .to_string();
     let _comma = iter.next();
-    let item_name = iter
+    let item_name_tt = iter
         .next()
-        .ok_or_else(|| "expected the name of the instantiation".to_string())?
-        .to_string();
+        .ok_or_else(|| "expected the name of the instantiation".to_string())?;
+    // This token comes from the user's `descend_fn!`, so anything that goes
+    // wrong with the instantiation can be reported against it.
+    let item_span = item_name_tt.span();
+    let item_name = item_name_tt.to_string();
     let _comma = iter.next();
 
-    let bindings = crate::parser::parse_generic_bindings(iter.collect())?;
+    let bindings = match crate::ast::parse_generic_bindings(iter.collect()) {
+        Ok(bindings) => bindings,
+        Err(message) => return Ok(crate::diag::error_at(item_span, &message)),
+    };
 
-    let source_str = crate::format::to_descend_string(source_ts.clone());
+    let source_str = crate::descend_src::to_descend_string(source_ts.clone());
     let source = descend::parser::SourceCode::new(source_str);
-    let compilation_unit = crate::parser::parse_descend_source(&source)
+    let compilation_unit = crate::ast::parse_descend_source(&source)
         .map_err(|err| format!("failed to parse the Descend source: {err}"))?;
 
-    let kernel = Kernel::extract(&compilation_unit, &kernel_name)?;
-    crate::host_api::check_shared_params(&kernel)?;
+    match instantiate(
+        &compilation_unit,
+        source_ts,
+        &kernel_name,
+        &item_name,
+        &bindings,
+    ) {
+        Ok(tokens) => Ok(tokens),
+        Err(message) => Ok(crate::diag::error_at(item_span, &message)),
+    }
+}
+
+/// Compiles one instantiation of a kernel and emits its function.
+fn instantiate(
+    compilation_unit: &descend::ast::CompilUnit,
+    source_ts: TokenStream,
+    kernel_name: &str,
+    item_name: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<TokenStream, String> {
+    let kernel = Kernel::extract(compilation_unit, kernel_name)?;
+    crate::shared_mem::check_shared_params(&kernel)?;
 
     for generic in &kernel.nat_generics {
         if !bindings.contains_key(generic) {
@@ -288,8 +334,47 @@ fn fn_internal(input: TokenStream) -> Result<TokenStream, String> {
         }
     }
 
-    let full_descend = synthesize_main_program(source_ts, &kernel, &bindings);
+    let full_descend = synthesize_main_program(source_ts, &kernel, bindings)?;
     let compiled = compile_to_ptx(&full_descend, &kernel.function_name)?;
 
-    crate::host_api::generate_launch_fn(&kernel, &compiled, &bindings, &item_name)
+    crate::emit::generate_launch_fn(&kernel, &compiled, bindings, item_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_carrier_macro_instantiates_but_refuses_to_launch() {
+        let source = TokenStream::from_str("fn gpu_k() {}").unwrap();
+        let carrier = carrier_macro_for("gpu_k", &source).to_string();
+
+        let compact: String = carrier.split_whitespace().collect();
+        assert!(
+            compact.starts_with("macro_rules!gpu_k{"),
+            "the carrier must be named after the kernel: {carrier}"
+        );
+        assert!(
+            carrier.contains("_descend_fn_internal"),
+            "the instantiation arm is missing: {carrier}"
+        );
+        assert!(
+            carrier.contains("compile_error"),
+            "a direct launch must be refused: {carrier}"
+        );
+        assert!(
+            carrier.contains("descend_fn"),
+            "the refusal should name the instantiation to write instead: {carrier}"
+        );
+    }
+
+    #[test]
+    fn the_carrier_macro_embeds_the_kernel_source() {
+        let source = TokenStream::from_str("fn gpu_k(a: &r uniq gpu.global [i32; 4]) {}").unwrap();
+        let carrier = carrier_macro_for("gpu_k", &source).to_string();
+        assert!(
+            carrier.contains("gpu.global") || carrier.contains("gpu . global"),
+            "the source must travel with the macro: {carrier}"
+        );
+    }
 }

@@ -66,6 +66,8 @@ descend! {
 
 descend_fn!(gpu_double as double_512, <N: 512>);
 descend_fn!(gpu_double as double_1k, <N: 1024>);
+// A third instantiation without an alias, which takes the kernel's own name.
+descend_fn!(gpu_double, <N: 256>);
 
 #[test]
 fn test_two_instantiations_of_one_kernel_are_two_functions() {
@@ -86,4 +88,18 @@ fn test_two_instantiations_of_one_kernel_are_two_functions() {
     // the grid the kernel declares in terms of that size.
     assert_eq!(DOUBLE_512_CONFIG.grid_dim, (2, 1, 1));
     assert_eq!(DOUBLE_1K_CONFIG.grid_dim, (4, 1, 1));
+}
+
+#[test]
+fn test_instantiation_without_an_alias_takes_the_kernel_name() {
+    let ctx = Context::new(0).unwrap();
+    let stream = ctx.new_stream().unwrap();
+
+    let mut values = GpuBuffer::from_host(&[1i32; 256], &stream).unwrap();
+    let addend = GpuBuffer::from_host(&[2i32; 256], &stream).unwrap();
+
+    gpu_double(&stream, &mut values, &addend).unwrap();
+
+    assert_eq!(*values.to_host(&stream).unwrap(), [3i32; 256]);
+    assert_eq!(GPU_DOUBLE_CONFIG.grid_dim, (1, 1, 1));
 }

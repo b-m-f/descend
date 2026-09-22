@@ -1,6 +1,6 @@
 #![allow(unreachable_patterns)]
 use descend::ast::*;
-use proc_macro::{TokenStream, TokenTree};
+use proc_macro2::{TokenStream, TokenTree};
 use std::collections::HashMap;
 
 /// Parses a `<N: 16384, bs: 16>` block of generic bindings.
@@ -131,31 +131,6 @@ fn nat_to_string(nat: &Nat) -> String {
     }
 }
 
-/// Scans nested type hierarchies looking for terminal array limits.
-///
-/// What it does: Follows inner data structures of vectors until locating the bounding `Nat` object.
-/// Why it is needed: Required for computing buffer allocations statically at compile time.
-pub fn extract_size_from_ty(ty: &Ty) -> String {
-    if let TyKind::Data(dty) = &ty.ty {
-        let mut current_dty = if let DataTyKind::Ref(ref_dty) = &dty.dty {
-            &ref_dty.dty.dty
-        } else {
-            &dty.dty
-        };
-
-        let mut dims = Vec::new();
-        while let DataTyKind::Array(elem_ty, nat) = current_dty {
-            dims.push(nat_to_string(nat));
-            current_dty = &elem_ty.dty;
-        }
-
-        if !dims.is_empty() {
-            return dims.join(" * ");
-        }
-    }
-    "1".to_string()
-}
-
 /// Maps abstract GPU global structures to host-level representation strings.
 ///
 /// What it does: Emits Rust types representing mapped memory slices like `&shrd cpu.mem [i32; ...] `.
@@ -226,6 +201,22 @@ pub fn format_array_dty(dty: &DataTy) -> String {
         DataTyKind::Struct(s) => s.ident.name.to_string(),
         DataTyKind::At(dty, _) => format_array_dty(dty),
         _ => "i32".to_string(),
+    }
+}
+
+/// Renders a data type with every array size evaluated against `bindings`.
+///
+/// The text form of a type is produced once, here, from the AST — rather than
+/// produced early and patched afterwards, which is how a size name inside an
+/// unrelated position gets rewritten.
+pub fn format_dty_eval(dty: &DataTy, bindings: &HashMap<String, String>) -> Result<String, String> {
+    match &dty.dty {
+        DataTyKind::Array(inner, nat) => {
+            let size = crate::nat::eval_nat(nat, bindings)?;
+            Ok(format!("[{}; {}]", format_dty_eval(inner, bindings)?, size))
+        }
+        DataTyKind::At(inner, _) => format_dty_eval(inner, bindings),
+        _ => Ok(format_array_dty(dty)),
     }
 }
 
@@ -328,4 +319,49 @@ pub fn extract_dim_nats(ty: &Ty) -> Vec<Nat> {
         current_dty = &elem_ty.dty;
     }
     dims
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn bindings(source: &str) -> Result<HashMap<String, String>, String> {
+        parse_generic_bindings(TokenStream::from_str(source).expect("test input must tokenize"))
+    }
+
+    #[test]
+    fn reads_several_sizes() {
+        let parsed = bindings("<bs: 16, m: 64, n: 128, k: 64>").unwrap();
+        assert_eq!(parsed.len(), 4);
+        assert_eq!(parsed["bs"], "16");
+        assert_eq!(parsed["k"], "64");
+    }
+
+    #[test]
+    fn an_empty_binding_list_is_allowed() {
+        assert!(bindings("<>").unwrap().is_empty());
+        assert!(bindings("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_runtime_expression_is_rejected_with_the_reason() {
+        let error = bindings("<N: n>").unwrap_err();
+        assert!(
+            error.contains("needs an integer literal") && error.contains("compiled into its code"),
+            "unhelpful error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_missing_colon_is_rejected() {
+        assert!(bindings("<N 16384>").unwrap_err().contains("expected `:`"));
+    }
+
+    #[test]
+    fn an_unterminated_list_is_rejected() {
+        assert!(bindings("<N: 16384")
+            .unwrap_err()
+            .contains("not terminated"));
+    }
 }

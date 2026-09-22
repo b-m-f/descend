@@ -1,4 +1,4 @@
-error: kernel `gpu_generic_add` is launched through a generated function, not through a macro. Name an instantiation with `descend_fn!(gpu_generic_add as <name>, <...sizes>);` and call `<name>(&stream, ..)`.
+error: kernel `gpu_generic_add` is launched through a generated function, not through a macro. Write `descend_fn!(gpu_generic_add, <...sizes>);` once and call `gpu_generic_add(&stream, ..)`; use `descend_fn!(gpu_generic_add as <name>, <...sizes>);` for a second set of sizes.
   --> tests/macro_compiler_safety/kernel_is_not_launched_by_macro.rs:5:5
    |
  5 | /     descend! {

@@ -1,4 +1,4 @@
-use crate::parser::*;
+use crate::ast::*;
 use descend::ast::*;
 
 /// Representation of a GPU kernel parameter.
@@ -10,7 +10,6 @@ pub struct KernelParam {
     /// A parameter that is not a reference: the kernel takes its value, so the
     /// host passes the value itself rather than a device address.
     pub is_by_value: bool,
-    pub size_str: String,
     /// The array dimensions as `Nat`s, for evaluation against the launch's
     /// generic bindings. Empty for a non-array parameter.
     pub dim_nats: Vec<Nat>,
@@ -22,6 +21,9 @@ pub struct KernelParam {
     /// The parameter's own type, for a parameter taken by value: `i32`,
     /// `[i32; 3]`, a struct name. Empty for a reference parameter.
     pub value_ty_str: String,
+    /// The same type as an AST value, so the Rust side can render it with the
+    /// instantiated sizes instead of patching its text.
+    pub value_dty: Option<DataTy>,
     pub shared_ty_str: String,
 }
 
@@ -83,8 +85,7 @@ impl Kernel {
 
                 for param in &f.param_decls {
                     let p_name = &param.ident.name;
-                    let size_str = extract_size_from_ty(param.ty.as_ref().unwrap());
-                    let elem_base_ty = crate::parser::format_base_ty(param.ty.as_ref().unwrap());
+                    let elem_base_ty = crate::ast::format_base_ty(param.ty.as_ref().unwrap());
                     // Read ownership and memory kind from the type itself. A
                     // `Debug`-string search would also match a nested type that
                     // merely mentions them, and both flags decide how the
@@ -101,22 +102,28 @@ impl Kernel {
                         },
                         _ => (false, false, true),
                     };
-                    let cpu_ty_str = crate::parser::format_cpu_ty(param.ty.as_ref().unwrap());
-                    let value_ty_str = crate::parser::format_value_ty(param.ty.as_ref().unwrap());
+                    let cpu_ty_str = crate::ast::format_cpu_ty(param.ty.as_ref().unwrap());
+                    let value_ty_str = crate::ast::format_value_ty(param.ty.as_ref().unwrap());
+                    let value_dty = match &param.ty.as_ref().unwrap().ty {
+                        TyKind::Data(dty) if !matches!(dty.dty, DataTyKind::Ref(_)) => {
+                            Some(dty.as_ref().clone())
+                        }
+                        _ => None,
+                    };
                     let shared_ty_str =
-                        crate::parser::format_shared_array_ty(param.ty.as_ref().unwrap());
+                        crate::ast::format_shared_array_ty(param.ty.as_ref().unwrap());
 
                     params.push(KernelParam {
                         name: p_name.to_string(),
                         is_uniq,
                         is_shared_mem,
                         is_by_value,
-                        size_str,
-                        dim_nats: crate::parser::extract_dim_nats(param.ty.as_ref().unwrap()),
-                        elem_bytes: crate::parser::elem_byte_size(param.ty.as_ref().unwrap()),
+                        dim_nats: crate::ast::extract_dim_nats(param.ty.as_ref().unwrap()),
+                        elem_bytes: crate::ast::elem_byte_size(param.ty.as_ref().unwrap()),
                         elem_base_ty,
                         cpu_ty_str,
                         value_ty_str,
+                        value_dty,
                         shared_ty_str,
                     });
                 }
