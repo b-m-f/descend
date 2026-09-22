@@ -1,0 +1,15 @@
+error: kernel `gpu_generic_add` is launched through a generated function, not through a macro. Name an instantiation with `descend_fn!(gpu_generic_add as <name>, <...sizes>);` and call `<name>(&stream, ..)`.
+  --> tests/macro_compiler_safety/kernel_is_not_launched_by_macro.rs:5:5
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_generic_add<N: nat, r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; N],
+ 8 | |             b_array: &r shrd gpu.global [i32; N]
+...  |
+17 | |     }
+   | |_____^
+...
+27 |       let _ = gpu_generic_add!(&stream, <N: 1024>, &mut a_gpu, &b_gpu);
+   |               -------------------------------------------------------- in this macro invocation
+   |
+   = note: this error originates in the macro `gpu_generic_add` (in Nightly builds, run with -Z macro-backtrace for more info)

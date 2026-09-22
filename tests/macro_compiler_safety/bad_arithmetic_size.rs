@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::{descend, descend_fn};
 
 fn main() {
     descend! {
@@ -16,6 +16,8 @@ fn main() {
         }
     }
 
+    descend_fn!(gpu_bad_arithmetic as arithmetic_200, <N: 10, M: 20>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
     let a_array = [20i32; 100];
@@ -23,6 +25,6 @@ fn main() {
     let b_array = [20i32; 100];
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
-    // Bad Size! 10 * 20 = 200, but our GpuBuffer is 100.
-    let _ = unsafe { descend_launch!(gpu_bad_arithmetic, &stream, <N: 10, M: 20>, &mut a_gpu, &b_gpu) };
+    // Bad Size! The instantiation gives N * M = 200 elements, our buffers 100.
+    let _ = arithmetic_200(&stream, &mut a_gpu, &b_gpu);
 }

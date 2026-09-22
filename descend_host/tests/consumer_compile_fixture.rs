@@ -45,9 +45,9 @@ fn borrowed_kernel_arguments_contract(
         shared_mem_bytes: 0,
     };
     let mut kernel = descend_host::Kernel::new("kernel", config);
-    kernel.push_arg_mut(&mut output)?;
-    kernel.push_arg(&input)?;
-    kernel.push_arg(&input)?;
+    kernel.push_arg_uniq(&mut output)?;
+    kernel.push_arg_shrd(&input)?;
+    kernel.push_arg_shrd(&input)?;
     // SAFETY: never called; this function only checks that the borrows end at launch.
     unsafe { launcher.launch(kernel)? };
     output.to_host(stream)

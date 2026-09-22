@@ -15,7 +15,7 @@ fn value_dropped_before_launch(launcher: &KernelLauncher) {
     let mut kernel = Kernel::new("kernel", config());
     {
         let value = 7i32;
-        kernel.push_scalar(&value).unwrap();
+        kernel.push_arg_val(&value).unwrap();
     }
     let _ = unsafe { launcher.launch(kernel) };
 }
@@ -29,7 +29,7 @@ fn scale() -> f32 {
 // promotion gives it `'static`, so it outlives the kernel and is accepted.)
 fn temporary_pushed(launcher: &KernelLauncher) {
     let mut kernel = Kernel::new("kernel", config());
-    kernel.push_scalar(&scale()).unwrap();
+    kernel.push_arg_val(&scale()).unwrap();
     let _ = unsafe { launcher.launch(kernel) };
 }
 

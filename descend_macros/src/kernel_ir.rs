@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::parser::*;
 use descend::ast::*;
 
@@ -8,9 +7,21 @@ pub struct KernelParam {
     pub name: String,
     pub is_uniq: bool,
     pub is_shared_mem: bool,
+    /// A parameter that is not a reference: the kernel takes its value, so the
+    /// host passes the value itself rather than a device address.
+    pub is_by_value: bool,
     pub size_str: String,
+    /// The array dimensions as `Nat`s, for evaluation against the launch's
+    /// generic bindings. Empty for a non-array parameter.
+    pub dim_nats: Vec<Nat>,
+    /// The element type's byte size as the Descend code generator defines it,
+    /// or `None` when it defines none.
+    pub elem_bytes: Option<u32>,
     pub elem_base_ty: Option<String>,
     pub cpu_ty_str: String,
+    /// The parameter's own type, for a parameter taken by value: `i32`,
+    /// `[i32; 3]`, a struct name. Empty for a reference parameter.
+    pub value_ty_str: String,
     pub shared_ty_str: String,
 }
 
@@ -18,13 +29,21 @@ pub struct KernelParam {
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub function_name: String,
+    /// The names of the kernel's `nat` generic parameters. A kernel with none
+    /// can be compiled where it is defined; a kernel with some cannot, because
+    /// its sizes only become literals at a launch site.
+    pub nat_generics: Vec<String>,
     pub grid_dim: Option<descend::ast::Dim>,
     pub block_dim: Option<descend::ast::Dim>,
     pub grid_dim_str: String,
-    pub generic_params_str: String,
-    pub generic_size_bindings: Vec<(String, String)>,
     pub params: Vec<KernelParam>,
-    pub call_args: Vec<String>,
+}
+
+/// Whether a Descend function is a kernel that can be launched, i.e. one that
+/// executes over a GPU grid. A function executing on a thread or on the host is
+/// callable from Descend code but is not an entry point.
+pub fn is_launchable(f: &FunDef) -> bool {
+    matches!(f.exec.exec.base, BaseExec::GpuGrid(_, _))
 }
 
 impl Kernel {
@@ -46,8 +65,9 @@ impl Kernel {
                     grid_dim = Some(g.clone());
                     block_dim = Some(b.clone());
                 }
-                
-                let grid_dim_str = parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
+
+                let grid_dim_str =
+                    parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
 
                 let mut generic_args = Vec::new();
                 for param in &f.generic_params {
@@ -59,22 +79,30 @@ impl Kernel {
                         generic_args.push(ident.name.to_string());
                     }
                 }
-                let generic_params_str = if !generic_args.is_empty() {
-                    format!("::<{}>", generic_args.join(", "))
-                } else {
-                    String::new()
-                };
-
                 let mut params = Vec::new();
 
                 for param in &f.param_decls {
                     let p_name = &param.ident.name;
                     let size_str = extract_size_from_ty(param.ty.as_ref().unwrap());
                     let elem_base_ty = crate::parser::format_base_ty(param.ty.as_ref().unwrap());
-                    let ty_debug = format!("{:?}", param.ty);
-                    let is_uniq = ty_debug.contains("Uniq");
-                    let is_shared_mem = ty_debug.contains("GpuShared");
+                    // Read ownership and memory kind from the type itself. A
+                    // `Debug`-string search would also match a nested type that
+                    // merely mentions them, and both flags decide how the
+                    // parameter is passed to the device.
+                    let (is_uniq, is_shared_mem, is_by_value) = match &param.ty.as_ref().unwrap().ty
+                    {
+                        TyKind::Data(dty) => match &dty.dty {
+                            DataTyKind::Ref(ref_dty) => (
+                                matches!(ref_dty.own, Ownership::Uniq),
+                                matches!(ref_dty.mem, Memory::GpuShared),
+                                false,
+                            ),
+                            _ => (false, false, true),
+                        },
+                        _ => (false, false, true),
+                    };
                     let cpu_ty_str = crate::parser::format_cpu_ty(param.ty.as_ref().unwrap());
+                    let value_ty_str = crate::parser::format_value_ty(param.ty.as_ref().unwrap());
                     let shared_ty_str =
                         crate::parser::format_shared_array_ty(param.ty.as_ref().unwrap());
 
@@ -82,31 +110,24 @@ impl Kernel {
                         name: p_name.to_string(),
                         is_uniq,
                         is_shared_mem,
+                        is_by_value,
                         size_str,
+                        dim_nats: crate::parser::extract_dim_nats(param.ty.as_ref().unwrap()),
+                        elem_bytes: crate::parser::elem_byte_size(param.ty.as_ref().unwrap()),
                         elem_base_ty,
                         cpu_ty_str,
+                        value_ty_str,
                         shared_ty_str,
                     });
                 }
 
-                let mut generic_size_bindings = Vec::new();
-                for generic_arg in &generic_args {
-                    for param in &params {
-                        if param.size_str == *generic_arg {
-                            generic_size_bindings.push((generic_arg.clone(), param.name.clone()));
-                        }
-                    }
-                }
-
                 return Ok(Kernel {
                     function_name,
+                    nat_generics: generic_args,
                     grid_dim,
                     block_dim,
                     grid_dim_str,
-                    generic_params_str,
                     params,
-                    generic_size_bindings,
-                    call_args: Vec::new(),
                 });
             }
         }
@@ -115,14 +136,5 @@ impl Kernel {
             "Kernel definition '{}' not found in macro body",
             target_name
         ))
-    }
-
-    /// Calculates total grid size statically if possible, otherwise defaults to 16384.
-    ///
-    /// What it does: Computes grid limits mathematically.
-    /// Why it is needed: Determines exact sizes for host orchestrator data movement buffering.
-    pub fn grid_total_size(&self) -> String {
-        // Return a dummy value as dynamic sizes are now explicitly evaluated inside the wrapper generator.
-        "16384".to_string()
     }
 }

@@ -9,12 +9,13 @@ mod host_api;
 mod kernel_ir;
 mod main_workaround;
 mod parser;
+mod shared_mem;
 
 use compiler::compile_to_ptx;
-use host_api::generate_host_wrapper;
 use kernel_ir::Kernel;
 use main_workaround::synthesize_main_program;
 use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
+use std::str::FromStr;
 
 /// Recursively traverses a `TokenStream` to replace a specific placeholder identifier with the user's pristine code.
 ///
@@ -50,217 +51,245 @@ fn substitute_source_placeholder(ts: TokenStream, source_ts: &TokenStream) -> To
 
 /// The primary entry point for embedding Descend code in Rust.
 ///
-/// What it does: Extracts all kernel function definitions and generates corresponding `macro_rules!` wrappers
-/// to allow them to be executed seamlessly via `descend_launch!`.
-/// Why it is needed: Users invoke `descend! { ... }` with arbitrary Descend code (structs, functions, kernels).
-/// We must bind macro entries for every single function present in the supplied code block.
+/// What it does: compiles every launchable kernel whose sizes are already fixed
+/// into a callable Rust function of the same name, and leaves a kernel with
+/// `nat` generics to be instantiated by [`descend_fn`], which is the only way to
+/// name its sizes. Descend structs become `#[repr(C)]` Rust structs.
+///
+/// Why it is needed: users invoke `descend! { ... }` with arbitrary Descend code
+/// (structs, functions, kernels), and every kernel needs to be callable from
+/// Rust as a function. Whether that function exists immediately or after an
+/// instantiation is decided by the kernel's own signature, not by the user.
 #[proc_macro]
 pub fn descend(input: TokenStream) -> TokenStream {
+    match expand_descend(input) {
+        Ok(tokens) => tokens,
+        Err(message) => crate::helper::compile_error_item(&message),
+    }
+}
+
+fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
     let source_ts = input.clone();
 
     // We format the raw tokens tightly (removing syntax-invalid spaces)
     // to strictly satisfy the Descend PEG parser requirements.
     let source_str = crate::format::to_descend_string(source_ts.clone());
     debug!("MACRO INPUT: {}", source_str);
-    let source = descend::parser::SourceCode::new(source_str.clone());
-    let compilation_unit = match crate::parser::parse_descend_source(&source) {
-        Ok(c) => c,
-        Err(err) => {
-            return std::format!("compile_error!({:?});", err).parse().unwrap();
-        }
-    };
+    let source = descend::parser::SourceCode::new(source_str);
+    let compilation_unit = crate::parser::parse_descend_source(&source)
+        .map_err(|err| format!("failed to parse the Descend source: {err}"))?;
 
     let mut output = TokenStream::new();
 
     // Support arbitrary numbers of kernels within a single block
     for item in &compilation_unit.items {
-        if let descend::ast::Item::FunDef(f) = item {
-            let kernel_name = f.ident.name.to_string();
+        match item {
+            descend::ast::Item::FunDef(f) if crate::kernel_ir::is_launchable(f) => {
+                let kernel_name = f.ident.name.to_string();
+                let has_nat_generics = f
+                    .generic_params
+                    .iter()
+                    .any(|param| matches!(param.kind, descend::ast::Kind::Nat));
 
-            let template = format!(
-                "macro_rules! {0} {{ ($($args:tt)*) => {{ ::descend_macros::_descend_launch_internal!( _SOURCE_PLACEHOLDER_, {0}, $($args)* ) }} }}", 
-                kernel_name
-            );
+                // Every kernel gets the carrier, so that any of them can be
+                // instantiated under another name later.
+                output.extend(carrier_macro_for(&kernel_name, &source_ts));
 
-            let template_ts = template.parse::<TokenStream>().unwrap();
-            let rule_ts = substitute_source_placeholder(template_ts, &source_ts);
-
-            output.extend(rule_ts);
-        } else if let descend::ast::Item::StructDecl(s) = item {
-            let struct_code = crate::parser::format_rust_struct(s);
-            output.extend(struct_code.parse::<TokenStream>().unwrap());
+                // A kernel whose sizes are already fixed is compiled here and
+                // becomes a function straight away. A generic one waits for an
+                // instantiation to name its sizes.
+                if !has_nat_generics {
+                    output.extend(compile_kernel_fn(
+                        &kernel_name,
+                        &source_ts,
+                        &compilation_unit,
+                    )?);
+                }
+            }
+            descend::ast::Item::StructDecl(s) => {
+                let struct_code = crate::parser::format_rust_struct(s);
+                output.extend(
+                    struct_code
+                        .parse::<TokenStream>()
+                        .map_err(|err| format!("generated struct is malformed: {err}"))?,
+                );
+            }
+            // A function that does not execute over a grid is callable from
+            // Descend code but is not a launchable entry point.
+            _ => {}
         }
     }
 
-    output
+    Ok(output)
 }
 
-/// The invocation layer for triggering a GPU kernel.
+/// Compiles one kernel and emits the function that launches it.
+fn compile_kernel_fn(
+    kernel_name: &str,
+    source_ts: &TokenStream,
+    compilation_unit: &descend::ast::CompilUnit,
+) -> Result<TokenStream, String> {
+    let kernel = Kernel::extract(compilation_unit, kernel_name)?;
+    crate::host_api::check_shared_params(&kernel)?;
+
+    let full_descend = synthesize_main_program(
+        source_ts.clone(),
+        &kernel,
+        &std::collections::HashMap::new(),
+    );
+    let compiled = compile_to_ptx(&full_descend, &kernel.function_name)?;
+
+    crate::host_api::generate_launch_fn(
+        &kernel,
+        &compiled,
+        &std::collections::HashMap::new(),
+        kernel_name,
+    )
+}
+
+/// Emits the `macro_rules!` that carries a kernel's source to a later
+/// instantiation site.
 ///
-/// What it does: Converts a call like `descend_launch!(my_kernel, ...)` into `my_kernel!(...)`.
-/// Why it is needed: Resolves to the generated `macro_rules!` wrapper that ultimately triggers NVCC compilation.
+/// A kernel with `nat` generics cannot be compiled where it is written: its
+/// sizes are substituted into the Descend source as literals before code
+/// generation, so they have to be named at a compile-time site. This macro is
+/// how the source reaches that site. It is not a way to launch the kernel —
+/// launching is what the generated function is for — so every invocation other
+/// than an instantiation is rejected with a message saying so.
+fn carrier_macro_for(kernel_name: &str, source_ts: &TokenStream) -> TokenStream {
+    let template = format!(
+        "macro_rules! {0} {{ \
+           (@fn $name:ident, $($args:tt)*) => {{ \
+             ::descend_macros::_descend_fn_internal!{{ _SOURCE_PLACEHOLDER_, {0}, $name, $($args)* }} \
+           }}; \
+           ($($args:tt)*) => {{ \
+             compile_error!(concat!( \
+               \"kernel `{0}` is launched through a generated function, not through a macro. \
+                 Name an instantiation with `descend_fn!({0} as <name>, <...sizes>);` and call \
+                 `<name>(&stream, ..)`.\" \
+             )) \
+           }} \
+         }}",
+        kernel_name
+    );
+    let template_ts = template
+        .parse::<TokenStream>()
+        .expect("carrier macro template must parse");
+    substitute_source_placeholder(template_ts, source_ts)
+}
+
+/// Instantiates a generic kernel as a named Rust function.
+///
+/// What it does: rewrites `descend_fn!(gpu_matmul as tile64, <bs: 16, m: 64>)`
+/// into an invocation of the `macro_rules!` that `descend!` generated for the
+/// kernel, which carries the kernel's source to this site.
+/// Why it is needed: a kernel with `nat` generics cannot be compiled where it is
+/// defined, because its sizes are baked into the generated CUDA and only become
+/// literals here. Naming an instantiation is what turns such a kernel into an
+/// ordinary function item, which — unlike a macro — can be exported from its
+/// module and called from anywhere.
 #[proc_macro]
-pub fn descend_launch(input: TokenStream) -> TokenStream {
+pub fn descend_fn(input: TokenStream) -> TokenStream {
+    match expand_descend_fn(input) {
+        Ok(tokens) => tokens,
+        Err(message) => crate::helper::compile_error_item(&message),
+    }
+}
+
+fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, String> {
     let mut iter = input.into_iter();
 
-    let kernel_ident = match iter.next() {
-        Some(TokenTree::Ident(id)) => id,
-        _ => {
-            return "compile_error!(\"Expected kernel name identifier in descend_launch!\");"
-                .parse()
-                .unwrap()
-        }
+    let Some(TokenTree::Ident(kernel)) = iter.next() else {
+        return Err(
+            "expected a kernel name, as in `descend_fn!(gpu_matmul as tile64, <m: 64>)`"
+                .to_string(),
+        );
     };
-
+    match iter.next() {
+        Some(TokenTree::Ident(keyword)) if keyword.to_string() == "as" => {}
+        _ => return Err(format!("expected `as <name>` after the kernel `{kernel}`")),
+    }
+    let Some(TokenTree::Ident(item_name)) = iter.next() else {
+        return Err(format!(
+            "expected a name for the instantiation of `{kernel}`"
+        ));
+    };
     match iter.next() {
         Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
-        _ => {
-            return "compile_error!(\"Expected comma after kernel name in descend_launch!\");"
-                .parse()
-                .unwrap()
+        _ => return Err(format!("expected `,` after the name `{item_name}`")),
+    }
+
+    let bindings: TokenStream = iter.collect();
+
+    let mut inner = TokenStream::from_str(&format!("@fn {item_name},"))
+        .map_err(|error| format!("malformed instantiation: {error}"))?;
+    inner.extend(bindings);
+
+    let mut output = format!("{kernel}!").parse::<TokenStream>().unwrap();
+    output.extend(std::iter::once(TokenTree::Group(Group::new(
+        Delimiter::Brace,
+        inner,
+    ))));
+    Ok(output)
+}
+
+/// Internal counterpart of [`descend_fn`], reached through the kernel's own
+/// generated macro so that it has the kernel's source.
+#[proc_macro]
+pub fn _descend_fn_internal(input: TokenStream) -> TokenStream {
+    match fn_internal(input) {
+        Ok(tokens) => tokens,
+        Err(message) => crate::helper::compile_error_item(&message),
+    }
+}
+
+fn fn_internal(input: TokenStream) -> Result<TokenStream, String> {
+    let mut iter = input.into_iter();
+
+    let Some(TokenTree::Group(source_group)) = iter.next() else {
+        return Err("expected the Descend source block as the first argument".to_string());
+    };
+    let source_ts = source_group.stream();
+
+    let _comma = iter.next();
+    let kernel_name = iter
+        .next()
+        .ok_or_else(|| "expected the kernel name".to_string())?
+        .to_string();
+    let _comma = iter.next();
+    let item_name = iter
+        .next()
+        .ok_or_else(|| "expected the name of the instantiation".to_string())?
+        .to_string();
+    let _comma = iter.next();
+
+    let bindings = crate::parser::parse_generic_bindings(iter.collect())?;
+
+    let source_str = crate::format::to_descend_string(source_ts.clone());
+    let source = descend::parser::SourceCode::new(source_str);
+    let compilation_unit = crate::parser::parse_descend_source(&source)
+        .map_err(|err| format!("failed to parse the Descend source: {err}"))?;
+
+    let kernel = Kernel::extract(&compilation_unit, &kernel_name)?;
+    crate::host_api::check_shared_params(&kernel)?;
+
+    for generic in &kernel.nat_generics {
+        if !bindings.contains_key(generic) {
+            return Err(format!(
+                "instantiating kernel `{kernel_name}` needs a value for its size `{generic}`"
+            ));
+        }
+    }
+    for bound in bindings.keys() {
+        if !kernel.nat_generics.contains(bound) {
+            return Err(format!(
+                "kernel `{kernel_name}` has no size `{bound}` to instantiate"
+            ));
         }
     }
 
-    let rest: TokenStream = iter.collect();
+    let full_descend = synthesize_main_program(source_ts, &kernel, &bindings);
+    let compiled = compile_to_ptx(&full_descend, &kernel.function_name)?;
 
-    let mut output = format!("{}!", kernel_ident).parse::<TokenStream>().unwrap();
-    output.extend(std::iter::once(TokenTree::Group(Group::new(
-        Delimiter::Parenthesis,
-        rest,
-    ))));
-
-    output
-}
-
-/// Internal pipeline connecting the caller's arguments to the JIT NVCC compiler and rust wrapper.
-///
-/// What it does: Orchestrates the sequential 5 phases of compilation requested:
-/// Parse, Evaluate to Static Values, Type Check, Compile, Extract & Embed.
-/// Why it is needed: This is the internal macro dispatched by the individual `macro_rules!` wrappers
-/// that has access to both the target function's name and the entire Descend block token stream.
-#[proc_macro]
-pub fn _descend_launch_internal(input: TokenStream) -> TokenStream {
-    let mut iter = input.into_iter();
-
-    let source_tt = iter.next().expect("Expected source group");
-    let mut source_ts = match source_tt {
-        TokenTree::Group(g) => g.stream(),
-        _ => panic!("Expected block for source"),
-    };
-
-    let _comma_tt = iter.next().expect("Expected comma");
-    let target_name_tt = iter.next().expect("Expected kernel name string");
-    let target_name = target_name_tt.to_string();
-    let _comma_tt = iter.next().expect("Expected comma");
-
-    let rest: TokenStream = iter.collect();
-
-    // Step 1: Parse
-    let (kernel, stream_expr, generic_to_size, array_args) =
-        step_1_parse_and_extract_ir(rest, &mut source_ts, &target_name);
-
-    // Step 2: Evaluate to Static Values
-    let full_descend = step_2_evaluate_to_static_values(source_ts, &kernel, &generic_to_size);
-
-    // Steps 3 & 4: Type Check and Compile
-    let (ptx_content, mangled_name) =
-        step_3_and_4_type_check_and_compile(&full_descend, &kernel.function_name);
-
-    // Step 5: Extract and Embed
-    step_5_extract_and_embed(
-        &kernel,
-        &ptx_content,
-        stream_expr,
-        array_args,
-        &mangled_name,
-        &generic_to_size,
-    )
-}
-
-/// Step 1: Parse and Extract Kernel IR
-///
-/// What it does: Parses host-provided generic arguments and transforms the raw token stream into a
-/// strongly-typed Kernel IR mapped to exactly the function being launched.
-/// Why it is needed: It prepares the structured definitions and types necessary to bridge the Descend
-/// compilation environment with the runtime host parameters.
-fn step_1_parse_and_extract_ir(
-    rest_args: TokenStream,
-    source_ts: &mut TokenStream,
-    target_name: &str,
-) -> (
-    Kernel,
-    TokenStream,
-    std::collections::HashMap<String, String>,
-    Vec<TokenStream>,
-) {
-    let launch_config = crate::parser::LaunchConfig::parse(rest_args)
-        .unwrap_or_else(|err| panic!("Launch config error: {:?}", err));
-
-    let call_args = crate::parser::extract_call_args_tokens(source_ts);
-    let source_str = crate::format::to_descend_string(source_ts.clone());
-    debug!("MACRO INPUT: {}", source_str);
-
-    let source_code = descend::parser::SourceCode::new(source_str);
-    let compilation_unit =
-        crate::parser::parse_descend_source(&source_code).expect("Failed to parse descend source");
-
-    let mut kernel =
-        Kernel::extract(&compilation_unit, target_name).expect("Kernel extraction failed");
-    kernel.call_args = call_args;
-
-    (
-        kernel,
-        launch_config.stream_expr,
-        launch_config.generic_to_size,
-        launch_config.array_args,
-    )
-}
-
-/// Step 2: Evaluate to Static Values
-///
-/// What it does: Replaces procedural macro parameter bounds in the raw stream with user-supplied integers.
-/// Why it is needed: Required because Descend's GPU target constraints rely on static allocations and
-/// fully evaluated lengths for both compile-time correctness and CUDA runtime boundaries.
-fn step_2_evaluate_to_static_values(
-    source_ts: TokenStream,
-    kernel: &Kernel,
-    generic_to_size: &std::collections::HashMap<String, String>,
-) -> String {
-    synthesize_main_program(source_ts, kernel, generic_to_size)
-}
-
-/// Step 3 & 4: Type Check and Compile
-///
-/// What it does: Runs the embedded Descend code natively through its AST type checker, then outsources code generation to NVCC.
-/// Why it is needed: Ensures borrow/lifetime safety constraints hold for GPU code prior to letting the standard C++ compilation step
-/// build the raw PTX byte array.
-fn step_3_and_4_type_check_and_compile(
-    full_descend: &str,
-    function_name: &str,
-) -> (String, String) {
-    compile_to_ptx(full_descend, function_name)
-        .unwrap_or_else(|e| panic!("Compile to PTX error: {:?}", e))
-}
-
-/// Step 5: Extract and Embed
-///
-/// What it does: Generates the Rust bindings necessary to allocate host pointers into CUDA slices.
-/// Why it is needed: It dynamically compiles the bytecode transparently and creates an interface function enabling
-/// standard rust code to cleanly call the complex GPU kernels under the hood.
-fn step_5_extract_and_embed(
-    kernel: &Kernel,
-    ptx_content: &str,
-    stream_expr: TokenStream,
-    array_args: Vec<TokenStream>,
-    mangled_name: &str,
-    generic_to_size: &std::collections::HashMap<String, String>,
-) -> TokenStream {
-    generate_host_wrapper(
-        kernel,
-        ptx_content,
-        stream_expr,
-        array_args,
-        mangled_name,
-        generic_to_size,
-    )
+    crate::host_api::generate_launch_fn(&kernel, &compiled, &bindings, &item_name)
 }

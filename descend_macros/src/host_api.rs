@@ -1,155 +1,262 @@
+use crate::compiler::CompiledKernel;
 use crate::kernel_ir::Kernel;
-use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
+use proc_macro::TokenStream;
 use std::collections::HashMap;
 use std::str::FromStr;
 
-pub fn generate_host_wrapper(
+/// Generates a callable Rust function for a kernel whose sizes are all known
+/// where it is defined, plus a constant holding the launch configuration the
+/// kernel's own declaration determines.
+///
+/// The function is safe. `KernelLauncher::launch` is unsafe because a caller
+/// pushing arguments by hand cannot be held to the kernel's signature; here the
+/// PTX, the entry symbol, the parameter types, their order and the launch
+/// configuration are all generated from one Descend definition, so the
+/// obligations that method documents are discharged by construction. What
+/// remains delegated is a user's own `unsafe impl DescendType` for a struct
+/// element type.
+pub fn generate_launch_fn(
     kernel: &Kernel,
-    ptx_content: &str,
-    stream_expr: TokenStream,
-    args: Vec<TokenStream>,
-    mangled_name: &str,
-    generic_to_size: &HashMap<String, String>,
-) -> TokenStream {
+    compiled: &CompiledKernel,
+    bindings: &HashMap<String, String>,
+    item_name: &str,
+) -> Result<TokenStream, String> {
     let function = &kernel.function_name;
 
-    if let Some(param) = kernel.params.iter().find(|p| p.is_shared_mem) {
-        return compile_error(&format!(
-            "kernel `{function}`: parameter `{}` uses gpu.shared memory, which is not supported \
-             until a shared-memory layout contract exists",
-            param.name
+    check_shared_mem(kernel, compiled.shared_mem_bytes, bindings)?;
+
+    let (Some(grid), Some(block)) = (&kernel.grid_dim, &kernel.block_dim) else {
+        return Err(format!(
+            "kernel `{function}` must declare explicit grid and block dimensions"
         ));
-    }
+    };
+    let grid_dim = eval_dim(grid, bindings)?;
+    let block_dim = eval_dim(block, bindings)?;
 
-    if args.len() != kernel.params.len() {
-        return compile_error(&format!(
-            "kernel `{function}` expects {} buffer argument(s), found {}",
-            kernel.params.len(),
-            args.len()
-        ));
-    }
+    let mut parameters = vec!["stream: &::descend_host::Stream".to_string()];
+    let mut pushes = Vec::new();
+    for param in kernel.params.iter().filter(|p| !p.is_shared_mem) {
+        let binding = rust_parameter_name(&param.name, function)?;
 
-    let mut out = TokenStream::new();
-    let mut block = TokenStream::new();
+        if param.is_by_value {
+            let mut value_ty = param.value_ty_str.clone();
+            for (generic, value) in bindings {
+                value_ty = substitute_word(&value_ty, generic, value);
+            }
+            parameters.push(format!("{binding}: {value_ty}"));
+            pushes.push(format!("kernel.push_arg_val(&{binding})?;"));
+            continue;
+        }
 
-    let mut param_pointers = Vec::new();
-
-    for (i, (param, arg_expr)) in kernel.params.iter().zip(&args).enumerate() {
         let Some(elem_ty) = &param.elem_base_ty else {
-            return compile_error(&format!(
+            return Err(format!(
                 "kernel `{function}`: parameter `{}` has an element type without a supported \
                  host representation",
                 param.name
             ));
         };
-
-        let mut expected_size_str = param.size_str.clone();
-        for (gen, size) in generic_to_size {
-            expected_size_str = substitute_word(&expected_size_str, gen, size);
+        if param.cpu_ty_str == "UNKNOWN_TY" {
+            return Err(format!(
+                "kernel `{function}`: parameter `{}` is taken by value, which the macro cannot \
+                 pass yet; only reference parameters in gpu.global or gpu.shared memory are \
+                 supported",
+                param.name
+            ));
         }
 
-        let (reference, push) = if param.is_uniq {
-            ("&mut", "push_arg_mut")
-        } else {
-            ("&", "push_arg")
-        };
-        let decl = format!(
-            "let arg_{i}: {reference} ::descend_host::GpuBuffer<[{elem_ty}; {{ {expected_size_str} }}]> ="
-        );
-        block.extend(TokenStream::from_str(&decl).unwrap());
-        block.extend(arg_expr.clone());
-        block.extend(TokenStream::from_str(";").unwrap());
+        let mut size_str = param.size_str.clone();
+        for (generic, value) in bindings {
+            size_str = substitute_word(&size_str, generic, value);
+        }
 
-        param_pointers.push(format!("kernel.{push}(arg_{i})?;"));
+        let binding = rust_parameter_name(&param.name, function)?;
+        let (reference, push) = if param.is_uniq {
+            ("&mut", "push_arg_uniq")
+        } else {
+            ("&", "push_arg_shrd")
+        };
+        parameters.push(format!(
+            "{binding}: {reference} ::descend_host::GpuBuffer<[{elem_ty}; {{ {size_str} }}]>"
+        ));
+        pushes.push(format!("kernel.{push}({binding})?;"));
     }
 
-    let ptx_byte_literal = format!("b\"{}\"", escape_bytes(ptx_content.as_bytes()));
+    let config_name = format!("{}_CONFIG", item_name.to_uppercase());
+    let ptx_byte_literal = format!("b\"{}\"", escape_bytes(compiled.ptx.as_bytes()));
 
-    let (Some(grid), Some(block_ast)) = (&kernel.grid_dim, &kernel.block_dim) else {
-        return compile_error(&format!(
-            "kernel `{function}` must declare explicit grid and block dimensions"
-        ));
-    };
-    let grid_dim = match eval_dim(grid, generic_to_size) {
-        Ok(dim) => dim,
-        Err(error) => return compile_error(&error),
-    };
-    let block_dim = match eval_dim(block_ast, generic_to_size) {
-        Ok(dim) => dim,
-        Err(error) => return compile_error(&error),
-    };
-
-    let shared_mem_bytes = "0";
-
-    let ptrs = param_pointers.join("\n        ");
-
-    let core_str = format!(
+    let code = format!(
         "
-        (|| -> Result<(), ::descend_host::error::HostError> {{
-            let fn_name_str = unsafe {{
-                std::ffi::CStr::from_bytes_with_nul_unchecked(b\"{}\\0\").to_str().unwrap()
+        /// The launch configuration derived from this kernel's declaration.
+        pub const {config_name}: ::descend_host::KernelLaunchConfig =
+            ::descend_host::KernelLaunchConfig {{
+                grid_dim: ({}u32, {}u32, {}u32),
+                block_dim: ({}u32, {}u32, {}u32),
+                shared_mem_bytes: {}u32,
             }};
-        let ptx_str = std::str::from_utf8({}).unwrap();
-        
-        let config = ::descend_host::KernelLaunchConfig {{
-            grid_dim: ({}, {}, {}),
-            block_dim: ({}, {}, {}),
-            shared_mem_bytes: {},
-        }};
-        
-        let mut kernel = ::descend_host::Kernel::new(fn_name_str, config);
-        {}
-        
-        let launcher = ::descend_host::KernelLauncher::new(__STREAM_EXPR__, ptx_str)?;
-        launcher.launch(kernel)
-    }})()
-    ",
-        mangled_name,
-        ptx_byte_literal,
+
+        #[allow(dead_code)]
+        pub fn {item_name}({}) -> ::core::result::Result<(), ::descend_host::error::HostError> {{
+            const PTX_BYTES: &[u8] = {};
+            let mut kernel = ::descend_host::Kernel::new({:?}, {config_name});
+            {}
+            let launcher = ::descend_host::KernelLauncher::new(
+                stream,
+                ::core::str::from_utf8(PTX_BYTES).unwrap(),
+            )?;
+            // SAFETY: the PTX is this kernel's own compilation, the entry name was
+            // read back out of it, the arguments are pushed in the kernel's
+            // parameter order with the ownership its Descend types declare, and the
+            // launch configuration comes from the kernel's own grid declaration and
+            // shared-memory parameters.
+            unsafe {{ launcher.launch(kernel) }}
+        }}
+        ",
         grid_dim.0,
         grid_dim.1,
         grid_dim.2,
         block_dim.0,
         block_dim.1,
         block_dim.2,
-        shared_mem_bytes,
-        ptrs
+        compiled.shared_mem_bytes,
+        parameters.join(",\n            "),
+        ptx_byte_literal,
+        compiled.mangled_name,
+        pushes.join("\n            "),
     );
 
-    let parsed = TokenStream::from_str(&core_str).unwrap();
-    let replaced = replace_placeholder(parsed, "__STREAM_EXPR__", &stream_expr);
-    block.extend(replaced);
-
-    out.extend(std::iter::once(TokenTree::Group(Group::new(
-        Delimiter::Brace,
-        block,
-    ))));
-    out
+    TokenStream::from_str(&code)
+        .map_err(|error| format!("kernel `{function}`: generated code is malformed: {error}"))
 }
 
-fn replace_placeholder(
-    ts: TokenStream,
-    placeholder: &str,
-    replacement: &TokenStream,
-) -> TokenStream {
-    let mut out = TokenStream::new();
-    for tt in ts {
-        match tt {
-            TokenTree::Group(g) => {
-                let mut new_g = Group::new(
-                    g.delimiter(),
-                    replace_placeholder(g.stream(), placeholder, replacement),
-                );
-                new_g.set_span(g.span());
-                out.extend(std::iter::once(TokenTree::Group(new_g)));
+/// The Rust binding name for a Descend parameter.
+///
+/// Descend and Rust do not reserve the same words, so a parameter may need the
+/// raw form. The few identifiers Rust cannot make raw are reported rather than
+/// silently renamed, because the generated function's parameter names are part
+/// of what a caller reads.
+fn rust_parameter_name(name: &str, function: &str) -> Result<String, String> {
+    const UNRAWABLE: [&str; 5] = ["self", "Self", "crate", "super", "_"];
+    const KEYWORDS: [&str; 49] = [
+        "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
+        "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
+        "pub", "ref", "return", "static", "struct", "trait", "true", "type", "union", "unsafe",
+        "use", "where", "while", "abstract", "become", "box", "do", "final", "macro", "override",
+        "priv", "try", "typeof", "unsized", "virtual", "yield", "gen",
+    ];
+
+    if UNRAWABLE.contains(&name) {
+        return Err(format!(
+            "kernel `{function}`: parameter `{name}` cannot name a Rust function parameter"
+        ));
+    }
+    if KEYWORDS.contains(&name) {
+        return Ok(format!("r#{name}"));
+    }
+    Ok(name.to_string())
+}
+
+/// Checks what can be known about a kernel's shared-memory parameters from its
+/// signature alone.
+///
+/// This runs before the kernel is compiled, because both failures are otherwise
+/// reported by the Descend compiler in a form the user cannot act on: a
+/// mis-ordered shared parameter as a type error in synthesized source they never
+/// wrote, and an element type without a defined byte size as a panic inside the
+/// code generator.
+pub fn check_shared_params(kernel: &Kernel) -> Result<(), String> {
+    let function = &kernel.function_name;
+    let mut seen_shared = false;
+
+    for param in &kernel.params {
+        if !param.is_shared_mem {
+            if seen_shared {
+                return Err(format!(
+                    "kernel `{function}`: parameter `{}` follows a gpu.shared parameter. \
+                     Shared-memory parameters must come last, because the compiler removes \
+                     them from the end of the kernel signature",
+                    param.name
+                ));
             }
-            TokenTree::Ident(ref id) if id.to_string() == placeholder => {
-                out.extend(replacement.clone());
-            }
-            _ => out.extend(std::iter::once(tt)),
+            continue;
+        }
+        seen_shared = true;
+
+        if param.elem_bytes.is_none() {
+            return Err(format!(
+                "kernel `{function}`: shared parameter `{}` has an element type whose byte \
+                 size the Descend compiler does not define, so its shared-memory allocation \
+                 cannot be sized",
+                param.name
+            ));
         }
     }
-    out
+
+    Ok(())
+}
+
+/// Checks the dynamic shared-memory request the generated launch will make.
+///
+/// The number itself comes from the Descend code generator, which also emitted
+/// the device code that slices the buffer. Recomputing it from the parameter
+/// types is a second opinion on the same contract: element size times element
+/// count, summed over the shared parameters, with no padding term because the
+/// generator orders the arrays by descending element size precisely so that none
+/// is needed. A disagreement would mean the launch allocates less than the
+/// kernel reads, which no runtime test can be relied on to expose.
+fn check_shared_mem(
+    kernel: &Kernel,
+    emitted: u64,
+    bindings: &HashMap<String, String>,
+) -> Result<(), String> {
+    let function = &kernel.function_name;
+    let mut expected: u64 = 0;
+
+    for param in &kernel.params {
+        if !param.is_shared_mem {
+            continue;
+        }
+
+        let elem_bytes = param.elem_bytes.ok_or_else(|| {
+            format!(
+                "kernel `{function}`: shared parameter `{}` has an element type whose byte \
+                 size the Descend compiler does not define, so its shared-memory allocation \
+                 cannot be sized",
+                param.name
+            )
+        })?;
+
+        let mut elements: u64 = 1;
+        for nat in &param.dim_nats {
+            let dim = eval_nat(nat, bindings)?;
+            elements = elements.checked_mul(u64::from(dim)).ok_or_else(|| {
+                format!(
+                    "kernel `{function}`: shared parameter `{}` has more elements than can be \
+                     counted",
+                    param.name
+                )
+            })?;
+        }
+        expected += u64::from(elem_bytes) * elements;
+    }
+
+    if expected != emitted {
+        return Err(format!(
+            "internal error: shared-memory byte count disagreement for kernel `{function}`: \
+             the Descend compiler's generated launch requests {emitted} bytes, the parameter \
+             types give {expected}. Refusing to launch"
+        ));
+    }
+
+    // Above 48 KiB a kernel must opt in through cuFuncSetAttribute, which the
+    // host API does not do; the launch would fail in the driver instead.
+    if emitted > 49152 {
+        return Err(format!(
+            "kernel `{function}` requests {emitted} bytes of dynamic shared memory, above the \
+             48 KiB a launch may request without opting in through cuFuncSetAttribute"
+        ));
+    }
+
+    Ok(())
 }
 
 fn escape_bytes(bytes: &[u8]) -> String {
@@ -203,11 +310,6 @@ pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
     result
 }
 use descend::ast::Nat;
-
-fn compile_error(message: &str) -> TokenStream {
-    let escaped = format!("compile_error!({message:?})");
-    TokenStream::from_str(&escaped).expect("compile_error token generation must succeed")
-}
 
 pub fn eval_nat(nat: &Nat, bindings: &HashMap<String, String>) -> Result<u32, String> {
     match nat {

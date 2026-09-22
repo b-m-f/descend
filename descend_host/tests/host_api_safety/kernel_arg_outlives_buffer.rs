@@ -8,7 +8,7 @@ fn buffer_dropped_before_launch(stream: &Stream, launcher: &KernelLauncher) {
     };
     let mut kernel = Kernel::new("kernel", config);
     let buffer = GpuBuffer::from_host(&[0i32; 4], stream).unwrap();
-    kernel.push_arg(&buffer).unwrap();
+    kernel.push_arg_shrd(&buffer).unwrap();
     drop(buffer);
     let _ = unsafe { launcher.launch(kernel) };
 }

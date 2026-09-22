@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::{descend, descend_fn};
 
 // Note: This file is run via trybuild to ensure it fails to compile.
 fn main() {
@@ -17,6 +17,8 @@ fn main() {
         }
     }
 
+    descend_fn!(gpu_vec_add_bad_size as vec_add_16k, <N: 16384>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
@@ -26,7 +28,7 @@ fn main() {
     let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
-    // This will trigger the compile error E0308 because N: 16384 does not match
-    // GpuBuffer<[i32; 1024]>, the buffer's contents type.
-    let _ = unsafe { descend_launch!(gpu_vec_add_bad_size, &stream, <N: 16384>, &mut a_gpu, &b_gpu) };
+    // The instantiation fixed N at 16384, so its parameters are
+    // `GpuBuffer<[i32; 16384]>` and these 1024-element buffers do not fit.
+    let _ = vec_add_16k(&stream, &mut a_gpu, &b_gpu);
 }

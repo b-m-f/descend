@@ -1,12 +1,19 @@
 use std::io::Write;
 use std::process::Command;
 
+/// One compiled kernel: the PTX payload, the entry symbol to look up in it, and
+/// the dynamic shared memory its launch must request.
+pub struct CompiledKernel {
+    pub ptx: String,
+    pub mangled_name: String,
+    pub shared_mem_bytes: u64,
+}
+
 /// Compiles synthesized Descend source code down to PTX bytecode via descend library + nvcc.
-/// Returns the raw PTX string and the mangled C++ entry function name.
 ///
 /// What it does: Runs AST type checking and converts `full_descend` logic via NVCC into a raw PTX payload.
 /// Why it is needed: Necessary to provide the executable payload needed by the host orchestrator at runtime.
-pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, String), String> {
+pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<CompiledKernel, String> {
     debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
     let full_source = descend::parser::SourceCode::new(full_descend.to_string());
     let mut compil_unit = descend::parser::parse(&full_source).map_err(|e| {
@@ -20,7 +27,14 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
         return Err(format!("Descend type checking failed: {:?}", e));
     }
 
-    let final_cpp_code = generate_device_cpp(&mut compil_unit, fn_name);
+    let DeviceCpp {
+        code: final_cpp_code,
+        host_fn,
+    } = generate_device_cpp(&mut compil_unit, fn_name);
+
+    // Read the launch's shared-memory argument before spawning nvcc, so a size
+    // the generator could not resolve is reported without the compile round trip.
+    let shared_mem_bytes = crate::shared_mem::shared_mem_bytes(&host_fn)?;
 
     debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", fn_name, final_cpp_code);
 
@@ -58,10 +72,21 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<(String, Stri
 
     let mangled_name = extract_mangled_name(&ptx_string, fn_name);
 
-    Ok((ptx_string, mangled_name))
+    Ok(CompiledKernel {
+        ptx: ptx_string,
+        mangled_name,
+        shared_mem_bytes,
+    })
 }
 
-fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str) -> String {
+/// The generated CUDA, split into the device code that goes to nvcc and the
+/// synthesized host function that is stripped from it.
+struct DeviceCpp {
+    code: String,
+    host_fn: String,
+}
+
+fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str) -> DeviceCpp {
     let mut cpp_code = descend::codegen::gen(compil_unit);
     cpp_code = cpp_code.replace("std::size_t", "size_t");
     cpp_code = cpp_code.replace("auto main(", "auto dummy_main(");
@@ -71,6 +96,7 @@ fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str
     );
 
     let mut device_cpp_code = String::new();
+    let mut host_fn = String::new();
     let mut in_dummy_main = false;
     let mut brace_count = 0;
     let mut is_decl = false;
@@ -95,6 +121,10 @@ fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str
             } else if is_decl && line.trim().ends_with(";") {
                 in_dummy_main = false;
             }
+            // The synthesized host function does not belong in the device code,
+            // but its launch carries the shared-memory byte count.
+            host_fn.push_str(line);
+            host_fn.push('\n');
             continue;
         }
 
@@ -104,11 +134,14 @@ fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str
 
     let device_cpp_code = device_cpp_code.replace("$buffer", "_buffer");
 
-    format!(
-        "{}\n{}",
-        descend::DESCEND_CUH,
-        device_cpp_code.replace("#include \"descend.cuh\"", "")
-    )
+    DeviceCpp {
+        code: format!(
+            "{}\n{}",
+            descend::DESCEND_CUH,
+            device_cpp_code.replace("#include \"descend.cuh\"", "")
+        ),
+        host_fn,
+    }
 }
 
 fn resolve_nvcc_options() -> Result<Vec<String>, String> {

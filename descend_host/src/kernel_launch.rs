@@ -27,7 +27,7 @@ enum Param {
 /// Every pushed argument — a buffer or a value passed by value — stays borrowed
 /// for `'a`, i.e. until the `Kernel` is consumed by [`KernelLauncher::launch`].
 /// Because launch is synchronous, safe code cannot drop a pushed argument during
-/// execution, and a buffer pushed with [`Kernel::push_arg_mut`] cannot be read
+/// execution, and a buffer pushed with [`Kernel::push_arg_uniq`] cannot be read
 /// or pushed again until completion.
 ///
 /// Arguments of both kinds share one positional sequence, because order across
@@ -50,16 +50,16 @@ impl<'a> Kernel<'a> {
     }
 
     /// Pushes a buffer for a parameter the kernel only reads (`shrd`).
-    pub fn push_arg<T: DescendType>(&mut self, buf: &'a GpuBuffer<T>) -> Result<(), HostError> {
-        self.push_device_arg(buf)
+    pub fn push_arg_shrd<T: DescendType>(&mut self, buf: &'a GpuBuffer<T>) -> Result<(), HostError> {
+        self.push_arg_dev(buf)
     }
 
     /// Pushes a buffer for a parameter the kernel may write (`uniq`).
-    pub fn push_arg_mut<T: DescendType>(
+    pub fn push_arg_uniq<T: DescendType>(
         &mut self,
         buf: &'a mut GpuBuffer<T>,
     ) -> Result<(), HostError> {
-        self.push_device_arg(buf)
+        self.push_arg_dev(buf)
     }
 
     /// Pushes a value for a parameter the kernel takes by value.
@@ -76,7 +76,7 @@ impl<'a> Kernel<'a> {
     ///
     /// A value has no device allocation and hence no context, so this records
     /// none: a kernel whose arguments are all by value is not context-checked.
-    pub fn push_scalar<T: DescendType>(&mut self, value: &'a T) -> Result<(), HostError> {
+    pub fn push_arg_val<T: DescendType>(&mut self, value: &'a T) -> Result<(), HostError> {
         if std::mem::size_of::<T>() == 0 {
             return Err(HostError::InvalidSize("Zero-sized types are not supported"));
         }
@@ -85,7 +85,7 @@ impl<'a> Kernel<'a> {
         Ok(())
     }
 
-    fn push_device_arg<T: DescendType>(&mut self, buf: &GpuBuffer<T>) -> Result<(), HostError> {
+    fn push_arg_dev<T: DescendType>(&mut self, buf: &GpuBuffer<T>) -> Result<(), HostError> {
         if let Some(ctx) = &self.context {
             if ctx.inner != buf.context().inner {
                 return Err(HostError::ContextMismatch(
@@ -134,20 +134,20 @@ impl<'a> KernelLauncher<'a> {
     /// # Safety
     ///
     /// The borrow checker already guarantees that every pushed argument outlives
-    /// this call and that buffers pushed with `push_arg_mut` are not accessed
+    /// this call and that buffers pushed with `push_arg_uniq` are not accessed
     /// by other safe code until it returns. The caller must additionally
     /// guarantee facts that raw PTX does not expose:
     ///
     /// - **Signature**: the named kernel exists and its argument count, order
     ///   and ABI match the pushed arguments. For a buffer, element size,
     ///   alignment, representation, size and address space must match; for a
-    ///   value pushed with `push_scalar`, the kernel's parameter must itself be
+    ///   value pushed with `push_arg_val`, the kernel's parameter must itself be
     ///   taken by value and its size, alignment and representation must agree
     ///   with the pushed `T`. The driver reads a by-value argument's bytes
     ///   according to the compiled signature, not according to the host slot, so
     ///   a mismatch misreads host memory instead of failing.
     /// - **Permissions**: every parameter the kernel may write was pushed with
-    ///   `push_arg_mut`, and no kernel running on another stream accesses the
+    ///   `push_arg_uniq`, and no kernel running on another stream accesses the
     ///   same buffers in a conflicting way. A by-value parameter cannot be
     ///   written through and so needs no exclusivity, but the pointer handed to
     ///   the driver for it derives from a shared reference: the kernel must only
@@ -157,7 +157,7 @@ impl<'a> KernelLauncher<'a> {
     /// - **Output validity**: every value the kernel writes is a valid value of
     ///   its Rust `DescendType`, including the restricted encodings of `bool`.
     ///
-    /// `push_scalar` records no context, so a kernel whose arguments are all by
+    /// `push_arg_val` records no context, so a kernel whose arguments are all by
     /// value passes the context check below unexamined; its module and stream
     /// context agreement is the caller's obligation.
     ///
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_slots_hold_the_callers_addresses() {
+    fn val_slots_hold_the_callers_addresses() {
         let integer = 7i32;
         let float = 1.5f32;
         let flag = true;
@@ -238,11 +238,11 @@ mod tests {
         let record = Record(1, 2, 3, 4);
 
         let mut kernel = Kernel::new("kernel", config());
-        kernel.push_scalar(&integer).unwrap();
-        kernel.push_scalar(&float).unwrap();
-        kernel.push_scalar(&flag).unwrap();
-        kernel.push_scalar(&array).unwrap();
-        kernel.push_scalar(&record).unwrap();
+        kernel.push_arg_val(&integer).unwrap();
+        kernel.push_arg_val(&float).unwrap();
+        kernel.push_arg_val(&flag).unwrap();
+        kernel.push_arg_val(&array).unwrap();
+        kernel.push_arg_val(&record).unwrap();
 
         let ptrs = kernel.param_ptrs();
         assert_eq!(
@@ -259,17 +259,17 @@ mod tests {
     }
 
     #[test]
-    fn scalar_slots_are_aligned_for_their_types() {
+    fn val_slots_are_aligned_for_their_types() {
         let integer = 7i32;
         let double = 1.5f64;
         let array = [1i32, 2, 3];
         let record = Record(1, 2, 3, 4);
 
         let mut kernel = Kernel::new("kernel", config());
-        kernel.push_scalar(&integer).unwrap();
-        kernel.push_scalar(&double).unwrap();
-        kernel.push_scalar(&array).unwrap();
-        kernel.push_scalar(&record).unwrap();
+        kernel.push_arg_val(&integer).unwrap();
+        kernel.push_arg_val(&double).unwrap();
+        kernel.push_arg_val(&array).unwrap();
+        kernel.push_arg_val(&record).unwrap();
 
         let ptrs = kernel.param_ptrs();
         let alignments = [
@@ -288,11 +288,11 @@ mod tests {
     }
 
     #[test]
-    fn scalar_rejects_zero_sized_values() {
+    fn val_rejects_zero_sized_values() {
         let zst = Zst;
         let mut kernel = Kernel::new("kernel", config());
         assert!(matches!(
-            kernel.push_scalar(&zst),
+            kernel.push_arg_val(&zst),
             Err(HostError::InvalidSize("Zero-sized types are not supported"))
         ));
         assert!(kernel.param_ptrs().is_empty());
@@ -305,9 +305,9 @@ mod tests {
         let second = 2i32;
 
         let mut kernel = Kernel::new("kernel", config());
-        kernel.push_scalar(&first).unwrap();
-        assert!(kernel.push_scalar(&zst).is_err());
-        kernel.push_scalar(&second).unwrap();
+        kernel.push_arg_val(&first).unwrap();
+        assert!(kernel.push_arg_val(&zst).is_err());
+        kernel.push_arg_val(&second).unwrap();
 
         assert_eq!(
             kernel.param_ptrs(),

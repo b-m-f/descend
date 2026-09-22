@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::{descend, descend_launch};
+use descend_macros::descend;
 
 fn main() {
     descend! {
@@ -26,6 +26,7 @@ fn main() {
     let mut vec_gpu = GpuBuffer::from_host(&[1i32; 64], &stream).unwrap();
     let mut tmp_gpu = GpuBuffer::from_host(&[0i32; 64], &stream).unwrap();
 
-    // gpu.shared parameters have no host-side layout contract yet.
-    let _ = unsafe { descend_launch!(gpu_shared_tmp, &stream, , &mut vec_gpu, &mut tmp_gpu) };
+    // A gpu.shared parameter is allocated on the device, not passed from the
+    // host, so the kernel takes one argument here and not two.
+    let _ = gpu_shared_tmp(&stream, &mut vec_gpu, &mut tmp_gpu);
 }
