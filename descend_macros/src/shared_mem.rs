@@ -12,6 +12,10 @@
 //! This module holds no `proc_macro` types, so it can be unit-tested outside a
 //! macro invocation.
 
+use crate::ir::Kernel;
+use crate::nat::eval_nat;
+use std::collections::HashMap;
+
 /// The dynamic shared-memory argument of the kernel launch in `host_fn`, with
 /// all whitespace removed.
 ///
@@ -179,6 +183,110 @@ impl ExprParser<'_> {
             _ => Err("the shared-memory byte count is malformed".to_string()),
         }
     }
+}
+
+/// Checks the dynamic shared-memory request the generated launch will make.
+///
+/// The number itself comes from the Descend code generator, which also emitted
+/// the device code that slices the buffer. Recomputing it from the parameter
+/// types is a second opinion on the same contract: element size times element
+/// count, summed over the shared parameters, with no padding term because the
+/// generator orders the arrays by descending element size precisely so that none
+/// is needed. A disagreement would mean the launch allocates less than the
+/// kernel reads, which no runtime test can be relied on to expose.
+/// Checks what can be known about a kernel's shared-memory parameters from its
+/// signature alone.
+///
+/// This runs before the kernel is compiled, because both failures are otherwise
+/// reported by the Descend compiler in a form the user cannot act on: a
+/// mis-ordered shared parameter as a type error in synthesized source they never
+/// wrote, and an element type without a defined byte size as a panic inside the
+/// code generator.
+pub fn check_shared_params(kernel: &Kernel) -> Result<(), String> {
+    let function = &kernel.function_name;
+    let mut seen_shared = false;
+
+    for param in &kernel.params {
+        if !param.is_shared_mem {
+            if seen_shared {
+                return Err(format!(
+                    "kernel `{function}`: parameter `{}` follows a gpu.shared parameter. \
+                     Shared-memory parameters must come last, because the compiler removes \
+                     them from the end of the kernel signature",
+                    param.name
+                ));
+            }
+            continue;
+        }
+        seen_shared = true;
+
+        if param.elem_bytes.is_none() {
+            return Err(format!(
+                "kernel `{function}`: shared parameter `{}` has an element type whose byte \
+                 size the Descend compiler does not define, so its shared-memory allocation \
+                 cannot be sized",
+                param.name
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn check_shared_mem(
+    kernel: &Kernel,
+    emitted: u64,
+    bindings: &HashMap<String, String>,
+) -> Result<(), String> {
+    let function = &kernel.function_name;
+    let mut expected: u64 = 0;
+
+    for param in &kernel.params {
+        if !param.is_shared_mem {
+            continue;
+        }
+
+        let elem_bytes = param.elem_bytes.ok_or_else(|| {
+            format!(
+                "kernel `{function}`: shared parameter `{}` has an element type whose byte \
+                 size the Descend compiler does not define, so its shared-memory allocation \
+                 cannot be sized",
+                param.name
+            )
+        })?;
+
+        let mut elements: u64 = 1;
+        for nat in &param.dim_nats {
+            let dim = eval_nat(nat, bindings)?;
+            elements = elements.checked_mul(u64::from(dim)).ok_or_else(|| {
+                format!(
+                    "kernel `{function}`: shared parameter `{}` has more elements than can be \
+                     counted",
+                    param.name
+                )
+            })?;
+        }
+        expected += u64::from(elem_bytes) * elements;
+    }
+
+    if expected != emitted {
+        return Err(format!(
+            "internal error: shared-memory byte count disagreement for kernel `{function}`: \
+             the Descend compiler's generated launch requests {emitted} bytes, the parameter \
+             types give {expected}. Refusing to launch"
+        ));
+    }
+
+    // Above 48 KiB a kernel must opt in through cuFuncSetAttribute, which the
+    // host API does not do; the launch would fail in the driver instead.
+    if emitted > 49152 {
+        return Err(format!(
+            "kernel `{function}` requests {emitted} bytes of dynamic shared memory, above the \
+             48 KiB a launch may request without opting in through cuFuncSetAttribute"
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

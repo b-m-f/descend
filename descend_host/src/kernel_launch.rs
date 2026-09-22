@@ -19,7 +19,7 @@ enum Param {
     /// The slot holds the buffer's device address.
     Device(u64),
     /// The slot is the caller's own value.
-    Scalar(NonNull<c_void>),
+    Val(NonNull<c_void>),
 }
 
 /// Arguments and configuration for one kernel submission.
@@ -81,7 +81,7 @@ impl<'a> Kernel<'a> {
             return Err(HostError::InvalidSize("Zero-sized types are not supported"));
         }
         self.params
-            .push(Param::Scalar(NonNull::from(value).cast::<c_void>()));
+            .push(Param::Val(NonNull::from(value).cast::<c_void>()));
         Ok(())
     }
 
@@ -110,7 +110,7 @@ impl<'a> Kernel<'a> {
             .iter_mut()
             .map(|param| match param {
                 Param::Device(address) => std::ptr::from_mut(address).cast::<c_void>(),
-                Param::Scalar(value) => value.as_ptr(),
+                Param::Val(value) => value.as_ptr(),
             })
             .collect()
     }

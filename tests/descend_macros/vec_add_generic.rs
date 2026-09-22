@@ -15,8 +15,9 @@ descend! {
     }
 }
 
-// `N` is only a literal here, so this is where the kernel becomes a function.
-descend_fn!(gpu_vec_add as vec_add_16k, <N: 16384>);
+// `N` is only a literal here, so this is where the kernel becomes a function —
+// under its own name, since this is the only size it is instantiated for.
+descend_fn!(gpu_vec_add, <N: 16384>);
 
 #[test]
 fn test_vec_add_generic() {
@@ -29,7 +30,7 @@ fn test_vec_add_generic() {
     let mut a_gpu = GpuBuffer::from_host(&Box::new(a_array), &stream).unwrap();
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
-    vec_add_16k(&stream, &mut a_gpu, &b_gpu).unwrap();
+    gpu_vec_add(&stream, &mut a_gpu, &b_gpu).unwrap();
 
     let a_cpu_back = a_gpu.to_host(&stream).unwrap();
     assert_eq!(*a_cpu_back, [30i32; 16384]);
