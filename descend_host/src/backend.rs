@@ -141,8 +141,8 @@ pub(crate) unsafe fn launch(
 }
 
 /// Terminates before Rust can release memory whose CUDA completion state is
-/// unknown. Only called when a driver transfer, submission or synchronization
-/// has itself failed after host memory or kernel arguments were handed over.
+/// unknown. Only called when a driver transfer or its synchronization has
+/// failed after host memory was handed over.
 pub(crate) fn fail_stop(operation: &str) -> ! {
     eprintln!(
         "fatal descend_host error: CUDA completion could not be established during {operation}"

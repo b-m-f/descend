@@ -20,7 +20,11 @@ use std::str::FromStr;
 /// configuration are all generated from one Descend definition, so the
 /// obligations that method documents are discharged by construction. What
 /// remains delegated is a user's own `unsafe impl DescendType` for a struct
-/// element type.
+/// element type. The generated function synchronizes before returning, so its
+/// borrowed buffers and locally loaded module outlive device execution even
+/// though the low-level launch primitive returns after submission. Submission
+/// and synchronization failures are propagated through the generated
+/// function's `Result`.
 pub fn generate_launch_fn(
     kernel: &Kernel,
     compiled: &CompiledKernel,
@@ -137,8 +141,11 @@ pub fn generate_launch_fn(
             // read back out of it, the arguments are pushed in the kernel's
             // parameter order with the ownership its Descend types declare, and the
             // launch configuration comes from the kernel's own grid declaration and
-            // shared-memory parameters.
-            unsafe { launcher.launch(kernel) }
+            // shared-memory parameters. The synchronization below keeps every
+            // borrowed allocation and the launcher's module alive through execution.
+            let launch_result = unsafe { launcher.launch(kernel) };
+            stream.synchronize()?;
+            launch_result
         }
     })
 }
