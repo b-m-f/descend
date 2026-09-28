@@ -26,9 +26,10 @@ enum Param {
 ///
 /// Every pushed argument — a buffer or a value passed by value — stays borrowed
 /// for `'a`, i.e. until the `Kernel` is consumed by [`KernelLauncher::launch`].
-/// Because launch is synchronous, safe code cannot drop a pushed argument during
-/// execution, and a buffer pushed with [`Kernel::push_arg_uniq`] cannot be read
-/// or pushed again until completion.
+/// These borrows cover argument preparation and submission only. Because
+/// [`KernelLauncher::launch`] returns before execution completes, its unsafe
+/// caller must keep device allocations and the loaded module alive and must
+/// order later accesses until the submitted work has completed.
 ///
 /// Arguments of both kinds share one positional sequence, because order across
 /// argument kinds is the kernel's signature order.
@@ -50,7 +51,10 @@ impl<'a> Kernel<'a> {
     }
 
     /// Pushes a buffer for a parameter the kernel only reads (`shrd`).
-    pub fn push_arg_shrd<T: DescendType>(&mut self, buf: &'a GpuBuffer<T>) -> Result<(), HostError> {
+    pub fn push_arg_shrd<T: DescendType>(
+        &mut self,
+        buf: &'a GpuBuffer<T>,
+    ) -> Result<(), HostError> {
         self.push_arg_dev(buf)
     }
 
@@ -129,14 +133,15 @@ impl<'a> KernelLauncher<'a> {
         Ok(Self { stream, module })
     }
 
-    /// Submits `kernel` on this launcher's stream and waits for completion.
+    /// Submits `kernel` on this launcher's stream.
     ///
     /// # Safety
     ///
-    /// The borrow checker already guarantees that every pushed argument outlives
-    /// this call and that buffers pushed with `push_arg_uniq` are not accessed
-    /// by other safe code until it returns. The caller must additionally
-    /// guarantee facts that raw PTX does not expose:
+    /// The borrow checker guarantees that every host argument slot outlives
+    /// submission and that buffers pushed with `push_arg_uniq` are not accessed
+    /// by other safe code while the argument list is assembled. The caller must
+    /// additionally guarantee facts that raw PTX and submission-time borrows do
+    /// not expose:
     ///
     /// - **Signature**: the named kernel exists and its argument count, order
     ///   and ABI match the pushed arguments. For a buffer, element size,
@@ -146,12 +151,17 @@ impl<'a> KernelLauncher<'a> {
     ///   with the pushed `T`. The driver reads a by-value argument's bytes
     ///   according to the compiled signature, not according to the host slot, so
     ///   a mismatch misreads host memory instead of failing.
-    /// - **Permissions**: every parameter the kernel may write was pushed with
-    ///   `push_arg_uniq`, and no kernel running on another stream accesses the
-    ///   same buffers in a conflicting way. A by-value parameter cannot be
-    ///   written through and so needs no exclusivity, but the pointer handed to
+    /// - **Permissions and ordering**: every parameter the kernel may write was
+    ///   pushed with `push_arg_uniq`. Until execution completes, no host access
+    ///   or kernel on another stream may use the same allocations in a
+    ///   conflicting way. A by-value parameter cannot be written through and so
+    ///   needs no exclusivity, but the pointer handed to
     ///   the driver for it derives from a shared reference: the kernel must only
     ///   read that storage.
+    /// - **Resource lifetimes**: every pushed device allocation and this
+    ///   launcher's module remain alive until execution completes. The caller
+    ///   establishes completion with stream synchronization or an equivalent
+    ///   CUDA ordering mechanism before releasing them.
     /// - **Execution parameters**: grid, block and shared-memory sizes satisfy
     ///   the kernel's indexing assumptions.
     /// - **Output validity**: every value the kernel writes is a valid value of
@@ -161,11 +171,10 @@ impl<'a> KernelLauncher<'a> {
     /// value passes the context check below unexamined; its module and stream
     /// context agreement is the caller's obligation.
     ///
-    /// Success means all work submitted to the stream, including this kernel,
-    /// has completed. If the driver's stream synchronization fails, completion
-    /// is unknown and the process terminates before argument, allocation or
-    /// module storage is released. Errors recorded by earlier resource releases
-    /// do not cause termination; see [`Context::check_deferred_errors`].
+    /// Success means the kernel was submitted, not that execution completed.
+    /// CUDA consumes the temporary host parameter slots during submission, so
+    /// they may be released when this method returns. Device allocations and
+    /// the module may not.
     pub unsafe fn launch(&self, mut kernel: Kernel) -> Result<(), HostError> {
         if let Some(ctx) = &kernel.context {
             if ctx.inner != self.stream.context.inner {
@@ -183,7 +192,7 @@ impl<'a> KernelLauncher<'a> {
 
         let mut ptrs = kernel.param_ptrs();
 
-        let launch_result = unsafe {
+        unsafe {
             crate::backend::launch(
                 &f,
                 kernel.config.grid_dim,
@@ -192,14 +201,8 @@ impl<'a> KernelLauncher<'a> {
                 &self.stream.inner,
                 &mut ptrs,
             )
-        };
-
-        let completion = crate::backend::synchronize_stream(&self.stream.inner);
-        if completion.is_err() {
-            crate::backend::fail_stop("kernel completion");
         }
-
-        launch_result.map_err(|e| HostError::driver(e, "kernel launch"))
+        .map_err(|e| HostError::driver(e, "kernel launch"))
     }
 }
 

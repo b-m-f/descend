@@ -33,7 +33,7 @@ fn in_place_readback_contract<'a>(
     buffer.read_back(stream)
 }
 
-fn borrowed_kernel_arguments_contract(
+unsafe fn borrowed_kernel_arguments_contract(
     stream: &Stream,
     launcher: &descend_host::KernelLauncher,
 ) -> Result<Box<[i32; 4]>, descend_host::error::HostError> {
@@ -48,7 +48,9 @@ fn borrowed_kernel_arguments_contract(
     kernel.push_arg_uniq(&mut output)?;
     kernel.push_arg_shrd(&input)?;
     kernel.push_arg_shrd(&input)?;
-    // SAFETY: never called; this function only checks that the borrows end at launch.
+    // SAFETY: the caller supplies a launcher whose `kernel` entry has this
+    // signature. The buffers and launcher remain alive until the same-stream
+    // readback below establishes completion.
     unsafe { launcher.launch(kernel)? };
     output.to_host(stream)
 }

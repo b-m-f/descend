@@ -1,13 +1,14 @@
 # descend_host
 
 Host-side interface for launching Descend kernels from Rust: contexts, streams,
-device buffers, and a synchronous, `unsafe` kernel launcher. The CUDA backend
-(`cuda-core`) is private and reached only through `src/backend.rs`.
+device buffers, and an asynchronous, `unsafe` low-level kernel launcher. Safe
+functions generated from Descend kernels synchronize before returning. The CUDA
+backend (`cuda-core`) is private and reached only through `src/backend.rs`.
 
 ## Running the tests
 
 The tests need an NVIDIA driver, a GPU, and the CUDA toolkit (`nvcc`). Tests that
-use `descend!`/`descend_launch!` also need a target architecture:
+use `descend!`/`descend_fn!` also need a target architecture:
 
 ```bash
 DESCEND_NVCC_FLAGS=-arch=compute_86 cargo test --locked --offline -p descend_host

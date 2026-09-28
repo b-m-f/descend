@@ -4,7 +4,8 @@
 //! cannot be held to the kernel's signature. The generated function is not such
 //! a caller: its PTX, entry name, argument types, argument order and launch
 //! configuration all come from one Descend definition, so it discharges those
-//! obligations itself and hides the `unsafe` block in its own body.
+//! obligations itself, keeps the borrowed resources alive by synchronizing,
+//! and hides the `unsafe` block in its own body.
 //!
 //! `deny(unsafe_code)` here is what pins that: the test fails to compile if a
 //! future change moves an `unsafe` block back out to the call site.
