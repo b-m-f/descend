@@ -25,12 +25,12 @@ pub fn process_buffer<T: DescendType>(buf: &mut GpuBuffer<T>, _stream: &Stream) 
     let _ = buf.context();
 }
 
-fn in_place_readback_contract<'a>(
+fn explicit_readback_contract<'a>(
     host: &'a mut [i32; 4],
     stream: &Stream,
 ) -> Result<&'a mut [i32; 4], descend_host::error::HostError> {
-    let buffer = GpuBuffer::from_host_mut(host, stream)?;
-    buffer.read_back(stream)
+    let buffer = GpuBuffer::from_host(host, stream)?;
+    buffer.read_back_into(stream, host)
 }
 
 unsafe fn borrowed_kernel_arguments_contract(
@@ -65,5 +65,5 @@ fn test_consumer_compiles_without_backend_traits() {
         y: 0.0,
         z: 0.0,
     };
-    let _ = in_place_readback_contract;
+    let _ = explicit_readback_contract;
 }

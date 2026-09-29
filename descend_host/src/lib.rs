@@ -7,7 +7,7 @@ pub mod stream;
 pub mod traits;
 
 pub use context::Context;
-pub use gpu_buffer::{BorrowedGpuBuffer, GpuBuffer};
+pub use gpu_buffer::GpuBuffer;
 pub use kernel_launch::{Kernel, KernelLaunchConfig, KernelLauncher};
 pub use stream::Stream;
 pub use traits::DescendType;
