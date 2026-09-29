@@ -5,11 +5,8 @@
 //! to target.
 //!
 //! Context binding, transfers, kernel submission and stream synchronization use
-//! the backend's raw driver calls. The backend's convenience methods first
-//! report any error recorded by an earlier resource release and then skip the
-//! driver call. On a path that must terminate when completion is unknown, such
-//! a recorded error would terminate the process although the operation itself
-//! did not fail.
+//! the backend's raw driver calls. Transfer and synchronization failures are
+//! returned to the caller; this adapter never terminates the process.
 
 use std::sync::Arc;
 
@@ -51,45 +48,65 @@ pub(crate) fn buffer_uninitialized<T: DeviceCopy>(
     stream: &Arc<CudaStream>,
     len: usize,
 ) -> Result<DeviceBuffer<T>, DriverError> {
-    // SAFETY: the only caller writes the whole buffer with a synchronizing
-    // host-to-device copy and terminates if that copy fails.
+    // SAFETY: the only caller initializes the whole buffer with a synchronous
+    // host-to-device copy before exposing it to application code.
     unsafe { DeviceBuffer::uninitialized_async(stream, len) }
 }
 
-/// Copies `src` into `buffer` and synchronizes `stream`. The stream's context
-/// must be current. An error means completion was not established.
+/// Waits for prior stream work and then copies `src` into `buffer`
+/// synchronously. The stream's context must be current.
 pub(crate) fn buffer_copy_from_host<T: DeviceCopy>(
     buffer: &mut DeviceBuffer<T>,
     stream: &CudaStream,
     src: &[T],
 ) -> Result<(), DriverError> {
-    // SAFETY: `src` stays borrowed until the synchronization below returns, and
-    // the caller does not release it before terminating on error.
-    let enqueued = unsafe { buffer.copy_from_host_async_unchecked(stream, src) };
-    let completed = synchronize_stream(stream);
-    enqueued.and(completed)
+    assert_eq!(src.len(), buffer.len());
+    // `buffer` was allocated with cuMemAllocAsync on this stream. Waiting here
+    // establishes that allocation and orders this copy after earlier work
+    // before the host pointer is handed to the driver.
+    synchronize_stream(stream)?;
+    // SAFETY: the buffer owns `buffer.num_bytes()` bytes and `src` contains
+    // exactly that many bytes. The synchronous call finishes using the caller's
+    // pageable source before returning, although the device transfer may still
+    // be pending after staging.
+    let copied = unsafe {
+        sys::cuMemcpyHtoD_v2(
+            buffer.cu_deviceptr(),
+            src.as_ptr().cast(),
+            buffer.num_bytes(),
+        )
+    }
+    .result();
+    // Establish device completion before a later kernel is submitted to the
+    // selected non-blocking stream. Attempt this even when the copy reports an
+    // error, because CUDA calls may surface errors from earlier asynchronous
+    // work.
+    let completed = unsafe { sys::cuCtxSynchronize() }.result();
+    copied.and(completed)
 }
 
-/// Copies `buffer` into `destination` and synchronizes `stream`. The stream's
-/// context must be current. An error means completion was not established.
+/// Waits for prior stream work and then copies `buffer` synchronously into
+/// uninitialized host storage. The stream's context must be current.
 pub(crate) fn buffer_copy_to_host<T: DeviceCopy>(
     buffer: &DeviceBuffer<T>,
     stream: &CudaStream,
-    destination: &mut [T],
+    destination: &mut [std::mem::MaybeUninit<T>],
 ) -> Result<(), DriverError> {
     assert_eq!(destination.len(), buffer.len());
-    // SAFETY: `destination` holds exactly `buffer.num_bytes()` bytes and stays
-    // borrowed until the synchronization below returns.
-    let enqueued = unsafe {
-        cuda_core::simt::memory::memcpy_dtoh_async(
-            destination.as_mut_ptr(),
+    // Do not expose `destination` to CUDA until all preceding work in the
+    // selected non-blocking stream has completed.
+    synchronize_stream(stream)?;
+    // SAFETY: `destination` provides `buffer.num_bytes()` writable bytes.
+    // cuMemcpyDtoH is synchronous with respect to the host, and MaybeUninit
+    // remains safe to drop if the driver reports a partial or failed copy.
+    unsafe {
+        sys::cuMemcpyDtoH_v2(
+            destination.as_mut_ptr().cast(),
             buffer.cu_deviceptr(),
             buffer.num_bytes(),
-            stream.cu_stream(),
         )
-    };
-    let completed = synchronize_stream(stream);
-    enqueued.and(completed)
+    }
+    .result()
 }
 
 pub(crate) fn buffer_context<T: DeviceCopy>(buffer: &DeviceBuffer<T>) -> Arc<CudaContext> {
@@ -138,16 +155,6 @@ pub(crate) unsafe fn launch(
             parameters,
         )
     }
-}
-
-/// Terminates before Rust can release memory whose CUDA completion state is
-/// unknown. Only called when a driver transfer or its synchronization has
-/// failed after host memory was handed over.
-pub(crate) fn fail_stop(operation: &str) -> ! {
-    eprintln!(
-        "fatal descend_host error: CUDA completion could not be established during {operation}"
-    );
-    std::process::abort()
 }
 
 #[cfg(test)]

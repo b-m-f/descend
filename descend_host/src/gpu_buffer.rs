@@ -15,16 +15,6 @@ pub struct GpuBuffer<T: DescendType> {
     pub(crate) dev_buf: DeviceBuffer<DescendTypeWrapper<T>>,
 }
 
-/// A device buffer associated with an exclusively borrowed host value.
-///
-/// The host value is used for the initial upload and can later receive an
-/// explicit readback without allocating another host region. The exclusive
-/// borrow prevents host access while the buffer may be used by a kernel.
-pub struct BorrowedGpuBuffer<'a, T: DescendType> {
-    buffer: GpuBuffer<T>,
-    host: &'a mut T,
-}
-
 impl<T: DescendType> GpuBuffer<T> {
     pub fn context(&self) -> Context {
         Context {
@@ -48,10 +38,8 @@ impl<T: DescendType> GpuBuffer<T> {
 
     /// Allocates device storage and uploads the single value `data`.
     ///
-    /// Validation, context binding and device allocation failures are returned
-    /// as errors. Once `data` has been handed to the driver, a failure means the
-    /// copy's completion is unknown, and the process terminates while `data` is
-    /// still borrowed.
+    /// Validation, context binding, allocation and copy failures are returned
+    /// as errors. The synchronous copy does not retain `data` after return.
     fn upload(data: &T, stream: &Stream) -> Result<Self, HostError> {
         Self::validate_buffer_params()?;
 
@@ -66,33 +54,17 @@ impl<T: DescendType> GpuBuffer<T> {
         let source: &DescendTypeWrapper<T> =
             unsafe { &*std::ptr::from_ref(data).cast::<DescendTypeWrapper<T>>() };
 
-        if crate::backend::buffer_copy_from_host(
+        crate::backend::buffer_copy_from_host(
             &mut dev_buf,
             &stream.inner,
             std::slice::from_ref(source),
         )
-        .is_err()
-        {
-            crate::backend::fail_stop("host-to-device transfer");
-        }
+        .map_err(|e| HostError::driver(e, "host-to-device transfer"))?;
         Ok(Self { dev_buf })
     }
 
     /// Copies the device contents into a new host allocation.
     pub fn to_host(&self, stream: &Stream) -> Result<Box<T>, HostError> {
-        // SAFETY: the DescendType contract requires the all-zero bit pattern to
-        // be a valid T, so a zeroed T is initialized.
-        let mut host = unsafe { Box::<T>::new_zeroed().assume_init() };
-        self.copy_into(stream, &mut host, "device-to-host transfer")?;
-        Ok(host)
-    }
-
-    fn copy_into(
-        &self,
-        stream: &Stream,
-        destination: &mut T,
-        operation: &'static str,
-    ) -> Result<(), HostError> {
         if self.context().inner != stream.context.inner {
             return Err(HostError::ContextMismatch(
                 "Stream context does not match buffer context",
@@ -101,21 +73,33 @@ impl<T: DescendType> GpuBuffer<T> {
         crate::backend::bind_context_to_thread(&stream.context.inner)
             .map_err(|e| HostError::driver(e, "bind context for readback"))?;
 
-        // SAFETY: DescendTypeWrapper<T> is transparent over T, so the values
-        // have identical layout. `destination` stays borrowed until this
-        // function returns or the process terminates.
-        let destination: &mut DescendTypeWrapper<T> =
-            unsafe { &mut *std::ptr::from_mut(destination).cast::<DescendTypeWrapper<T>>() };
-        if crate::backend::buffer_copy_to_host(
+        let mut host = Box::<DescendTypeWrapper<T>>::new_uninit();
+        crate::backend::buffer_copy_to_host(
             &self.dev_buf,
             &stream.inner,
-            std::slice::from_mut(destination),
+            std::slice::from_mut(host.as_mut()),
         )
-        .is_err()
-        {
-            crate::backend::fail_stop(operation);
-        }
-        Ok(())
+        .map_err(|e| HostError::driver(e, "device-to-host transfer"))?;
+
+        // SAFETY: a successful synchronous copy initialized every byte, and
+        // DescendType requires device-produced values to be valid Rust values.
+        let host = unsafe { host.assume_init() };
+        // SAFETY: DescendTypeWrapper<T> is transparent over T, so both boxes
+        // have the same allocation layout and value representation.
+        Ok(unsafe { Box::from_raw(Box::into_raw(host).cast::<T>()) })
+    }
+
+    /// Copies the device contents into `destination` and returns that exact
+    /// host reference. The destination is changed only after the synchronous
+    /// device-to-host copy has succeeded.
+    pub fn read_back_into<'h>(
+        &self,
+        stream: &Stream,
+        destination: &'h mut T,
+    ) -> Result<&'h mut T, HostError> {
+        let value = self.to_host(stream)?;
+        *destination = *value;
+        Ok(destination)
     }
 }
 
@@ -124,58 +108,10 @@ impl<T: DescendType> GpuBuffer<T> {
 impl<T: DescendType, const N: usize> GpuBuffer<[T; N]> {
     /// Allocates device storage and uploads `data`.
     ///
-    /// Validation, context binding and device allocation failures are returned
-    /// as errors. Once `data` has been handed to the driver, a failure means the
-    /// copy's completion is unknown, and the process terminates while `data` is
-    /// still borrowed.
+    /// Validation, context binding, allocation and copy failures are returned
+    /// as errors. The synchronous copy does not retain `data` after return.
     pub fn from_host(data: &[T; N], stream: &Stream) -> Result<Self, HostError> {
         Self::upload(data, stream)
-    }
-
-    /// Uploads `data` and retains its exclusive borrow for optional in-place
-    /// readback through [`BorrowedGpuBuffer::read_back`].
-    pub fn from_host_mut<'a>(
-        data: &'a mut [T; N],
-        stream: &Stream,
-    ) -> Result<BorrowedGpuBuffer<'a, [T; N]>, HostError> {
-        let buffer = Self::upload(data, stream)?;
-        Ok(BorrowedGpuBuffer { buffer, host: data })
-    }
-}
-
-impl<'a, T: DescendType> BorrowedGpuBuffer<'a, T> {
-    pub fn context(&self) -> Context {
-        self.buffer.context()
-    }
-
-    pub fn gpu_buffer(&self) -> &GpuBuffer<T> {
-        &self.buffer
-    }
-
-    pub fn gpu_buffer_mut(&mut self) -> &mut GpuBuffer<T> {
-        &mut self.buffer
-    }
-
-    /// Copies the device contents into the originally borrowed host value and
-    /// returns that exact reference. No host allocation is performed.
-    pub fn read_back(self, stream: &Stream) -> Result<&'a mut T, HostError> {
-        self.buffer
-            .copy_into(stream, self.host, "in-place device-to-host transfer")?;
-        Ok(self.host)
-    }
-}
-
-impl<'a, T: DescendType> std::ops::Deref for BorrowedGpuBuffer<'a, T> {
-    type Target = GpuBuffer<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.buffer
-    }
-}
-
-impl<'a, T: DescendType> std::ops::DerefMut for BorrowedGpuBuffer<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer
     }
 }
 

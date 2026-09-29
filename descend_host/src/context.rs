@@ -29,7 +29,7 @@ impl Context {
     ///
     /// Destructors cannot return errors, so the backend records them in the
     /// context. Transfers, kernel launches and synchronization ignore recorded
-    /// errors, so they never turn one into a failure or a termination. Unless
+    /// errors, so they never turn one into an unrelated returned failure. Unless
     /// taken here, a recorded error is reported by the next backend-managed
     /// operation on this context, such as stream creation or module loading.
     pub fn check_deferred_errors(&self) -> Result<(), HostError> {

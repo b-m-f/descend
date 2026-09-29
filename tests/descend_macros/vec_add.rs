@@ -24,12 +24,12 @@ fn test_vec_add() {
     let b_array = [10i32; 16384];
 
     let original_address = a_array.as_ptr();
-    let mut a_gpu = GpuBuffer::from_host_mut(&mut a_array, &stream).unwrap();
+    let mut a_gpu = GpuBuffer::from_host(&a_array, &stream).unwrap();
     let b_gpu = GpuBuffer::from_host(&Box::new(b_array), &stream).unwrap();
 
     gpu_vec_add(&stream, &mut a_gpu, &b_gpu).unwrap();
 
-    let a_cpu_back = a_gpu.read_back(&stream).unwrap();
+    let a_cpu_back = a_gpu.read_back_into(&stream, &mut a_array).unwrap();
     assert_eq!(a_cpu_back.as_ptr(), original_address);
     assert_eq!(*a_cpu_back, [30i32; 16384]);
 }

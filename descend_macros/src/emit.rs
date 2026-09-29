@@ -142,7 +142,8 @@ pub fn generate_launch_fn(
             // parameter order with the ownership its Descend types declare, and the
             // launch configuration comes from the kernel's own grid declaration and
             // shared-memory parameters. The synchronization below keeps every
-            // borrowed allocation and the launcher's module alive through execution.
+            // borrowed allocation and the launcher's module alive through the
+            // completion attempt; success establishes completed execution.
             let launch_result = unsafe { launcher.launch(kernel) };
             stream.synchronize()?;
             launch_result
