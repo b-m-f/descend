@@ -8,6 +8,5 @@ fn main() {
     };
     let mut kernel = Kernel::new("kernel", config);
     let value = String::from("x");
-    // A `String` owns a host allocation and is not a Descend-representable value.
     let _ = kernel.push_arg_val(&value);
 }

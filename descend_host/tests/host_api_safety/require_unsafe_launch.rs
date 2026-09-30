@@ -10,6 +10,5 @@ fn main() {
         shared_mem_bytes: 0,
     };
     let kernel = Kernel::new("dummy", config);
-    // This should fail to compile because it requires an unsafe block
     let _ = launcher.launch(kernel);
 }
