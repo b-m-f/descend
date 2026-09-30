@@ -30,7 +30,7 @@ impl Context {
     pub fn check_deferred_errors(&self) -> Result<(), HostError> {
         self.inner
             .check_err()
-            .map_err(|e| HostError::driver(e, "resource release"))
+            .map_err(|e| HostError::driver(e, "error from context"))
     }
 
     pub fn synchronize(&self) -> Result<(), HostError> {
