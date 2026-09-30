@@ -10,7 +10,7 @@ descend! {
     ) -[grid: gpu.grid<X<1>, X<1>>]-> () {
         sched block in grid {
             sched thread in block {
-                let out_ref = &uniq (*out).to_view[[thread]];
+                let out_ref = &uniq (*out).to_view.grp::<1>[[block]][[thread]];
                 *out_ref = value
             }
         }
@@ -24,7 +24,7 @@ descend! {
     ) -[grid: gpu.grid<X<1>, X<1>>]-> () {
         sched block in grid {
             sched thread in block {
-                let out_ref = &uniq (*out).to_view[[thread]];
+                let out_ref = &uniq (*out).to_view.grp::<1>[[block]][[thread]];
                 *out_ref = value
             }
         }
@@ -38,7 +38,7 @@ descend! {
     ) -[grid: gpu.grid<X<1>, X<3>>]-> () {
         sched block in grid {
             sched thread in block {
-                let out_ref = &uniq (*out).to_view[[thread]];
+                let out_ref = &uniq (*out).to_view.grp::<3>[[block]][[thread]];
                 *out_ref = values.to_view[[thread]]
             }
         }
