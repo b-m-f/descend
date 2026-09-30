@@ -1,28 +1,7 @@
-//! The dynamic shared-memory byte count, read back from the code the Descend
-//! compiler generates.
-//!
-//! A `gpu.shared` kernel parameter becomes dynamic shared memory: the kernel
-//! body receives one `extern __shared__ descend::byte $buffer[]` and slices it
-//! into the declared arrays, so the size is not part of the kernel at all — it
-//! is a launch argument. The Descend code generator computes that size for its
-//! own host code and prints it as the third argument of the `<<<...>>>` launch.
-//! Taking the number from there, rather than recomputing it, means the host's
-//! request cannot disagree with the packing the device code performs.
-//!
-//! This module holds no `proc_macro` types, so it can be unit-tested outside a
-//! macro invocation.
-
 use crate::ir::Kernel;
 use crate::nat::eval_nat;
 use std::collections::HashMap;
 
-/// The dynamic shared-memory argument of the kernel launch in `host_fn`, with
-/// all whitespace removed.
-///
-/// `host_fn` is the synthesized host function the Descend code generator
-/// produced; it contains exactly one kernel launch. The text is searched as one
-/// region rather than line by line, because the generated code is passed
-/// through `clang-format`, which wraps a launch across lines.
 pub fn shared_bytes_expr(host_fn: &str) -> Result<String, String> {
     let open = host_fn
         .find("<<<")
@@ -44,10 +23,6 @@ pub fn shared_bytes_expr(host_fn: &str) -> Result<String, String> {
     }
 }
 
-/// Splits `args` at commas outside parentheses.
-///
-/// The launch arguments are `dim3(x, y, z)` values, whose own commas must not
-/// split the list.
 fn split_top_level(args: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
@@ -67,12 +42,6 @@ fn split_top_level(args: &str) -> Vec<&str> {
     parts
 }
 
-/// Evaluates a constant integer expression of literals, `+ - * / %` and
-/// parentheses.
-///
-/// Anything else — an identifier above all — means a kernel size never became a
-/// literal, which is a bug in the macro's own substitution rather than something
-/// to paper over with a guessed number.
 pub fn eval_const_int(expr: &str) -> Result<u64, String> {
     let compact: String = expr.split_whitespace().collect();
     if compact.is_empty() {
@@ -101,7 +70,6 @@ pub fn eval_const_int(expr: &str) -> Result<u64, String> {
     Ok(value)
 }
 
-/// The shared-memory byte count of the launch in `host_fn`.
 pub fn shared_mem_bytes(host_fn: &str) -> Result<u64, String> {
     eval_const_int(&shared_bytes_expr(host_fn)?)
 }
@@ -185,23 +153,6 @@ impl ExprParser<'_> {
     }
 }
 
-/// Checks the dynamic shared-memory request the generated launch will make.
-///
-/// The number itself comes from the Descend code generator, which also emitted
-/// the device code that slices the buffer. Recomputing it from the parameter
-/// types is a second opinion on the same contract: element size times element
-/// count, summed over the shared parameters, with no padding term because the
-/// generator orders the arrays by descending element size precisely so that none
-/// is needed. A disagreement would mean the launch allocates less than the
-/// kernel reads, which no runtime test can be relied on to expose.
-/// Checks what can be known about a kernel's shared-memory parameters from its
-/// signature alone.
-///
-/// This runs before the kernel is compiled, because both failures are otherwise
-/// reported by the Descend compiler in a form the user cannot act on: a
-/// mis-ordered shared parameter as a type error in synthesized source they never
-/// wrote, and an element type without a defined byte size as a panic inside the
-/// code generator.
 pub fn check_shared_params(kernel: &Kernel) -> Result<(), String> {
     let function = &kernel.function_name;
     let mut seen_shared = false;
@@ -277,8 +228,6 @@ pub(crate) fn check_shared_mem(
         ));
     }
 
-    // Above 48 KiB a kernel must opt in through cuFuncSetAttribute, which the
-    // host API does not do; the launch would fail in the driver instead.
     if emitted > 49152 {
         return Err(format!(
             "kernel `{function}` requests {emitted} bytes of dynamic shared memory, above the \
@@ -293,8 +242,6 @@ pub(crate) fn check_shared_mem(
 mod tests {
     use super::*;
 
-    /// The launch `descend::codegen` emits for `cuda-examples/asplos/sgemm-descend.cu`,
-    /// wrapped across lines the way `clang-format` wraps it.
     const SGEMM_LAUNCH: &str = "__host__ auto dummy_main() -> void {
   sgemm_gpu<<<dim3(8, 16, 1), dim3(32, 8, 1),
               ((0 + (4 * ((1 * (32 * 2)) * 8))) + (4 * ((1 * (32 * 4)) * 8)))>>>(
@@ -307,7 +254,6 @@ mod tests {
             shared_bytes_expr(SGEMM_LAUNCH).unwrap(),
             "((0+(4*((1*(32*2))*8)))+(4*((1*(32*4))*8)))"
         );
-        // 4 * (32*2 * 8) = 2048 for `a_tile`, 4 * (32*4 * 8) = 4096 for `b_tile`.
         assert_eq!(shared_mem_bytes(SGEMM_LAUNCH).unwrap(), 6144);
     }
 

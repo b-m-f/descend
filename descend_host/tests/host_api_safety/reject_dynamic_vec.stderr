@@ -1,7 +1,7 @@
 error[E0308]: mismatched types
- --> tests/host_api_safety/reject_dynamic_vec.rs:9:37
+ --> tests/host_api_safety/reject_dynamic_vec.rs:8:37
   |
-9 |     let _buf = GpuBuffer::from_host(&vec, &stream);
+8 |     let _buf = GpuBuffer::from_host(&vec, &stream);
   |                -------------------- ^^^^ expected `&[_; _]`, found `&Vec<i32>`
   |                |
   |                arguments to this function are incorrect

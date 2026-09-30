@@ -3,11 +3,6 @@ use descend::ast::*;
 use proc_macro2::{TokenStream, TokenTree};
 use std::collections::HashMap;
 
-/// Parses a `<N: 16384, bs: 16>` block of generic bindings.
-///
-/// Both a launch site and an instantiation name a generic kernel's `nat`
-/// parameters this way, and both need them as literals: they are substituted
-/// into the Descend source before it is compiled.
 pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, String>, String> {
     let mut bindings = HashMap::new();
     let mut tokens = input.into_iter().peekable();
@@ -51,7 +46,6 @@ pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, Stri
     Ok(bindings)
 }
 
-/// Why it is needed: Safely converts the user's macro code into a semantic structure (`CompilUnit`) we can navigate to identify `Item::FunDef` nodes for code generation.
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<CompilUnit<'a>, String> {
@@ -59,10 +53,6 @@ pub fn parse_descend_source<'a>(
         .map_err(|e| format!("Failed to parse descend macro input: {:?}", e))
 }
 
-/// Translates Descend execution block dimensionality expressions into strings.
-///
-/// What it does: Flattens `Exec::GpuGrid` configurations into comma-separated text layouts.
-/// Why it is needed: Converts the internal AST coordinate types to text strings capable of being evaluated for CUDA grid launch configurations.
 pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     if let BaseExec::GpuGrid(dim_x, dim_y) = &exec_kind.base {
         let x_str = format_dim(dim_x);
@@ -72,10 +62,6 @@ pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     None
 }
 
-/// Converts 1D, 2D, and 3D native Descend dimensions into text.
-///
-/// What it does: Matches inner `Dim::X`, `Dim::XY`, etc. variants and delegates to `nat_to_string`.
-/// Why it is needed: Allows extraction of complex algebraic structures mapping directly to CUDA thread layouts.
 pub fn format_dim(dim: &descend::ast::Dim) -> String {
     match dim {
         descend::ast::Dim::X(nat) => format!("X<{}>", nat_to_string(&nat.0)),
@@ -105,10 +91,6 @@ pub fn format_dim(dim: &descend::ast::Dim) -> String {
     }
 }
 
-/// Unrolls mathematical expressions and abstract number representations back to text strings.
-///
-/// What it does: Recursively visits `Nat::Lit`, `Nat::BinOp`, etc., converting tree data structures into calculable strings.
-/// Why it is needed: Maintains mathematical operators supplied in grid sizes (e.g. `n/bs`) intact so they can be processed and verified cleanly.
 fn nat_to_string(nat: &Nat) -> String {
     match nat {
         Nat::Lit(v) => v.to_string(),
@@ -131,10 +113,6 @@ fn nat_to_string(nat: &Nat) -> String {
     }
 }
 
-/// Maps abstract GPU global structures to host-level representation strings.
-///
-/// What it does: Emits Rust types representing mapped memory slices like `&shrd cpu.mem [i32; ...] `.
-/// Why it is needed: Reconstitutes synthetically the CPU-side parameter mappings mirroring GPU resources.
 pub fn format_cpu_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -149,9 +127,6 @@ pub fn format_cpu_ty(ty: &Ty) -> String {
     "UNKNOWN_TY".to_string()
 }
 
-/// The type of a parameter the kernel takes by value, as both Descend and Rust
-/// spell it: `i32`, `[i32; 3]`, or a struct name. Empty for a reference
-/// parameter, which is passed as a device address instead.
 pub fn format_value_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         if !matches!(dty.dty, DataTyKind::Ref(_)) {
@@ -161,10 +136,6 @@ pub fn format_value_ty(ty: &Ty) -> String {
     String::new()
 }
 
-/// Extracts the dimensionality layout of a nested shared block array.
-///
-/// What it does: Traverses `GpuShared` AST type parameters to isolate their structure.
-/// Why it is needed: Necessary to determine the amount of runtime dynamic memory to allocate.
 pub fn format_shared_array_ty(ty: &Ty) -> String {
     if let TyKind::Data(dty) = &ty.ty {
         if let DataTyKind::Ref(ref_dty) = &dty.dty {
@@ -174,10 +145,6 @@ pub fn format_shared_array_ty(ty: &Ty) -> String {
     "UNKNOWN_ARRAY".to_string()
 }
 
-/// Builds text approximations for AST arrays.
-///
-/// What it does: Maps `DataTyKind` variants recursively to scalar sizes.
-/// Why it is needed: Connects standard primitive boundaries to internal compilation structures.
 pub fn format_array_dty(dty: &DataTy) -> String {
     match &dty.dty {
         DataTyKind::Array(inner, nat) => {
@@ -204,11 +171,6 @@ pub fn format_array_dty(dty: &DataTy) -> String {
     }
 }
 
-/// Renders a data type with every array size evaluated against `bindings`.
-///
-/// The text form of a type is produced once, here, from the AST — rather than
-/// produced early and patched afterwards, which is how a size name inside an
-/// unrelated position gets rewritten.
 pub fn format_dty_eval(dty: &DataTy, bindings: &HashMap<String, String>) -> Result<String, String> {
     match &dty.dty {
         DataTyKind::Array(inner, nat) => {
@@ -220,8 +182,6 @@ pub fn format_dty_eval(dty: &DataTy, bindings: &HashMap<String, String>) -> Resu
     }
 }
 
-/// Returns the Rust element type of a kernel parameter, or `None` when the
-/// Descend element type has no supported host representation.
 pub fn format_base_ty(ty: &Ty) -> Option<String> {
     let TyKind::Data(dty) = &ty.ty else {
         return None;
@@ -269,14 +229,6 @@ pub fn format_rust_struct(s: &descend::ast::StructDecl) -> String {
     out
 }
 
-/// The byte size of a parameter's element type, or `None` when the Descend code
-/// generator does not define one.
-///
-/// This mirrors `size_of_dty` in `descend::codegen` exactly, because the host's
-/// dynamic shared-memory request must agree with the packing the generated CUDA
-/// performs. In particular `u8` is *not* sized here: the code generator panics
-/// on it, so a `u8` shared parameter has to be rejected with a message rather
-/// than given a plausible-looking size.
 pub fn elem_byte_size(ty: &Ty) -> Option<u32> {
     let TyKind::Data(dty) = &ty.ty else {
         return None;
@@ -298,12 +250,6 @@ pub fn elem_byte_size(ty: &Ty) -> Option<u32> {
     }
 }
 
-/// The array dimensions of a parameter's type, outermost first.
-///
-/// Empty for a parameter that is not an array. Unlike [`extract_size_from_ty`],
-/// which renders the dimensions as text for substitution into generated source,
-/// this keeps the `Nat`s so they can be evaluated against the launch's generic
-/// bindings.
 pub fn extract_dim_nats(ty: &Ty) -> Vec<Nat> {
     let TyKind::Data(dty) = &ty.ty else {
         return Vec::new();
