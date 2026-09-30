@@ -36,7 +36,7 @@ unsafe fn borrowed_kernel_arguments_contract(
 }
 
 #[test]
-fn test_consumer_compiles_without_backend_traits() {
+fn consumer_items_typecheck_without_backend_traits_in_scope() {
     let _ = borrowed_kernel_arguments_contract;
     let _dummy = CustomVector {
         x: 0.0,
