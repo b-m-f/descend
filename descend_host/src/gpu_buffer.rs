@@ -4,13 +4,6 @@ use crate::error::HostError;
 use crate::stream::Stream;
 use crate::traits::{DescendType, DescendTypeWrapper};
 
-/// Device storage holding exactly one value of the contents type `T`.
-///
-/// `T` is the buffer's whole contents type, so an array buffer is
-/// `GpuBuffer<[i32; 1024]>` and its size is part of its type. The device
-/// allocation is one value of `T`, and its device address is the address of
-/// that value, which for an array is the address of its first element — the
-/// address a kernel's pointer parameter expects.
 pub struct GpuBuffer<T: DescendType> {
     pub(crate) dev_buf: DeviceBuffer<DescendTypeWrapper<T>>,
 }
@@ -27,19 +20,9 @@ impl<T: DescendType> GpuBuffer<T> {
         if size == 0 {
             return Err(HostError::InvalidSize("Zero-sized types are not supported"));
         }
-        let align = std::mem::align_of::<T>();
-        if align > 256 {
-            return Err(HostError::InvalidAlignment(
-                "Alignment > 256 is not supported by driver",
-            ));
-        }
         Ok(())
     }
 
-    /// Allocates device storage and uploads the single value `data`.
-    ///
-    /// Validation, context binding, allocation and copy failures are returned
-    /// as errors. The synchronous copy does not retain `data` after return.
     fn upload(data: &T, stream: &Stream) -> Result<Self, HostError> {
         Self::validate_buffer_params()?;
 
@@ -49,8 +32,6 @@ impl<T: DescendType> GpuBuffer<T> {
             .bind_to_thread()
             .map_err(|e| HostError::driver(e, "bind context for from_host"))?;
 
-        // SAFETY: DescendTypeWrapper<T> is repr(transparent) over T, so the
-        // values have identical layout.
         let source: &DescendTypeWrapper<T> =
             unsafe { &*std::ptr::from_ref(data).cast::<DescendTypeWrapper<T>>() };
 
@@ -59,7 +40,6 @@ impl<T: DescendType> GpuBuffer<T> {
         Ok(Self { dev_buf })
     }
 
-    /// Copies the device contents into a new host allocation.
     pub fn to_host(&self, stream: &Stream) -> Result<Box<T>, HostError> {
         if self.context().inner != stream.context.inner {
             return Err(HostError::ContextMismatch(
@@ -72,38 +52,27 @@ impl<T: DescendType> GpuBuffer<T> {
             .bind_to_thread()
             .map_err(|e| HostError::driver(e, "bind context for readback"))?;
 
-        let mut host = self
+        let host = self
             .dev_buf
             .to_host_vec(&stream.inner)
             .map_err(|e| HostError::driver(e, "device-to-host transfer"))?;
-        let value = host
-            .pop()
-            .expect("GpuBuffer always stores exactly one contents value");
-        debug_assert!(host.is_empty());
-        Ok(Box::new(value.0))
+        let actual_len = host.len();
+        let host: Box<[DescendTypeWrapper<T>; 1]> = host
+            .into_boxed_slice()
+            .try_into()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "DeviceBuffer::to_host_vec returned {actual_len} values for a GpuBuffer; expected exactly 1"
+                )
+            });
+
+        let host = Box::into_raw(host).cast::<T>();
+        Ok(unsafe { Box::from_raw(host) })
     }
 
-    /// Copies the device contents into `destination` and returns that exact
-    /// host reference. The destination is changed only after the synchronous
-    /// device-to-host copy has succeeded.
-    pub fn read_back_into<'h>(
-        &self,
-        stream: &Stream,
-        destination: &'h mut T,
-    ) -> Result<&'h mut T, HostError> {
-        let value = self.to_host(stream)?;
-        *destination = *value;
-        Ok(destination)
-    }
 }
 
-/// Array constructors. `N` is unified from the array argument and never written
-/// by a caller, so no const generic appears in a public type or signature.
 impl<T: DescendType, const N: usize> GpuBuffer<[T; N]> {
-    /// Allocates device storage and uploads `data`.
-    ///
-    /// Validation, context binding, allocation and copy failures are returned
-    /// as errors. The synchronous copy does not retain `data` after return.
     pub fn from_host(data: &[T; N], stream: &Stream) -> Result<Self, HostError> {
         Self::upload(data, stream)
     }
@@ -142,19 +111,6 @@ mod tests {
         assert!(matches!(
             GpuBuffer::<[ZST; 10]>::validate_buffer_params(),
             Err(HostError::InvalidSize("Zero-sized types are not supported"))
-        ));
-    }
-
-    #[derive(Clone, Copy)]
-    #[repr(align(512))]
-    struct OverAligned(#[allow(dead_code)] i32);
-    unsafe impl DescendType for OverAligned {}
-
-    #[test]
-    fn test_reject_over_aligned() {
-        assert!(matches!(
-            GpuBuffer::<[OverAligned; 10]>::validate_buffer_params(),
-            Err(HostError::InvalidAlignment(_))
         ));
     }
 
@@ -225,14 +181,12 @@ mod tests {
             return;
         }
 
-        // Zeroed pages are mapped lazily, so this reserves address space only.
         let layout = std::alloc::Layout::new::<[u8; N]>();
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) }.cast::<[u8; N]>();
         if ptr.is_null() {
             println!("skipping: host could not reserve {N} bytes");
             return;
         }
-        // SAFETY: allocated with the layout of [u8; N] and zero-initialized.
         let host = unsafe { Box::from_raw(ptr) };
 
         match GpuBuffer::from_host(&host, &stream) {

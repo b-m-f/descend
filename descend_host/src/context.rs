@@ -27,14 +27,15 @@ impl Context {
         })
     }
 
-    /// Reports and clears an error recorded while releasing a device resource.
-    ///
-    /// Destructors cannot return errors, so the backend records them in the
-    /// context. Unless taken here, a recorded error is reported by the next
-    /// backend operation that binds the context.
     pub fn check_deferred_errors(&self) -> Result<(), HostError> {
         self.inner
             .check_err()
             .map_err(|e| HostError::driver(e, "resource release"))
+    }
+
+    pub fn synchronize(&self) -> Result<(), HostError> {
+        self.inner
+            .synchronize()
+            .map_err(|e| HostError::driver(e, "context synchronize"))
     }
 }
