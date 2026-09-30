@@ -18,7 +18,7 @@ pub struct GpuBuffer<T: DescendType> {
 impl<T: DescendType> GpuBuffer<T> {
     pub fn context(&self) -> Context {
         Context {
-            inner: crate::backend::buffer_context(&self.dev_buf),
+            inner: self.dev_buf.context().clone(),
         }
     }
 
@@ -43,23 +43,19 @@ impl<T: DescendType> GpuBuffer<T> {
     fn upload(data: &T, stream: &Stream) -> Result<Self, HostError> {
         Self::validate_buffer_params()?;
 
-        crate::backend::bind_context_to_thread(&stream.context.inner)
+        stream
+            .context
+            .inner
+            .bind_to_thread()
             .map_err(|e| HostError::driver(e, "bind context for from_host"))?;
-
-        let mut dev_buf = crate::backend::buffer_uninitialized(&stream.inner, 1)
-            .map_err(|e| HostError::driver(e, "device allocation"))?;
 
         // SAFETY: DescendTypeWrapper<T> is repr(transparent) over T, so the
         // values have identical layout.
         let source: &DescendTypeWrapper<T> =
             unsafe { &*std::ptr::from_ref(data).cast::<DescendTypeWrapper<T>>() };
 
-        crate::backend::buffer_copy_from_host(
-            &mut dev_buf,
-            &stream.inner,
-            std::slice::from_ref(source),
-        )
-        .map_err(|e| HostError::driver(e, "host-to-device transfer"))?;
+        let dev_buf = DeviceBuffer::from_host(&stream.inner, std::slice::from_ref(source))
+            .map_err(|e| HostError::driver(e, "device buffer upload"))?;
         Ok(Self { dev_buf })
     }
 
@@ -70,23 +66,21 @@ impl<T: DescendType> GpuBuffer<T> {
                 "Stream context does not match buffer context",
             ));
         }
-        crate::backend::bind_context_to_thread(&stream.context.inner)
+        stream
+            .context
+            .inner
+            .bind_to_thread()
             .map_err(|e| HostError::driver(e, "bind context for readback"))?;
 
-        let mut host = Box::<DescendTypeWrapper<T>>::new_uninit();
-        crate::backend::buffer_copy_to_host(
-            &self.dev_buf,
-            &stream.inner,
-            std::slice::from_mut(host.as_mut()),
-        )
-        .map_err(|e| HostError::driver(e, "device-to-host transfer"))?;
-
-        // SAFETY: a successful synchronous copy initialized every byte, and
-        // DescendType requires device-produced values to be valid Rust values.
-        let host = unsafe { host.assume_init() };
-        // SAFETY: DescendTypeWrapper<T> is transparent over T, so both boxes
-        // have the same allocation layout and value representation.
-        Ok(unsafe { Box::from_raw(Box::into_raw(host).cast::<T>()) })
+        let mut host = self
+            .dev_buf
+            .to_host_vec(&stream.inner)
+            .map_err(|e| HostError::driver(e, "device-to-host transfer"))?;
+        let value = host
+            .pop()
+            .expect("GpuBuffer always stores exactly one contents value");
+        debug_assert!(host.is_empty());
+        Ok(Box::new(value.0))
     }
 
     /// Copies the device contents into `destination` and returns that exact
@@ -242,8 +236,8 @@ mod tests {
         let host = unsafe { Box::from_raw(ptr) };
 
         match GpuBuffer::from_host(&host, &stream) {
-            Err(HostError::Driver(_, "device allocation")) => {}
-            Err(other) => panic!("expected a device allocation error, got {other:?}"),
+            Err(HostError::Driver(_, "device buffer upload")) => {}
+            Err(other) => panic!("expected a device buffer upload error, got {other:?}"),
             Ok(_) => panic!("a {N}-byte allocation unexpectedly succeeded"),
         }
         drop(host);

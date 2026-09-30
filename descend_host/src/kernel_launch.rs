@@ -99,10 +99,7 @@ impl<'a> Kernel<'a> {
         } else {
             self.context = Some(buf.context());
         }
-        self.params
-            .push(Param::Device(crate::backend::buffer_device_ptr(
-                &buf.dev_buf,
-            )));
+        self.params.push(Param::Device(buf.dev_buf.cu_deviceptr()));
         Ok(())
     }
 
@@ -128,7 +125,10 @@ pub struct KernelLauncher<'a> {
 impl<'a> KernelLauncher<'a> {
     pub fn new(stream: &'a Stream, ptx_str: &str) -> Result<Self, HostError> {
         std::ffi::CString::new(ptx_str).map_err(|e| HostError::NulError(e, "PTX source"))?;
-        let module = crate::backend::load_module_from_ptx(&stream.context.inner, ptx_str)
+        let module = stream
+            .context
+            .inner
+            .load_module_from_ptx_src(ptx_str)
             .map_err(|e| HostError::driver(e, "load module"))?;
         Ok(Self { stream, module })
     }
@@ -185,15 +185,15 @@ impl<'a> KernelLauncher<'a> {
         }
         std::ffi::CString::new(kernel.fn_name)
             .map_err(|e| HostError::NulError(e, "kernel function name"))?;
-        let f = crate::backend::load_function(&self.module, kernel.fn_name)
+        let f = self
+            .module
+            .load_function(kernel.fn_name)
             .map_err(|e| HostError::driver(e, "load function"))?;
-        crate::backend::bind_context_to_thread(&self.stream.context.inner)
-            .map_err(|e| HostError::driver(e, "bind context for kernel launch"))?;
 
         let mut ptrs = kernel.param_ptrs();
 
         unsafe {
-            crate::backend::launch(
+            crate::backend::launch_kernel_on_stream(
                 &f,
                 kernel.config.grid_dim,
                 kernel.config.block_dim,

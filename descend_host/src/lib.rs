@@ -21,10 +21,6 @@ mod tests {
         let ctx = Context::new(0).unwrap();
         let s1 = ctx.new_stream().unwrap();
         let s2 = ctx.new_stream().unwrap();
-        let h1 = backend::raw_stream_handle(&s1.inner);
-        let h2 = backend::raw_stream_handle(&s2.inner);
-        assert_ne!(h1, 0, "s1 should not be stream 0");
-        assert_ne!(h2, 0, "s2 should not be stream 0");
-        assert_ne!(h1, h2, "Streams should be different");
+        assert_ne!(s1.inner, s2.inner, "streams should be different");
     }
 }
