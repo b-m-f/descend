@@ -226,6 +226,47 @@ mod tests {
     }
 
     #[test]
+    fn device_slots_hold_a_pointer_to_the_stored_device_address() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+        let buffer = GpuBuffer::from_host(&[1i32; 4], &stream).unwrap();
+        let device_address = buffer.dev_buf.cu_deviceptr();
+
+        let mut kernel = Kernel::new("kernel", config());
+        kernel.push_arg_shrd(&buffer).unwrap();
+
+        let ptrs = kernel.param_ptrs();
+        assert_eq!(ptrs.len(), 1);
+        assert_ne!(
+            ptrs[0] as u64, device_address,
+            "a device slot must not be the device address itself"
+        );
+        assert_eq!(
+            unsafe { *ptrs[0].cast::<u64>() },
+            device_address,
+            "a device slot must point at the stored device address"
+        );
+    }
+
+    #[test]
+    fn device_and_value_slots_keep_their_push_order() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+        let mut buffer = GpuBuffer::from_host(&[1i32; 4], &stream).unwrap();
+        let device_address = buffer.dev_buf.cu_deviceptr();
+        let count = 4i32;
+
+        let mut kernel = Kernel::new("kernel", config());
+        kernel.push_arg_uniq(&mut buffer).unwrap();
+        kernel.push_arg_val(&count).unwrap();
+
+        let ptrs = kernel.param_ptrs();
+        assert_eq!(ptrs.len(), 2);
+        assert_eq!(unsafe { *ptrs[0].cast::<u64>() }, device_address);
+        assert_eq!(ptrs[1], address_of(&count));
+    }
+
+    #[test]
     fn rejected_push_leaves_earlier_slots_in_order() {
         let first = 1i32;
         let zst = Zst;

@@ -1,7 +1,8 @@
-use descend_host::{Context, GpuBuffer};
 use descend_host::error::HostError;
+use descend_host::{Context, GpuBuffer};
 
 #[test]
+#[ignore = "requires a second CUDA device"]
 fn test_genuine_mismatch() {
     let ctx0 = Context::new(0).unwrap();
 
@@ -13,9 +14,12 @@ fn test_genuine_mismatch() {
                 println!("Skipping genuine context mismatch test: device 1 not available.");
                 return;
             } else {
-                panic!("Failed to create device 1 context for unexpected reason: {}", error_str);
+                panic!(
+                    "Failed to create device 1 context for unexpected reason: {}",
+                    error_str
+                );
             }
-        },
+        }
         Err(e) => panic!("Unexpected error type: {:?}", e),
     };
 
@@ -27,7 +31,7 @@ fn test_genuine_mismatch() {
 
     let res = buf.to_host(&stream1);
     match res {
-        Err(HostError::ContextMismatch(_)) => {},
+        Err(HostError::ContextMismatch(_)) => {}
         Err(e) => panic!("Expected ContextMismatch, got: {:?}", e),
         Ok(_) => panic!("Expected mismatch error, but it succeeded!"),
     }

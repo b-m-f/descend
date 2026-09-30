@@ -69,7 +69,6 @@ impl<T: DescendType> GpuBuffer<T> {
         let host = Box::into_raw(host).cast::<T>();
         Ok(unsafe { Box::from_raw(host) })
     }
-
 }
 
 impl<T: DescendType, const N: usize> GpuBuffer<[T; N]> {
@@ -103,13 +102,13 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
-    struct ZST;
-    unsafe impl DescendType for ZST {}
+    struct ZeroSizeTrait;
+    unsafe impl DescendType for ZeroSizeTrait {}
 
     #[test]
     fn test_reject_zst() {
         assert!(matches!(
-            GpuBuffer::<[ZST; 10]>::validate_buffer_params(),
+            GpuBuffer::<[ZeroSizeTrait; 10]>::validate_buffer_params(),
             Err(HostError::InvalidSize("Zero-sized types are not supported"))
         ));
     }
@@ -199,5 +198,90 @@ mod tests {
         let small = [7u8; 64];
         let buf = GpuBuffer::from_host(&small, &stream).unwrap();
         assert_eq!(*buf.to_host(&stream).unwrap(), small);
+    }
+
+    fn roundtrip<T, const N: usize>(data: [T; N], stream: &Stream)
+    where
+        T: DescendType + PartialEq + std::fmt::Debug,
+    {
+        let buf = GpuBuffer::from_host(&data, stream).unwrap();
+        assert_eq!(
+            *buf.to_host(stream).unwrap(),
+            data,
+            "a roundtrip of [{}; {N}] must preserve every value",
+            std::any::type_name::<T>()
+        );
+    }
+
+    #[test]
+    fn every_primitive_descend_type_survives_a_roundtrip() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+
+        roundtrip([i8::MIN, -1, 0, 1, i8::MAX], &stream);
+        roundtrip([i16::MIN, -1, 0, 1, i16::MAX], &stream);
+        roundtrip([i32::MIN, -1, 0, 1, i32::MAX], &stream);
+        roundtrip([i64::MIN, -1, 0, 1, i64::MAX], &stream);
+        roundtrip([u8::MIN, 1, 0x7f, 0x80, u8::MAX], &stream);
+        roundtrip([u16::MIN, 1, 0x7fff, 0x8000, u16::MAX], &stream);
+        roundtrip([u32::MIN, 1, 0x7fff_ffff, 0x8000_0000, u32::MAX], &stream);
+        roundtrip(
+            [
+                u64::MIN,
+                1,
+                0x7fff_ffff_ffff_ffff,
+                0x8000_0000_0000_0000,
+                u64::MAX,
+            ],
+            &stream,
+        );
+        roundtrip([f32::MIN, -1.5, 0.0, 1.5, f32::MAX], &stream);
+        roundtrip([f64::MIN, -1.5, 0.0, 1.5, f64::MAX], &stream);
+        roundtrip([true, false, true, true, false], &stream);
+    }
+
+    #[test]
+    fn nested_arrays_survive_a_roundtrip() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+
+        let mut data = [[0i32; 4]; 8];
+        for (row_index, row) in data.iter_mut().enumerate() {
+            for (cell_index, cell) in row.iter_mut().enumerate() {
+                *cell = (row_index * 4 + cell_index) as i32;
+            }
+        }
+        roundtrip(data, &stream);
+    }
+
+    #[test]
+    fn dropping_a_buffer_releases_device_memory() {
+        const N: usize = 256 << 20;
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+
+        let before = crate::backend::free_device_memory(&ctx.inner).unwrap();
+        if before < 4 * N {
+            println!("skipping: {before} bytes free, {} wanted", 4 * N);
+            return;
+        }
+
+        let host: Box<[u8; N]> = vec![0u8; N].into_boxed_slice().try_into().unwrap();
+        let buffer = GpuBuffer::from_host(&host, &stream).unwrap();
+
+        let allocated = crate::backend::free_device_memory(&ctx.inner).unwrap();
+        assert!(
+            before - allocated >= N / 2,
+            "a {N}-byte buffer must be visible in free device memory: before={before} allocated={allocated}"
+        );
+
+        drop(buffer);
+        ctx.synchronize().unwrap();
+
+        let released = crate::backend::free_device_memory(&ctx.inner).unwrap();
+        assert!(
+            released + N / 2 >= before,
+            "dropping the buffer must return its device memory: before={before} released={released}"
+        );
     }
 }

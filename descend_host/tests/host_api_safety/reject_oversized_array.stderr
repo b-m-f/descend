@@ -1,5 +1,5 @@
 error[E0080]: values of the type `[OverflowType; 2305843009213693951]` are too big for the target architecture
- --> $RUST/core/src/mem/mod.rs
+ --> tests/host_api_safety/reject_oversized_array.rs:9:1
   |
-  |     const SIZE: usize = intrinsics::size_of::<Self>();
-  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<[OverflowType; 2305843009213693951] as std::mem::SizedTypeProperties>::SIZE` failed here
+9 | static CONTENTS: [OverflowType; usize::MAX / 8] = [OverflowType(0, 0, 0, 0); usize::MAX / 8];
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `CONTENTS` failed here
