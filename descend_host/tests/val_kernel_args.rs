@@ -1,5 +1,3 @@
-//! By-value kernel arguments generated from Descend definitions.
-
 use descend_host::{Context, GpuBuffer};
 use descend_macros::descend;
 

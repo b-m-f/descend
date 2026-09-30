@@ -8,9 +8,6 @@ fn config() -> KernelLaunchConfig {
     }
 }
 
-// The by-value parallel to `kernel_arg_outlives_buffer`: a pushed value must
-// outlive the kernel. A `DescendType` is `Copy`, so it cannot be moved out of;
-// the borrow ends instead by the value going out of scope.
 fn value_dropped_before_launch(launcher: &KernelLauncher) {
     let mut kernel = Kernel::new("kernel", config());
     {
@@ -24,9 +21,6 @@ fn scale() -> f32 {
     2.0
 }
 
-// A computed temporary cannot be pushed either: the caller must bind a local.
-// (A borrow of a literal such as `&2.0f32` is a different case: rvalue static
-// promotion gives it `'static`, so it outlives the kernel and is accepted.)
 fn temporary_pushed(launcher: &KernelLauncher) {
     let mut kernel = Kernel::new("kernel", config());
     kernel.push_arg_val(&scale()).unwrap();

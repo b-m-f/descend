@@ -6,6 +6,5 @@ fn main() {
 
     let arr = [1, 2, 3];
     let slice: &[i32] = &arr;
-    // Should fail because &[T] has no length N at compile time
     let _buf = GpuBuffer::from_host(slice, &stream);
 }

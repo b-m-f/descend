@@ -1,5 +1,3 @@
-//! Real driver failures that can be provoked without stressing the device.
-
 use descend_host::error::HostError;
 use descend_host::{Context, KernelLauncher};
 

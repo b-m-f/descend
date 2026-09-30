@@ -27,9 +27,7 @@ fn test_genuine_mismatch() {
 
     let res = buf.to_host(&stream1);
     match res {
-        Err(HostError::ContextMismatch(_)) => {
-            // This is the exactly expected behavior!
-        },
+        Err(HostError::ContextMismatch(_)) => {},
         Err(e) => panic!("Expected ContextMismatch, got: {:?}", e),
         Ok(_) => panic!("Expected mismatch error, but it succeeded!"),
     }

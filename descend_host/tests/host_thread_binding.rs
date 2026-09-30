@@ -8,9 +8,7 @@ fn test_cross_thread_binding() {
     let arr = [42i32; 10];
     let buf = GpuBuffer::from_host(&arr, &stream).unwrap();
 
-    // Pass the buffer and stream to a different OS thread
     let handle = std::thread::spawn(move || {
-        // to_host will correctly bind the context in this new thread before reading
         let result = buf.to_host(&stream).unwrap();
         assert_eq!(result[0], 42);
         assert_eq!(result[9], 42);

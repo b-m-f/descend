@@ -14,25 +14,11 @@ pub struct KernelLaunchConfig {
     pub shared_mem_bytes: u32,
 }
 
-/// One argument slot, in the kernel's signature order.
 enum Param {
-    /// The slot holds the buffer's device address.
     Device(u64),
-    /// The slot is the caller's own value.
     Val(NonNull<c_void>),
 }
 
-/// Arguments and configuration for one kernel submission.
-///
-/// Every pushed argument — a buffer or a value passed by value — stays borrowed
-/// for `'a`, i.e. until the `Kernel` is consumed by [`KernelLauncher::launch`].
-/// These borrows cover argument preparation and submission only. Because
-/// [`KernelLauncher::launch`] returns before execution completes, its unsafe
-/// caller must keep device allocations and the loaded module alive and must
-/// order later accesses until the submitted work has completed.
-///
-/// Arguments of both kinds share one positional sequence, because order across
-/// argument kinds is the kernel's signature order.
 pub struct Kernel<'a> {
     pub fn_name: &'a str,
     pub config: KernelLaunchConfig,
@@ -50,7 +36,6 @@ impl<'a> Kernel<'a> {
         }
     }
 
-    /// Pushes a buffer for a parameter the kernel only reads (`shrd`).
     pub fn push_arg_shrd<T: DescendType>(
         &mut self,
         buf: &'a GpuBuffer<T>,
@@ -58,7 +43,6 @@ impl<'a> Kernel<'a> {
         self.push_arg_dev(buf)
     }
 
-    /// Pushes a buffer for a parameter the kernel may write (`uniq`).
     pub fn push_arg_uniq<T: DescendType>(
         &mut self,
         buf: &'a mut GpuBuffer<T>,
@@ -66,20 +50,6 @@ impl<'a> Kernel<'a> {
         self.push_arg_dev(buf)
     }
 
-    /// Pushes a value for a parameter the kernel takes by value.
-    ///
-    /// The value stays with the caller, so its storage has exactly `T`'s size
-    /// and alignment; only its address is recorded. The borrow must outlive this
-    /// `Kernel`, so safe code cannot drop or move the value before
-    /// [`KernelLauncher::launch`] consumes the kernel — a computed temporary is
-    /// therefore rejected and the caller binds a local, as it already does for
-    /// buffers. (A borrow of a literal is promoted to `'static` and is
-    /// accepted.) The driver takes the number of
-    /// bytes to read from the compiled kernel signature, so no size is recorded
-    /// here.
-    ///
-    /// A value has no device allocation and hence no context, so this records
-    /// none: a kernel whose arguments are all by value is not context-checked.
     pub fn push_arg_val<T: DescendType>(&mut self, value: &'a T) -> Result<(), HostError> {
         if std::mem::size_of::<T>() == 0 {
             return Err(HostError::InvalidSize("Zero-sized types are not supported"));
@@ -103,9 +73,6 @@ impl<'a> Kernel<'a> {
         Ok(())
     }
 
-    /// Builds the driver's argument array: one pointer per slot, in push order.
-    /// A device slot yields the address of its own address word, a by-value slot
-    /// the address of the caller's value.
     fn param_ptrs(&mut self) -> Vec<*mut c_void> {
         self.params
             .iter_mut()
@@ -133,48 +100,6 @@ impl<'a> KernelLauncher<'a> {
         Ok(Self { stream, module })
     }
 
-    /// Submits `kernel` on this launcher's stream.
-    ///
-    /// # Safety
-    ///
-    /// The borrow checker guarantees that every host argument slot outlives
-    /// submission and that buffers pushed with `push_arg_uniq` are not accessed
-    /// by other safe code while the argument list is assembled. The caller must
-    /// additionally guarantee facts that raw PTX and submission-time borrows do
-    /// not expose:
-    ///
-    /// - **Signature**: the named kernel exists and its argument count, order
-    ///   and ABI match the pushed arguments. For a buffer, element size,
-    ///   alignment, representation, size and address space must match; for a
-    ///   value pushed with `push_arg_val`, the kernel's parameter must itself be
-    ///   taken by value and its size, alignment and representation must agree
-    ///   with the pushed `T`. The driver reads a by-value argument's bytes
-    ///   according to the compiled signature, not according to the host slot, so
-    ///   a mismatch misreads host memory instead of failing.
-    /// - **Permissions and ordering**: every parameter the kernel may write was
-    ///   pushed with `push_arg_uniq`. Until execution completes, no host access
-    ///   or kernel on another stream may use the same allocations in a
-    ///   conflicting way. A by-value parameter cannot be written through and so
-    ///   needs no exclusivity, but the pointer handed to
-    ///   the driver for it derives from a shared reference: the kernel must only
-    ///   read that storage.
-    /// - **Resource lifetimes**: every pushed device allocation and this
-    ///   launcher's module remain alive until execution completes. The caller
-    ///   establishes completion with stream synchronization or an equivalent
-    ///   CUDA ordering mechanism before releasing them.
-    /// - **Execution parameters**: grid, block and shared-memory sizes satisfy
-    ///   the kernel's indexing assumptions.
-    /// - **Output validity**: every value the kernel writes is a valid value of
-    ///   its Rust `DescendType`, including the restricted encodings of `bool`.
-    ///
-    /// `push_arg_val` records no context, so a kernel whose arguments are all by
-    /// value passes the context check below unexamined; its module and stream
-    /// context agreement is the caller's obligation.
-    ///
-    /// Success means the kernel was submitted, not that execution completed.
-    /// CUDA consumes the temporary host parameter slots during submission, so
-    /// they may be released when this method returns. Device allocations and
-    /// the module may not.
     pub unsafe fn launch(&self, mut kernel: Kernel) -> Result<(), HostError> {
         if let Some(ctx) = &kernel.context {
             if ctx.inner != self.stream.context.inner {
@@ -210,7 +135,6 @@ impl<'a> KernelLauncher<'a> {
 mod tests {
     use super::*;
 
-    /// A 16-byte value: the case a fixed-width argument slot would truncate.
     #[derive(Clone, Copy)]
     #[repr(C)]
     struct Record(i32, i32, i32, i32);
