@@ -1,6 +1,3 @@
-//! Evaluating Descend's `Nat` expressions against the sizes an instantiation
-//! bound, and the one text substitution left in the crate.
-
 use descend::ast::Nat;
 use std::collections::HashMap;
 

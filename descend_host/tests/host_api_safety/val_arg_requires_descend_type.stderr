@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `String: DescendType` is not satisfied
-  --> tests/host_api_safety/val_arg_requires_descend_type.rs:12:33
+  --> tests/host_api_safety/val_arg_requires_descend_type.rs:11:33
    |
-12 |     let _ = kernel.push_arg_val(&value);
+11 |     let _ = kernel.push_arg_val(&value);
    |                    ------------ ^^^^^^ the trait `DescendType` is not implemented for `String`
    |                    |
    |                    required by a bound introduced by this call

@@ -1,18 +1,12 @@
 use std::io::Write;
 use std::process::Command;
 
-/// One compiled kernel: the PTX payload, the entry symbol to look up in it, and
-/// the dynamic shared memory its launch must request.
 pub struct CompiledKernel {
     pub ptx: String,
     pub mangled_name: String,
     pub shared_mem_bytes: u64,
 }
 
-/// Compiles synthesized Descend source code down to PTX bytecode via descend library + nvcc.
-///
-/// What it does: Runs AST type checking and converts `full_descend` logic via NVCC into a raw PTX payload.
-/// Why it is needed: Necessary to provide the executable payload needed by the host orchestrator at runtime.
 pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<CompiledKernel, String> {
     debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
     let full_source = descend::parser::SourceCode::new(full_descend.to_string());
@@ -32,8 +26,6 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<CompiledKerne
         host_fn,
     } = generate_device_cpp(&mut compil_unit, fn_name);
 
-    // Read the launch's shared-memory argument before spawning nvcc, so a size
-    // the generator could not resolve is reported without the compile round trip.
     let shared_mem_bytes = crate::shared_mem::shared_mem_bytes(&host_fn)?;
 
     debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", fn_name, final_cpp_code);
@@ -60,8 +52,6 @@ pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<CompiledKerne
     })
 }
 
-/// The generated CUDA, split into the device code that goes to nvcc and the
-/// synthesized host function that is stripped from it.
 struct DeviceCpp {
     code: String,
     host_fn: String,
@@ -89,10 +79,6 @@ fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str
     }
 }
 
-/// Compiles `cuda` to PTX with `nvcc`.
-///
-/// The sources live in a `tempfile`, so a failure between writing and reading
-/// cannot leave them behind.
 fn run_nvcc(cuda: &str, nvcc_args: &'static [String]) -> Result<String, String> {
     let mut cu_file = tempfile::Builder::new()
         .prefix("descend_kernel_")
@@ -130,12 +116,6 @@ fn run_nvcc(cuda: &str, nvcc_args: &'static [String]) -> Result<String, String> 
         .map_err(|e| format!("Failed to read generated PTX file: {e}"))
 }
 
-/// Where a compilation of `cuda` with `nvcc_args` would be cached.
-///
-/// The key covers the generated CUDA rather than the Descend source, so a change
-/// in the Descend compiler invalidates the entry too, and the nvcc options and
-/// version, since either changes the output. `DESCEND_NO_CACHE` disables the
-/// cache entirely.
 fn cache_path(cuda: &str, nvcc_args: &[String]) -> Option<std::path::PathBuf> {
     use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -166,11 +146,9 @@ fn store_ptx(cuda: &str, nvcc_args: &[String], ptx: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // A failed write only costs the next compilation a cache miss.
     let _ = std::fs::write(path, ptx);
 }
 
-/// The `nvcc` banner, read once per process.
 fn nvcc_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {
@@ -182,16 +160,8 @@ fn nvcc_version() -> &'static str {
     })
 }
 
-/// The header of the host function the macro synthesized and does not want.
 const HOST_FN_MARKER: &str = "__host__ auto dummy_main";
 
-/// Splits generated CUDA into the device code and the synthesized host function.
-///
-/// The function is found by its header and ended by brace balance rather than by
-/// the first closing brace, so a nested block inside it cannot end it early. A
-/// header that is only a declaration ends at its semicolon. The host function is
-/// returned rather than dropped, because the dynamic shared-memory byte count
-/// lives in the launch it contains.
 fn split_off_host_fn(cpp: &str, marker: &str) -> DeviceCpp {
     let mut code = String::new();
     let mut host_fn = String::new();
@@ -218,7 +188,6 @@ fn split_off_host_fn(cpp: &str, marker: &str) -> DeviceCpp {
             if header_seen && depth <= 0 {
                 in_host_fn = false;
             } else if !header_seen && line.trim_end().ends_with(';') {
-                // A forward declaration, with no body to skip.
                 in_host_fn = false;
             }
             continue;
@@ -231,10 +200,6 @@ fn split_off_host_fn(cpp: &str, marker: &str) -> DeviceCpp {
     DeviceCpp { code, host_fn }
 }
 
-/// The nvcc options for this process, resolved once.
-///
-/// Detecting the architecture spawns `nvidia-smi`, which is far too expensive to
-/// repeat for every kernel in a build.
 fn resolve_nvcc_options() -> Result<&'static [String], String> {
     static OPTIONS: std::sync::OnceLock<Result<Vec<String>, String>> = std::sync::OnceLock::new();
     OPTIONS
@@ -251,7 +216,20 @@ fn probe_nvcc_options() -> Result<Vec<String>, String> {
         .map(|s| s.to_string())
         .collect();
 
-    // Default to the architecture of the current machine if possible
+    // TODO: only needed because offline nvcc leaves __CUDACC_RTC__ undefined, so
+    // descend::array resolves to std::array, whose operator[] is host-only
+    // constexpr, and indexing a by-value array argument in device code is
+    // rejected. Compiling through NVRTC instead selects the __CUDACC_RTC__ branch
+    // of descend.cuh, which already defines array with a __host__ __device__
+    // operator[]; that was verified to compile this kernel unmodified. Drop this
+    // flag once the PTX path moves to NVRTC.
+    if !options
+        .iter()
+        .any(|opt| opt == "--expt-relaxed-constexpr" || opt == "-expt-relaxed-constexpr")
+    {
+        options.push("--expt-relaxed-constexpr".to_string());
+    }
+
     if !options
         .iter()
         .any(|opt| opt.starts_with("-arch=") || opt.starts_with("--gpu-architecture="))
@@ -353,8 +331,6 @@ __global__ auto kernel(int *a) -> void { *a = 1; }
         );
     }
 
-    /// Runs the real code generator, so the split keeps working if the shape of
-    /// its output drifts. Needs no GPU and no `nvcc`.
     #[test]
     fn the_split_matches_what_the_code_generator_emits() {
         let source = descend::parser::SourceCode::new(

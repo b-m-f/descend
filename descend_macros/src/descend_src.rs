@@ -1,12 +1,5 @@
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 
-/// Converts a TokenStream into a densely packed string adhering to the strict spacing requirements of the Descend PEG parser.
-///
-/// What it does: Recursively visits `TokenTree` instances, intelligently suppressing whitespace between punctuation while
-/// ensuring literals and identifiers remain properly spaced.
-/// Why it is needed: The native rustc stringification (`TokenStream::to_string()`) injects syntactic spaces globally
-/// (e.g. `gpu . global` instead of `gpu.global`). The Descend compiler parser is brittle regarding these injected spaces,
-/// so this function guarantees a clean syntax payload compatible directly with the compiler.
 pub fn to_descend_string(stream: TokenStream) -> String {
     let mut out = String::new();
     let mut last_was_ident_or_lit = false;
@@ -68,8 +61,6 @@ mod tests {
 
     #[test]
     fn address_spaces_keep_their_dot() {
-        // `TokenStream::to_string` would produce `gpu . global`, which the
-        // Descend parser rejects.
         assert!(packed("gpu.global").contains("gpu.global"));
         assert!(packed("gpu.shared").contains("gpu.shared"));
     }
@@ -82,15 +73,10 @@ mod tests {
 
     #[test]
     fn turbofish_stays_glued() {
-        // Brackets may end up spaced — `[ [block] ]` parses fine — but a split
-        // `:: <256>` does not.
         let out = packed("(*a).to_view.grp::<256>[[block]][[thread]]");
         assert!(out.contains("grp::<256>"), "{out}");
     }
 
-    /// The contract this function actually owes: whatever it produces must be
-    /// accepted by the Descend parser. Cheaper and stricter than asserting on
-    /// spacing, and it needs neither a GPU nor `nvcc`.
     #[test]
     fn a_packed_kernel_parses_as_descend() {
         let source = packed(

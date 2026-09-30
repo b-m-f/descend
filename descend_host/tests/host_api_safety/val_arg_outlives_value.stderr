@@ -1,27 +1,27 @@
 error[E0597]: `value` does not live long enough
-  --> tests/host_api_safety/val_arg_outlives_value.rs:18:29
+  --> tests/host_api_safety/val_arg_outlives_value.rs:15:29
    |
-17 |         let value = 7i32;
+14 |         let value = 7i32;
    |             ----- binding `value` declared here
-18 |         kernel.push_arg_val(&value).unwrap();
+15 |         kernel.push_arg_val(&value).unwrap();
    |                             ^^^^^^ borrowed value does not live long enough
-19 |     }
+16 |     }
    |     - `value` dropped here while still borrowed
-20 |     let _ = unsafe { launcher.launch(kernel) };
+17 |     let _ = unsafe { launcher.launch(kernel) };
    |                                      ------ borrow later used here
 
 error[E0716]: temporary value dropped while borrowed
-  --> tests/host_api_safety/val_arg_outlives_value.rs:32:26
+  --> tests/host_api_safety/val_arg_outlives_value.rs:26:26
    |
-32 |     kernel.push_arg_val(&scale()).unwrap();
+26 |     kernel.push_arg_val(&scale()).unwrap();
    |                          ^^^^^^^          - temporary value is freed at the end of this statement
    |                          |
    |                          creates a temporary value which is freed while still in use
-33 |     let _ = unsafe { launcher.launch(kernel) };
+27 |     let _ = unsafe { launcher.launch(kernel) };
    |                                      ------ borrow later used here
    |
 help: consider using a `let` binding to create a longer lived value
    |
-32 ~     let binding = scale();
-33 ~     kernel.push_arg_val(&binding).unwrap();
+26 ~     let binding = scale();
+27 ~     kernel.push_arg_val(&binding).unwrap();
    |

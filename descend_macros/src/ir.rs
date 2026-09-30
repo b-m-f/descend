@@ -1,39 +1,24 @@
 use crate::ast::*;
 use descend::ast::*;
 
-/// Representation of a GPU kernel parameter.
 #[derive(Debug, Clone)]
 pub struct KernelParam {
     pub name: String,
     pub is_uniq: bool,
     pub is_shared_mem: bool,
-    /// A parameter that is not a reference: the kernel takes its value, so the
-    /// host passes the value itself rather than a device address.
     pub is_by_value: bool,
-    /// The array dimensions as `Nat`s, for evaluation against the launch's
-    /// generic bindings. Empty for a non-array parameter.
     pub dim_nats: Vec<Nat>,
-    /// The element type's byte size as the Descend code generator defines it,
-    /// or `None` when it defines none.
     pub elem_bytes: Option<u32>,
     pub elem_base_ty: Option<String>,
     pub cpu_ty_str: String,
-    /// The parameter's own type, for a parameter taken by value: `i32`,
-    /// `[i32; 3]`, a struct name. Empty for a reference parameter.
     pub value_ty_str: String,
-    /// The same type as an AST value, so the Rust side can render it with the
-    /// instantiated sizes instead of patching its text.
     pub value_dty: Option<DataTy>,
     pub shared_ty_str: String,
 }
 
-/// Intermediate Representation for a specific GPU kernel.
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub function_name: String,
-    /// The names of the kernel's `nat` generic parameters. A kernel with none
-    /// can be compiled where it is defined; a kernel with some cannot, because
-    /// its sizes only become literals at a launch site.
     pub nat_generics: Vec<String>,
     pub grid_dim: Option<descend::ast::Dim>,
     pub block_dim: Option<descend::ast::Dim>,
@@ -41,18 +26,11 @@ pub struct Kernel {
     pub params: Vec<KernelParam>,
 }
 
-/// Whether a Descend function is a kernel that can be launched, i.e. one that
-/// executes over a GPU grid. A function executing on a thread or on the host is
-/// callable from Descend code but is not an entry point.
 pub fn is_launchable(f: &FunDef) -> bool {
     matches!(f.exec.exec.base, BaseExec::GpuGrid(_, _))
 }
 
 impl Kernel {
-    /// Extracts Kernel IR for a given target function name from the parsed compilation unit.
-    ///
-    /// What it does: Scans the Descend AST for the `FunDef` matching `target_name`.
-    /// Why it is needed: Extracts specifically requested FunDef to compile to PTX and bind to the Rust invocation.
     pub fn extract(compil_unit: &CompilUnit, target_name: &str) -> Result<Self, String> {
         for item in &compil_unit.items {
             if let Item::FunDef(f) = item {
@@ -86,10 +64,6 @@ impl Kernel {
                 for param in &f.param_decls {
                     let p_name = &param.ident.name;
                     let elem_base_ty = crate::ast::format_base_ty(param.ty.as_ref().unwrap());
-                    // Read ownership and memory kind from the type itself. A
-                    // `Debug`-string search would also match a nested type that
-                    // merely mentions them, and both flags decide how the
-                    // parameter is passed to the device.
                     let (is_uniq, is_shared_mem, is_by_value) = match &param.ty.as_ref().unwrap().ty
                     {
                         TyKind::Data(dty) => match &dty.dty {

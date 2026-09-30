@@ -1,6 +1,3 @@
-//! The Rust items a kernel becomes: a launch function and the constant holding
-//! the configuration derived from the kernel's own declaration.
-
 use crate::compile::CompiledKernel;
 use crate::ir::Kernel;
 use crate::nat::{eval_dim, eval_nat};
@@ -10,21 +7,6 @@ use quote::{format_ident, quote};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-/// Generates a callable Rust function for a kernel whose sizes are all known
-/// where it is defined, plus a constant holding the launch configuration the
-/// kernel's own declaration determines.
-///
-/// The function is safe. `KernelLauncher::launch` is unsafe because a caller
-/// pushing arguments by hand cannot be held to the kernel's signature; here the
-/// PTX, the entry symbol, the parameter types, their order and the launch
-/// configuration are all generated from one Descend definition, so the
-/// obligations that method documents are discharged by construction. What
-/// remains delegated is a user's own `unsafe impl DescendType` for a struct
-/// element type. The generated function synchronizes before returning, so its
-/// borrowed buffers and locally loaded module outlive device execution even
-/// though the low-level launch primitive returns after submission. Submission
-/// and synchronization failures are propagated through the generated
-/// function's `Result`.
 pub fn generate_launch_fn(
     kernel: &Kernel,
     compiled: &CompiledKernel,
@@ -73,9 +55,6 @@ pub fn generate_launch_fn(
                 param.name
             ));
         };
-        // The buffer's element count is evaluated from the parameter's own
-        // `Nat`s, so the generated type carries a literal rather than an
-        // expression patched together from text.
         let mut elements: u64 = 1;
         for nat in &param.dim_nats {
             let dim = eval_nat(nat, bindings)?;
@@ -118,7 +97,6 @@ pub fn generate_launch_fn(
         })?);
 
     Ok(quote! {
-        /// The launch configuration derived from this kernel's declaration.
         pub const #config_name: ::descend_host::KernelLaunchConfig =
             ::descend_host::KernelLaunchConfig {
                 grid_dim: (#grid_x, #grid_y, #grid_z),
@@ -137,13 +115,6 @@ pub fn generate_launch_fn(
                 stream,
                 ::core::str::from_utf8(PTX_BYTES).unwrap(),
             )?;
-            // SAFETY: the PTX is this kernel's own compilation, the entry name was
-            // read back out of it, the arguments are pushed in the kernel's
-            // parameter order with the ownership its Descend types declare, and the
-            // launch configuration comes from the kernel's own grid declaration and
-            // shared-memory parameters. The synchronization below keeps every
-            // borrowed allocation and the launcher's module alive through the
-            // completion attempt; success establishes completed execution.
             let launch_result = unsafe { launcher.launch(kernel) };
             stream.synchronize()?;
             launch_result
@@ -151,12 +122,6 @@ pub fn generate_launch_fn(
     })
 }
 
-/// The Rust binding name for a Descend parameter.
-///
-/// Descend and Rust do not reserve the same words, so a parameter may need the
-/// raw form. The few identifiers Rust cannot make raw are reported rather than
-/// silently renamed, because the generated function's parameter names are part
-/// of what a caller reads.
 fn rust_parameter_name(name: &str, function: &str) -> Result<String, String> {
     const UNRAWABLE: [&str; 5] = ["self", "Self", "crate", "super", "_"];
     const KEYWORDS: [&str; 49] = [
@@ -189,7 +154,6 @@ mod tests {
 
     #[test]
     fn a_rust_keyword_becomes_a_raw_identifier() {
-        // Descend and Rust do not reserve the same words.
         assert_eq!(rust_parameter_name("type", "k").unwrap(), "r#type");
         assert_eq!(rust_parameter_name("move", "k").unwrap(), "r#move");
         assert_eq!(rust_parameter_name("ref", "k").unwrap(), "r#ref");
