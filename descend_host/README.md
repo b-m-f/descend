@@ -3,7 +3,8 @@
 Host-side interface for launching Descend kernels from Rust: contexts, streams,
 device buffers, and an asynchronous, `unsafe` low-level kernel launcher. Safe
 functions generated from Descend kernels synchronize before returning. The CUDA
-backend (`cuda-core`) is private and reached only through `src/backend.rs`.
+backend (`cuda-core`) is private and re-exported internally through the thin
+facade in `src/backend.rs`.
 
 ## Running the tests
 

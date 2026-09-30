@@ -1,170 +1,24 @@
-//! Private adapter for the selected CUDA backend.
+//! Private facade for the selected CUDA backend.
 //!
 //! Keeping these names private prevents backend types from becoming part of the
 //! supported application interface and gives a replacement backend one module
 //! to target.
 //!
-//! Context binding, transfers, kernel submission and stream synchronization use
-//! the backend's raw driver calls. Transfer and synchronization failures are
-//! returned to the caller; this adapter never terminates the process.
+//! Host-side modules use the backend's typed abstractions directly. Raw driver
+//! access remains only where no suitable abstraction exists.
 
-use std::sync::Arc;
-
-pub(crate) use cuda_core::simt::{CudaContext, CudaModule, CudaStream, DeviceBuffer, DeviceCopy};
-use cuda_core::simt::{CudaFunction, DriverError, IntoResult};
-use cuda_core::sys;
-
-pub(crate) fn new_context(device_id: usize) -> Result<Arc<CudaContext>, DriverError> {
-    CudaContext::new(device_id)
-}
-
-pub(crate) fn new_stream(context: &Arc<CudaContext>) -> Result<Arc<CudaStream>, DriverError> {
-    context.new_stream()
-}
-
-/// Makes `context` current on the calling thread.
-pub(crate) fn bind_context_to_thread(context: &CudaContext) -> Result<(), DriverError> {
-    // SAFETY: `context` retains a valid primary context handle.
-    unsafe { sys::cuCtxSetCurrent(context.cu_ctx()) }.result()
-}
-
-/// Waits for all work on `stream`. The stream's context must be current.
-/// `Ok` means the driver established completion.
-pub(crate) fn synchronize_stream(stream: &CudaStream) -> Result<(), DriverError> {
-    // SAFETY: `stream` retains a valid stream handle.
-    unsafe { sys::cuStreamSynchronize(stream.cu_stream()) }.result()
-}
-
-/// Reads and clears an error recorded by a backend destructor.
-pub(crate) fn take_recorded_error(context: &CudaContext) -> Result<(), DriverError> {
-    context.check_err()
-}
-
-/// Allocates uninitialized, stream-ordered device storage for `len` elements.
-///
-/// The allocation reads no host memory, and on failure no device pointer
-/// exists. The caller must initialize every byte before the buffer is read.
-pub(crate) fn buffer_uninitialized<T: DeviceCopy>(
-    stream: &Arc<CudaStream>,
-    len: usize,
-) -> Result<DeviceBuffer<T>, DriverError> {
-    // SAFETY: the only caller initializes the whole buffer with a synchronous
-    // host-to-device copy before exposing it to application code.
-    unsafe { DeviceBuffer::uninitialized_async(stream, len) }
-}
-
-/// Waits for prior stream work and then copies `src` into `buffer`
-/// synchronously. The stream's context must be current.
-pub(crate) fn buffer_copy_from_host<T: DeviceCopy>(
-    buffer: &mut DeviceBuffer<T>,
-    stream: &CudaStream,
-    src: &[T],
-) -> Result<(), DriverError> {
-    assert_eq!(src.len(), buffer.len());
-    // `buffer` was allocated with cuMemAllocAsync on this stream. Waiting here
-    // establishes that allocation and orders this copy after earlier work
-    // before the host pointer is handed to the driver.
-    synchronize_stream(stream)?;
-    // SAFETY: the buffer owns `buffer.num_bytes()` bytes and `src` contains
-    // exactly that many bytes. The synchronous call finishes using the caller's
-    // pageable source before returning, although the device transfer may still
-    // be pending after staging.
-    let copied = unsafe {
-        sys::cuMemcpyHtoD_v2(
-            buffer.cu_deviceptr(),
-            src.as_ptr().cast(),
-            buffer.num_bytes(),
-        )
-    }
-    .result();
-    // Establish device completion before a later kernel is submitted to the
-    // selected non-blocking stream. Attempt this even when the copy reports an
-    // error, because CUDA calls may surface errors from earlier asynchronous
-    // work.
-    let completed = unsafe { sys::cuCtxSynchronize() }.result();
-    copied.and(completed)
-}
-
-/// Waits for prior stream work and then copies `buffer` synchronously into
-/// uninitialized host storage. The stream's context must be current.
-pub(crate) fn buffer_copy_to_host<T: DeviceCopy>(
-    buffer: &DeviceBuffer<T>,
-    stream: &CudaStream,
-    destination: &mut [std::mem::MaybeUninit<T>],
-) -> Result<(), DriverError> {
-    assert_eq!(destination.len(), buffer.len());
-    // Do not expose `destination` to CUDA until all preceding work in the
-    // selected non-blocking stream has completed.
-    synchronize_stream(stream)?;
-    // SAFETY: `destination` provides `buffer.num_bytes()` writable bytes.
-    // cuMemcpyDtoH is synchronous with respect to the host, and MaybeUninit
-    // remains safe to drop if the driver reports a partial or failed copy.
-    unsafe {
-        sys::cuMemcpyDtoH_v2(
-            destination.as_mut_ptr().cast(),
-            buffer.cu_deviceptr(),
-            buffer.num_bytes(),
-        )
-    }
-    .result()
-}
-
-pub(crate) fn buffer_context<T: DeviceCopy>(buffer: &DeviceBuffer<T>) -> Arc<CudaContext> {
-    buffer.context().clone()
-}
-
-pub(crate) fn buffer_device_ptr<T: DeviceCopy>(buffer: &DeviceBuffer<T>) -> u64 {
-    buffer.cu_deviceptr()
-}
-
-pub(crate) fn load_module_from_ptx(
-    context: &Arc<CudaContext>,
-    ptx_str: &str,
-) -> Result<Arc<CudaModule>, DriverError> {
-    context.load_module_from_ptx_src(ptx_str)
-}
-
-pub(crate) fn load_function(
-    module: &Arc<CudaModule>,
-    name: &str,
-) -> Result<CudaFunction, DriverError> {
-    module.load_function(name)
-}
-
-/// Submits a kernel on `stream`. The stream's context must be current.
-///
-/// # Safety
-/// The obligations documented by `KernelLauncher::launch` must hold.
-pub(crate) unsafe fn launch(
-    function: &CudaFunction,
-    grid_dim: (u32, u32, u32),
-    block_dim: (u32, u32, u32),
-    shared_mem_bytes: u32,
-    stream: &CudaStream,
-    parameters: &mut [*mut std::ffi::c_void],
-) -> Result<(), DriverError> {
-    // SAFETY: `function` outlives the submission; the remaining obligations are
-    // the caller's.
-    unsafe {
-        cuda_core::launch_kernel(
-            function.cu_function(),
-            grid_dim,
-            block_dim,
-            shared_mem_bytes,
-            stream.cu_stream(),
-            parameters,
-        )
-    }
-}
+pub(crate) use cuda_core::simt::{
+    launch_kernel_on_stream, CudaContext, CudaModule, CudaStream, DeviceBuffer, DeviceCopy,
+};
 
 #[cfg(test)]
-pub(crate) fn raw_stream_handle(stream: &CudaStream) -> usize {
-    stream.cu_stream() as usize
-}
+use cuda_core::simt::{DriverError, IntoResult};
+#[cfg(test)]
+use cuda_core::sys;
 
 #[cfg(test)]
 pub(crate) fn free_device_memory(context: &CudaContext) -> Result<usize, DriverError> {
-    bind_context_to_thread(context)?;
+    context.bind_to_thread()?;
     let mut free = 0usize;
     let mut total = 0usize;
     // SAFETY: both pointers are valid for writes and the context is current.
