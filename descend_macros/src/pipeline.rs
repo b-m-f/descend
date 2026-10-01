@@ -7,16 +7,6 @@ use crate::specialize::specialize_kernel;
 use proc_macro2::TokenStream;
 use std::collections::HashMap;
 
-pub fn compile_kernel_fn(
-    kernel_name: &str,
-    source: &DescendSource,
-    compilation_unit: &descend::ast::CompilUnit,
-) -> Result<TokenStream, MacroError> {
-    let kernel = extract_kernel(compilation_unit, kernel_name, source)?;
-
-    compile_and_emit(&kernel, source, kernel_name)
-}
-
 pub fn instantiate(
     source_ts: TokenStream,
     kernel_name: &str,

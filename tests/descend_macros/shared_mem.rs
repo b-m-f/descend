@@ -138,10 +138,10 @@ fn test_two_shared_tiles_of_different_element_sizes() {
     assert_eq!(*scales_gpu.to_host(&stream).unwrap(), [1.5f64; BLOCK]);
 }
 
-// A kernel whose sizes are fixed where it is defined becomes a function item, and
-// with it a constant holding the launch configuration the macro derived. That makes
-// the byte count itself assertable -- which an instantiation through `descend_fn!`
-// cannot be, because its constant lives inside the expression's block.
+// Sizes fixed where the kernel is defined change nothing about how it is launched:
+// it is instantiated like any other kernel. The 64 `i32` elements it asks for in
+// shared memory are derived by the macro; `shared_mem_bytes` in
+// `descend_macros::shared_mem` covers that derivation directly.
 descend! {
     fn gpu_shared_copy<r1: prv, r2: prv>(
         vec: &r1 uniq gpu.global [i32; 64],
@@ -162,10 +162,8 @@ descend! {
 }
 
 #[test]
-fn test_shared_bytes_reach_the_launch_configuration() {
-    // 64 elements of `i32`, and nothing else in shared memory.
-    assert_eq!(GPU_SHARED_COPY_CONFIG.shared_mem_bytes, 256);
-    assert_eq!(GPU_SHARED_COPY_CONFIG.block_dim, (64, 1, 1));
+fn test_shared_memory_round_trips_through_a_tile() {
+    let gpu_shared_copy = descend_fn!(gpu_shared_copy);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();

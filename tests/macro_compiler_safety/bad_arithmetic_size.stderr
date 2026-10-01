@@ -31,4 +31,4 @@ note: function defined here
 18 |
 19 |       let arithmetic_200 = descend_fn!(gpu_bad_arithmetic, <N: 10, M: 20>);
    |                            ----------------------------------------------- in this macro invocation
-   = note: this error originates in the macro `::descend_macros::_descend_fn_internal` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `::descend_macros::__descend_fn_internal` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

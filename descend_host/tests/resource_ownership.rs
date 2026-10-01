@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer, Kernel, KernelLaunchConfig, KernelLauncher};
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 const NOOP_PTX: &str =
     ".version 7.0\n.target sm_52\n.address_size 64\n\n.visible .entry noop()\n{\n\tret;\n}\n";
@@ -62,8 +62,7 @@ fn a_launcher_keeps_its_module_after_the_ptx_text_is_dropped() {
 
 #[test]
 fn a_launch_with_non_zero_shared_memory_completes() {
-    assert_eq!(GPU_SHARED_BUMP_CONFIG.shared_mem_bytes, 256);
-    assert_eq!(GPU_SHARED_BUMP_CONFIG.block_dim, (64, 1, 1));
+    let gpu_shared_bump = descend_fn!(gpu_shared_bump);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();

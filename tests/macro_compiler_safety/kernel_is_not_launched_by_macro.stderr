@@ -1,15 +1,5 @@
-error: kernel `gpu_generic_add` is launched through a generated function, not through a macro. Write `let gpu_generic_add = descend_fn!(gpu_generic_add, <...sizes>);` and call `gpu_generic_add(&stream, ..)`; a second set of sizes is a second binding.
-  --> tests/macro_compiler_safety/kernel_is_not_launched_by_macro.rs:5:5
+error: cannot find macro `gpu_generic_add` in this scope
+  --> tests/macro_compiler_safety/kernel_is_not_launched_by_macro.rs:28:13
    |
- 5 | /     descend! {
- 6 | |         fn gpu_generic_add<N: nat, r: prv>(
- 7 | |             a_array: &r uniq gpu.global [i32; N],
- 8 | |             b_array: &r shrd gpu.global [i32; N]
-...  |
-17 | |     }
-   | |_____^
-...
-27 |       let _ = gpu_generic_add!(&stream, <N: 1024>, &mut a_gpu, &b_gpu);
-   |               -------------------------------------------------------- in this macro invocation
-   |
-   = note: this error originates in the macro `gpu_generic_add` (in Nightly builds, run with -Z macro-backtrace for more info)
+28 |     let _ = gpu_generic_add!(&stream, <N: 1024>, &mut a_gpu, &b_gpu);
+   |             ^^^^^^^^^^^^^^^

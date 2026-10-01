@@ -31,6 +31,19 @@ fn expand_or_error(
     .into()
 }
 
+/// For macros that expand in expression position, where `compile_error!(..);` would be
+/// a statement and leave a syntax error on top of the reported one.
+fn expand_or_error_expr(
+    input: proc_macro::TokenStream,
+    expand: fn(TokenStream) -> Result<TokenStream, crate::diag::MacroError>,
+) -> proc_macro::TokenStream {
+    match expand(input.into()) {
+        Ok(tokens) => tokens,
+        Err(error) => error.to_expr_tokens(),
+    }
+    .into()
+}
+
 #[proc_macro]
 pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, macros::expand_descend)
@@ -38,10 +51,11 @@ pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 #[proc_macro]
 pub fn descend_fn(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    expand_or_error(input, macros::expand_descend_fn)
+    expand_or_error_expr(input, macros::expand_descend_fn)
 }
 
+/// Internal: invoked only by the carrier a `descend!` emits, never written by hand.
 #[proc_macro]
-pub fn _descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    expand_or_error(input, macros::expand_fn_internal)
+pub fn __descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    expand_or_error_expr(input, macros::expand_fn_internal)
 }

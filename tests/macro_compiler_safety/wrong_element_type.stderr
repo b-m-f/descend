@@ -1,7 +1,7 @@
 error[E0308]: mismatched types
-  --> tests/macro_compiler_safety/wrong_element_type.rs:25:48
+  --> tests/macro_compiler_safety/wrong_element_type.rs:27:48
    |
-25 |     let _ = gpu_elem_type(&stream, &mut a_gpu, &b_gpu);
+27 |     let _ = gpu_elem_type(&stream, &mut a_gpu, &b_gpu);
    |             -------------                      ^^^^^^ expected `&GpuBuffer<[i32; 100]>`, found `&GpuBuffer<[f32; 100]>`
    |             |
    |             arguments to this function are incorrect
@@ -18,4 +18,7 @@ note: function defined here
 ...  |
 17 | |     }
    | |_____^
-   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)
+18 |
+19 |       let gpu_elem_type = descend_fn!(gpu_elem_type);
+   |                           -------------------------- in this macro invocation
+   = note: this error originates in the macro `::descend_macros::__descend_fn_internal` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

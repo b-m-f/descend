@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 
 use descend_host::{Context, GpuBuffer};
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 descend! {
     fn gpu_scale<r: prv>(
@@ -19,6 +19,8 @@ descend! {
 
 #[test]
 fn generated_function_launches_without_unsafe() {
+    let gpu_scale = descend_fn!(gpu_scale);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
@@ -28,11 +30,4 @@ fn generated_function_launches_without_unsafe() {
     gpu_scale(&stream, &mut a_gpu, &b_gpu).unwrap();
 
     assert_eq!(*a_gpu.to_host(&stream).unwrap(), [30i32; 256]);
-}
-
-#[test]
-fn generated_config_exposes_the_derived_dimensions() {
-    assert_eq!(GPU_SCALE_CONFIG.grid_dim, (1, 1, 1));
-    assert_eq!(GPU_SCALE_CONFIG.block_dim, (256, 1, 1));
-    assert_eq!(GPU_SCALE_CONFIG.shared_mem_bytes, 0);
 }

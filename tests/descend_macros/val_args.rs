@@ -6,7 +6,7 @@
 //! function argument, pushed with `Kernel::push_arg_val`.
 
 use descend_host::{Context, GpuBuffer};
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 descend! {
     fn gpu_add_scalar<r: prv>(
@@ -24,6 +24,8 @@ descend! {
 
 #[test]
 fn test_value_argument_reaches_the_kernel() {
+    let gpu_add_scalar = descend_fn!(gpu_add_scalar);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
@@ -52,6 +54,8 @@ descend! {
 
 #[test]
 fn test_value_argument_between_buffers_keeps_its_position() {
+    let gpu_scale_between = descend_fn!(gpu_scale_between);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
