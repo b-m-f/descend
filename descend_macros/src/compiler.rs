@@ -9,15 +9,23 @@ pub struct CompiledKernel {
 pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<CompiledKernel, String> {
     debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
     let full_source = descend::parser::SourceCode::new(full_descend.to_string());
-    let mut compil_unit = descend::parser::parse(&full_source).map_err(|e| {
+    let mut compil_unit = descend::parser::parse(&full_source).map_err(|_| {
         format!(
-            "Failed to parse synthesized descend program: {:?}\nSource was:\n{}",
-            e, full_descend
+            "the synthesized Descend program did not parse; the Descend compiler reported the \
+             reason above. Source was:\n{}",
+            full_descend
         )
     })?;
 
-    if let Err(e) = descend::ty_check::ty_check(&mut compil_unit) {
-        return Err(format!("Descend type checking failed: {:?}", e));
+    let (checked, captured) =
+        crate::capture::with_captured_output(|| descend::ty_check::ty_check(&mut compil_unit));
+    if checked.is_err() {
+        return Err(
+            crate::capture::descend_message(&captured).unwrap_or_else(|| {
+                "Descend type checking failed; the Descend compiler reported the reason above"
+                    .to_string()
+            }),
+        );
     }
 
     let DeviceCpp {

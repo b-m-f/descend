@@ -3,6 +3,7 @@ extern crate proc_macro;
 #[macro_use]
 mod diag;
 
+mod capture;
 mod compiler;
 mod const_expr;
 mod emit;
