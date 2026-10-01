@@ -16,7 +16,7 @@ fn main() {
         }
     }
 
-    descend_fn!(gpu_bad_arithmetic as arithmetic_200, <N: 10, M: 20>);
+    let arithmetic_200 = descend_fn!(gpu_bad_arithmetic, <N: 10, M: 20>);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();

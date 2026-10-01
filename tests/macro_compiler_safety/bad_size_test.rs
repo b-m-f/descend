@@ -17,7 +17,7 @@ fn main() {
         }
     }
 
-    descend_fn!(gpu_vec_add_bad_size as vec_add_16k, <N: 16384>);
+    let vec_add_16k = descend_fn!(gpu_vec_add_bad_size, <N: 16384>);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();

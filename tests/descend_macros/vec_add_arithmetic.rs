@@ -17,10 +17,11 @@ descend! {
     }
 }
 
-descend_fn!(gpu_vec_add_arithmetic as vec_add_arithmetic_16k, <N: 16384, M: 1, O: 0>);
-
 #[test]
 fn test_vec_add_arithmetic() {
+    let vec_add_arithmetic_16k =
+        descend_fn!(gpu_vec_add_arithmetic, <N: 16384, M: 1, O: 0>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 

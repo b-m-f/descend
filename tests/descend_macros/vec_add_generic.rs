@@ -15,12 +15,9 @@ descend! {
     }
 }
 
-// `N` is only a literal here, so this is where the kernel becomes a function —
-// under its own name, since this is the only size it is instantiated for.
-descend_fn!(gpu_vec_add, <N: 16384>);
-
 #[test]
 fn test_vec_add_generic() {
+    let gpu_vec_add = descend_fn!(gpu_vec_add, <N: 16384>);
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 

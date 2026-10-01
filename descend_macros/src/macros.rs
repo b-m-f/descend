@@ -58,9 +58,8 @@ fn carrier_macro_for(kernel_name: &str, source_ts: &TokenStream) -> TokenStream 
     let kernel = format_ident!("{}", kernel_name);
     let refusal = format!(
         "kernel `{kernel_name}` is launched through a generated function, not through a macro. \
-         Write `descend_fn!({kernel_name}, <...sizes>);` once and call \
-         `{kernel_name}(&stream, ..)`; use `descend_fn!({kernel_name} as <name>, <...sizes>);` \
-         for a second set of sizes."
+         Write `let {kernel_name} = descend_fn!({kernel_name}, <...sizes>);` and call \
+         `{kernel_name}(&stream, ..)`; a second set of sizes is a second binding."
     );
 
     quote! {
@@ -77,23 +76,32 @@ fn carrier_macro_for(kernel_name: &str, source_ts: &TokenStream) -> TokenStream 
     }
 }
 
+/// `descend_fn!` is an expression: it expands to a block that defines the
+/// instantiated function and then evaluates to it, so the caller names it with an
+/// ordinary `let`. A procedural macro cannot tell item position from expression
+/// position, so this is the only position the macro supports; an instantiation that
+/// has to be reachable elsewhere goes in a hand-written wrapper function.
 pub fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, MacroError> {
-    let FnInvocation {
-        kernel,
-        item_name,
-        bindings,
-    } = parse_fn_invocation(input)?;
+    let FnInvocation { kernel, bindings } = parse_fn_invocation(input)?;
 
-    let mut inner = TokenStream::from_str(&format!("@fn {item_name},"))
+    // The generated item keeps the kernel's name. It lives in the block below, so it
+    // cannot collide with the binding the caller writes, nor with another
+    // instantiation of the same kernel in the same scope.
+    let mut carrier_args = TokenStream::from_str(&format!("@fn {kernel},"))
         .map_err(|error| format!("malformed instantiation: {error}"))?;
-    inner.extend(bindings);
+    carrier_args.extend(bindings);
 
-    let mut output = format!("{kernel}!").parse::<TokenStream>().unwrap();
-    output.extend(std::iter::once(TokenTree::Group(Group::new(
+    let mut block = format!("{kernel}!").parse::<TokenStream>().unwrap();
+    block.extend(std::iter::once(TokenTree::Group(Group::new(
         Delimiter::Brace,
-        inner,
+        carrier_args,
     ))));
-    Ok(output)
+    block.extend(format!("{kernel}").parse::<TokenStream>().unwrap());
+
+    Ok(TokenStream::from(TokenTree::Group(Group::new(
+        Delimiter::Brace,
+        block,
+    ))))
 }
 
 pub fn expand_fn_internal(input: TokenStream) -> Result<TokenStream, MacroError> {
