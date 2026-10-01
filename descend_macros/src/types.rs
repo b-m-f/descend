@@ -1,6 +1,5 @@
 #![allow(unreachable_patterns)]
 use descend::ast::*;
-use std::collections::HashMap;
 
 pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     if let BaseExec::GpuGrid(dim_x, dim_y) = &exec_kind.base {
@@ -120,13 +119,13 @@ pub fn format_array_dty(dty: &DataTy) -> String {
     }
 }
 
-pub fn format_dty_eval(dty: &DataTy, bindings: &HashMap<String, String>) -> Result<String, String> {
+pub fn format_dty_eval(dty: &DataTy) -> Result<String, String> {
     match &dty.dty {
         DataTyKind::Array(inner, nat) => {
-            let size = crate::nat::eval_nat(nat, bindings)?;
-            Ok(format!("[{}; {}]", format_dty_eval(inner, bindings)?, size))
+            let size = crate::nat::eval_nat(nat)?;
+            Ok(format!("[{}; {}]", format_dty_eval(inner)?, size))
         }
-        DataTyKind::At(inner, _) => format_dty_eval(inner, bindings),
+        DataTyKind::At(inner, _) => format_dty_eval(inner),
         _ => Ok(format_array_dty(dty)),
     }
 }

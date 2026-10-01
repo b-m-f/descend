@@ -1,9 +1,12 @@
+use crate::parsing::DescendSource;
 use crate::types::*;
 use descend::ast::*;
+use proc_macro2::Span;
 
 #[derive(Debug, Clone)]
 pub struct KernelParam {
     pub name: String,
+    pub span: Option<Span>,
     pub is_uniq: bool,
     pub is_shared_mem: bool,
     pub is_by_value: bool,
@@ -19,11 +22,15 @@ pub struct KernelParam {
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub function_name: String,
-    pub nat_generics: Vec<String>,
+    pub name_span: Option<Span>,
     pub grid_dim: Option<descend::ast::Dim>,
     pub block_dim: Option<descend::ast::Dim>,
     pub grid_dim_str: String,
     pub params: Vec<KernelParam>,
+}
+
+fn span_of(ident: &Ident, source: &DescendSource) -> Option<Span> {
+    source.span_at(ident.span?.begin)
 }
 
 pub fn is_launchable(f: &FunDef) -> bool {
@@ -31,7 +38,11 @@ pub fn is_launchable(f: &FunDef) -> bool {
 }
 
 impl Kernel {
-    pub fn extract(compil_unit: &CompilUnit, target_name: &str) -> Result<Self, String> {
+    pub fn extract(
+        compil_unit: &CompilUnit,
+        target_name: &str,
+        source: &DescendSource,
+    ) -> Result<Self, String> {
         for item in &compil_unit.items {
             if let Item::FunDef(f) = item {
                 let function_name = f.ident.name.to_string();
@@ -49,16 +60,6 @@ impl Kernel {
                 let grid_dim_str =
                     parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
 
-                let mut generic_args = Vec::new();
-                for param in &f.generic_params {
-                    if let IdentKinded {
-                        kind: Kind::Nat,
-                        ident,
-                    } = param
-                    {
-                        generic_args.push(ident.name.to_string());
-                    }
-                }
                 let mut params = Vec::new();
 
                 for param in &f.param_decls {
@@ -89,6 +90,7 @@ impl Kernel {
 
                     params.push(KernelParam {
                         name: p_name.to_string(),
+                        span: span_of(&param.ident, source),
                         is_uniq,
                         is_shared_mem,
                         is_by_value,
@@ -104,7 +106,7 @@ impl Kernel {
 
                 return Ok(Kernel {
                     function_name,
-                    nat_generics: generic_args,
+                    name_span: span_of(&f.ident, source),
                     grid_dim,
                     block_dim,
                     grid_dim_str,

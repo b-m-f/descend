@@ -1,7 +1,7 @@
 use crate::const_expr::eval_const_int;
+use crate::diag::MacroError;
 use crate::kernel::Kernel;
 use crate::nat::eval_nat;
-use std::collections::HashMap;
 
 pub fn shared_bytes_expr(host_fn: &str) -> Result<String, String> {
     let open = host_fn
@@ -47,18 +47,21 @@ pub fn shared_mem_bytes(host_fn: &str) -> Result<u64, String> {
     eval_const_int(&shared_bytes_expr(host_fn)?)
 }
 
-pub fn check_shared_params(kernel: &Kernel) -> Result<(), String> {
+pub fn check_shared_params(kernel: &Kernel) -> Result<(), MacroError> {
     let function = &kernel.function_name;
     let mut seen_shared = false;
 
     for param in &kernel.params {
         if !param.is_shared_mem {
             if seen_shared {
-                return Err(format!(
-                    "kernel `{function}`: parameter `{}` follows a gpu.shared parameter. \
+                return Err(MacroError::at(
+                    format!(
+                        "kernel `{function}`: parameter `{}` follows a gpu.shared parameter. \
                      Shared-memory parameters must come last, because the compiler removes \
                      them from the end of the kernel signature",
-                    param.name
+                        param.name
+                    ),
+                    param.span,
                 ));
             }
             continue;
@@ -66,11 +69,14 @@ pub fn check_shared_params(kernel: &Kernel) -> Result<(), String> {
         seen_shared = true;
 
         if param.elem_bytes.is_none() {
-            return Err(format!(
-                "kernel `{function}`: shared parameter `{}` has an element type whose byte \
+            return Err(MacroError::at(
+                format!(
+                    "kernel `{function}`: shared parameter `{}` has an element type whose byte \
                  size the Descend compiler does not define, so its shared-memory allocation \
                  cannot be sized",
-                param.name
+                    param.name
+                ),
+                param.span,
             ));
         }
     }
@@ -78,11 +84,7 @@ pub fn check_shared_params(kernel: &Kernel) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn check_shared_mem(
-    kernel: &Kernel,
-    emitted: u64,
-    bindings: &HashMap<String, String>,
-) -> Result<(), String> {
+pub(crate) fn check_shared_mem(kernel: &Kernel, emitted: u64) -> Result<(), MacroError> {
     let function = &kernel.function_name;
     let mut expected: u64 = 0;
 
@@ -92,22 +94,28 @@ pub(crate) fn check_shared_mem(
         }
 
         let elem_bytes = param.elem_bytes.ok_or_else(|| {
-            format!(
-                "kernel `{function}`: shared parameter `{}` has an element type whose byte \
+            MacroError::at(
+                format!(
+                    "kernel `{function}`: shared parameter `{}` has an element type whose byte \
                  size the Descend compiler does not define, so its shared-memory allocation \
-                 cannot be sized",
-                param.name
+                     cannot be sized",
+                    param.name
+                ),
+                param.span,
             )
         })?;
 
         let mut elements: u64 = 1;
         for nat in &param.dim_nats {
-            let dim = eval_nat(nat, bindings)?;
+            let dim = eval_nat(nat)?;
             elements = elements.checked_mul(u64::from(dim)).ok_or_else(|| {
-                format!(
-                    "kernel `{function}`: shared parameter `{}` has more elements than can be \
-                     counted",
-                    param.name
+                MacroError::at(
+                    format!(
+                        "kernel `{function}`: shared parameter `{}` has more elements than can be \
+                         counted",
+                        param.name
+                    ),
+                    param.span,
                 )
             })?;
         }
@@ -115,17 +123,23 @@ pub(crate) fn check_shared_mem(
     }
 
     if expected != emitted {
-        return Err(format!(
-            "internal error: shared-memory byte count disagreement for kernel `{function}`: \
+        return Err(MacroError::at(
+            format!(
+                "internal error: shared-memory byte count disagreement for kernel `{function}`: \
              the Descend compiler's generated launch requests {emitted} bytes, the parameter \
-             types give {expected}. Refusing to launch"
+                 types give {expected}. Refusing to launch"
+            ),
+            kernel.name_span,
         ));
     }
 
     if emitted > 49152 {
-        return Err(format!(
-            "kernel `{function}` requests {emitted} bytes of dynamic shared memory, above the \
-             48 KiB a launch may request without opting in through cuFuncSetAttribute"
+        return Err(MacroError::at(
+            format!(
+                "kernel `{function}` requests {emitted} bytes of dynamic shared memory, above the \
+                 48 KiB a launch may request without opting in through cuFuncSetAttribute"
+            ),
+            kernel.name_span,
         ));
     }
 

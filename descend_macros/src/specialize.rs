@@ -1,99 +1,12 @@
-use crate::kernel::Kernel;
+use crate::diag::MacroError;
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use std::collections::HashMap;
 
-pub fn synthesize_main_program(
-    source_ts: TokenStream,
-    kernel: &Kernel,
-    generic_to_size: &HashMap<String, String>,
-) -> Result<String, String> {
-    debug!(
-        "[DEBUG] Starting generic substitution for kernel '{}'",
-        kernel.function_name
-    );
-    for (gen, size) in generic_to_size {
-        debug!("  - Registered substitution: {} = {}", gen, size);
-    }
-
-    let mut main_params = Vec::new();
-    let mut main_vars = Vec::new();
-    let mut main_args = Vec::new();
-    let mut shared_mem_configs = Vec::new();
-
-    for (i, param) in kernel.params.iter().enumerate() {
-        let mem_qual = if param.is_uniq { "uniq" } else { "shrd" };
-        let mut actual_ty_str_cpu = param.cpu_ty_str.clone();
-        let mut actual_shared_ty = param.shared_ty_str.clone();
-        for (gen, size) in generic_to_size {
-            actual_ty_str_cpu = substitute_word(&actual_ty_str_cpu, gen, size);
-            actual_shared_ty = substitute_word(&actual_shared_ty, gen, size);
-        }
-        if param.is_shared_mem {
-            shared_mem_configs.push(actual_shared_ty);
-            continue;
-        }
-
-        if param.is_by_value {
-            let mut value_ty = param.value_ty_str.clone();
-            for (gen, size) in generic_to_size {
-                value_ty = substitute_word(&value_ty, gen, size);
-            }
-            main_params.push(format!("arg{}: {}", i, value_ty));
-            main_args.push(format!("arg{}", i));
-            continue;
-        }
-
-        let param_str = format!("arg{}: {}", i, actual_ty_str_cpu);
-        main_params.push(param_str);
-
-        let var_str = format!(
-            "let mut arg{}_gpu = gpu_alloc_copy(&uniq gpu, &shrd *arg{});",
-            i, i
-        );
-        main_vars.push(var_str);
-
-        let arg_str = format!("&{} arg{}_gpu", mem_qual, i);
-        main_args.push(arg_str);
-    }
-
-    let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
-    for (gen, size) in generic_to_size {
-        actual_grid_dim_str = substitute_word(&actual_grid_dim_str, gen, size);
-    }
-
-    if !shared_mem_configs.is_empty() {
-        actual_grid_dim_str.push_str("; ");
-        actual_grid_dim_str.push_str(&shared_mem_configs.join(", "));
-    }
-
-    let main_fn = format!(
-        "
-fn main({}) -[t: cpu.thread]-> () <'a> {{
-    let mut gpu = gpu_device(0);
-    {}
-    {}::<<<{}>>>({});
-    ()
-}}
-",
-        main_params.join(", "),
-        main_vars.join("\n    "),
-        kernel.function_name,
-        actual_grid_dim_str,
-        main_args.join(", ")
-    );
-
-    let specialized = specialize_kernel(source_ts, &kernel.function_name, generic_to_size)?;
-
-    let full_descend = crate::parsing::to_descend_string(specialized);
-
-    Ok(format!("{}\n{}", main_fn, full_descend))
-}
-
-fn specialize_kernel(
+pub fn specialize_kernel(
     stream: TokenStream,
     target: &str,
     generic_to_size: &HashMap<String, String>,
-) -> Result<TokenStream, String> {
+) -> Result<TokenStream, MacroError> {
     let mut out = TokenStream::new();
     let mut iter = stream.into_iter().peekable();
 
@@ -114,7 +27,7 @@ fn specialize_kernel(
         if let Some(TokenTree::Punct(p)) = iter.peek() {
             if p.as_char() == '<' {
                 let left_angle = iter.next().expect("peeked");
-                let (inner_tokens, right_angle) = extract_generic_block(&mut iter);
+                let (inner_tokens, right_angle) = crate::parsing::extract_generic_block(&mut iter);
                 let keys: Vec<&str> = generic_to_size.keys().map(|k| k.as_str()).collect();
                 let kept: Vec<TokenTree> =
                     filter_generics(inner_tokens, &keys).into_iter().collect();
@@ -146,7 +59,7 @@ fn reject_shadowed_sizes(
     stream: TokenStream,
     kernel: &str,
     generic_to_size: &HashMap<String, String>,
-) -> Result<(), String> {
+) -> Result<(), MacroError> {
     let tokens: Vec<TokenTree> = stream.into_iter().collect();
 
     for (i, tt) in tokens.iter().enumerate() {
@@ -175,9 +88,12 @@ fn reject_shadowed_sizes(
         );
 
         if matches!(previous.as_str(), "let" | "mut" | "sched" | "for") || introduces_arm {
-            return Err(format!(
-                "kernel `{kernel}` binds `{name}`, which is also one of its sizes; rename the \
-                 binding, or the size would be replaced by its value here"
+            return Err(MacroError::at(
+                format!(
+                    "kernel `{kernel}` binds `{name}`, which is also one of its sizes; rename the \
+                     binding, or the size would be replaced by its value here"
+                ),
+                Some(ident.span()),
             ));
         }
     }
@@ -224,36 +140,6 @@ fn substitute_generics_in_tokens(
         }
     }
     out
-}
-
-fn extract_generic_block(
-    iter: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>,
-) -> (Vec<TokenTree>, TokenTree) {
-    let mut inner_tokens = Vec::new();
-    let mut depth = 1;
-    let mut right_angle = None;
-
-    for tt in iter.by_ref() {
-        if let TokenTree::Punct(ref inner_p) = tt {
-            if inner_p.as_char() == '<' {
-                depth += 1;
-            } else if inner_p.as_char() == '>' {
-                depth -= 1;
-                if depth == 0 {
-                    right_angle = Some(tt);
-                    break;
-                }
-            }
-        }
-        inner_tokens.push(tt);
-    }
-
-    (
-        inner_tokens,
-        right_angle.unwrap_or_else(|| {
-            TokenTree::Punct(proc_macro2::Punct::new('>', proc_macro2::Spacing::Alone))
-        }),
-    )
 }
 
 fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
@@ -311,41 +197,6 @@ fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
     out
 }
 
-fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_end = 0;
-
-    let bytes = s.as_bytes();
-    let word_bytes = word.as_bytes();
-    let mut i = 0;
-    while i + word.len() <= bytes.len() {
-        if &bytes[i..i + word.len()] == word_bytes {
-            let prev_ok = if i == 0 {
-                true
-            } else {
-                !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_'
-            };
-            let next_idx = i + word.len();
-            let next_ok = if next_idx == bytes.len() {
-                true
-            } else {
-                !bytes[next_idx].is_ascii_alphanumeric() && bytes[next_idx] != b'_'
-            };
-
-            if prev_ok && next_ok {
-                result.push_str(&s[last_end..i]);
-                result.push_str(replacement);
-                i += word.len();
-                last_end = i;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    result.push_str(&s[last_end..]);
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,10 +209,14 @@ mod tests {
             .collect()
     }
 
-    fn specialize(source: &str, target: &str, pairs: &[(&str, &str)]) -> Result<String, String> {
+    fn specialize(
+        source: &str,
+        target: &str,
+        pairs: &[(&str, &str)],
+    ) -> Result<String, MacroError> {
         let stream = TokenStream::from_str(source).expect("test input must tokenize");
         let packed =
-            crate::parsing::to_descend_string(specialize_kernel(stream, target, &sizes(pairs))?);
+            crate::parsing::flatten_source(specialize_kernel(stream, target, &sizes(pairs))?).text;
         Ok(packed.split_whitespace().collect())
     }
 
@@ -411,7 +266,8 @@ mod tests {
             "gpu_k",
             &[("N", "16384")],
         )
-        .unwrap_err();
+        .unwrap_err()
+        .message;
         assert!(
             error.contains("gpu_k") && error.contains("binds `N`"),
             "unhelpful error: {error}"
@@ -425,7 +281,8 @@ mod tests {
             "gpu_k",
             &[("block", "64")],
         )
-        .unwrap_err();
+        .unwrap_err()
+        .message;
         assert!(error.contains("binds `block`"), "unhelpful error: {error}");
     }
 
