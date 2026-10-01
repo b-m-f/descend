@@ -27,12 +27,15 @@ pub fn expand_descend(input: TokenStream) -> Result<TokenStream, MacroError> {
             descend::ast::Item::FunDef(f) if crate::kernel::is_launchable(f) => {
                 output.extend(carrier_macro_for(&f.ident.name.to_string(), &source_ts));
             }
+            // A declared type becomes its Rust counterpart here. Unlike a kernel this
+            // costs nothing to emit -- no nvcc, just the type -- and a kernel that uses
+            // it needs the Rust type in scope to be callable at all.
             descend::ast::Item::StructDecl(s) => {
-                let struct_code = crate::emit::format_rust_struct(s);
+                let struct_code = crate::emit::format_rust_struct(s)?;
                 output.extend(
                     struct_code
                         .parse::<TokenStream>()
-                        .map_err(|err| format!("generated struct is malformed: {err}"))?,
+                        .map_err(|err| format!("generated type is malformed: {err}"))?,
                 );
             }
             _ => {}

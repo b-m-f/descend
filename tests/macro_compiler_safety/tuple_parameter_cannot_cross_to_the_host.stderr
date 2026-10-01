@@ -1,0 +1,7 @@
+error: kernel `gpu_tuple_param`: parameter `values` is an array whose element is a tuple. Neither Rust tuples nor `descend::tuple` guarantee a memory layout, so a tuple cannot cross to the host; group the values in a Descend struct instead. Tuples inside a kernel are unaffected.
+  --> tests/macro_compiler_safety/tuple_parameter_cannot_cross_to_the_host.rs:21:13
+   |
+21 |     let _ = descend_fn!(gpu_tuple_param);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

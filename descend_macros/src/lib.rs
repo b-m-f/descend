@@ -7,6 +7,7 @@ mod capture;
 mod compiler;
 mod const_expr;
 mod emit;
+mod host_ty;
 mod kernel;
 mod macros;
 mod main_fn;

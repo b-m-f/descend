@@ -1,0 +1,12 @@
+error: struct `Particle`: field `pos` is a tuple. Neither Rust tuples nor `descend::tuple` guarantee a memory layout, so a tuple cannot cross to the host; group the values in a Descend struct instead. Tuples inside a kernel are unaffected.
+  --> tests/macro_compiler_safety/tuple_field_cannot_cross_to_the_host.rs:4:5
+   |
+ 4 | /     descend! {
+ 5 | |         struct Particle {
+ 6 | |             pos: (f32, f32),
+ 7 | |             id: i32
+...  |
+20 | |     }
+   | |_____^
+   |
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

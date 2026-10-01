@@ -10,17 +10,24 @@ pub fn synthesize_main_fn(kernel: &Kernel) -> String {
         let mem_qual = if param.is_uniq { "uniq" } else { "shrd" };
 
         if param.is_shared_mem {
-            shared_mem_configs.push(param.shared_ty_str.clone());
+            shared_mem_configs.push(param.host.descend());
             continue;
         }
 
         if param.is_by_value {
-            main_params.push(format!("arg{}: {}", i, param.value_ty_str));
+            main_params.push(format!("arg{}: {}", i, param.host.descend()));
             main_args.push(format!("arg{}", i));
             continue;
         }
 
-        main_params.push(format!("arg{}: {}", i, param.cpu_ty_str));
+        // The host holds the buffer's contents in CPU memory; `mem_qual` is the same
+        // ownership the kernel's reference declares.
+        main_params.push(format!(
+            "arg{}: &'a {} cpu.mem {}",
+            i,
+            mem_qual,
+            param.host.descend()
+        ));
 
         main_vars.push(format!(
             "let mut arg{}_gpu = gpu_alloc_copy(&uniq gpu, &shrd *arg{});",
