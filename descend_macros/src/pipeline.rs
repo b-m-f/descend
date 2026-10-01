@@ -33,8 +33,9 @@ pub fn instantiate(
     let source_code = descend::parser::SourceCode::new(source.text.clone());
     let compilation_unit = parse_descend_source(&source_code)?;
     let kernel = extract_kernel(&compilation_unit, kernel_name, &source)?;
+    let name_span = kernel.name_span;
 
-    compile_and_emit(&kernel, &source, item_name)
+    compile_and_emit(&kernel, &source, item_name).map_err(|error| error.or_span(name_span))
 }
 
 fn extract_kernel(

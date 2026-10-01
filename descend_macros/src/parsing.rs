@@ -194,9 +194,14 @@ pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, Stri
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<descend::ast::CompilUnit<'a>, String> {
-    descend::parser::parse(source).map_err(|_| {
-        "the Descend source did not parse; the Descend compiler reported the reason above"
-            .to_string()
+    let (parsed, captured) =
+        crate::capture::with_captured_output(|| descend::parser::parse(source));
+
+    parsed.map_err(|_| {
+        crate::capture::descend_message(&captured).unwrap_or_else(|| {
+            "the Descend source did not parse; the Descend compiler reported the reason above"
+                .to_string()
+        })
     })
 }
 
