@@ -29,6 +29,6 @@ note: function defined here
 18 | |     }
    | |_____^
 19 |
-20 |       descend_fn!(gpu_vec_add_bad_size as vec_add_16k, <N: 16384>);
-   |       ------------------------------------------------------------ in this macro invocation
+20 |       let vec_add_16k = descend_fn!(gpu_vec_add_bad_size, <N: 16384>);
+   |                         --------------------------------------------- in this macro invocation
    = note: this error originates in the macro `::descend_macros::_descend_fn_internal` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

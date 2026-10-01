@@ -16,6 +16,6 @@ descend! {
     }
 }
 
-descend_fn!(gpu_shadowed, <N: 256>);
-
-fn main() {}
+fn main() {
+    let _shadowed = descend_fn!(gpu_shadowed, <N: 256>);
+}

@@ -91,14 +91,13 @@ descend! {
     }
 }
 
-descend_fn!(gpu_reduce as reduce_16x64, <gs: 16, bs: 64>);
-descend_fn!(gpu_two_tiles as two_tiles_64, <bs: 64>);
-
 const GRID: usize = 16;
 const BLOCK: usize = 64;
 
 #[test]
 fn test_block_reduction_through_shared_memory() {
+    let reduce_16x64 = descend_fn!(gpu_reduce, <gs: 16, bs: 64>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
@@ -122,6 +121,8 @@ fn test_block_reduction_through_shared_memory() {
 
 #[test]
 fn test_two_shared_tiles_of_different_element_sizes() {
+    let two_tiles_64 = descend_fn!(gpu_two_tiles, <bs: 64>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
@@ -137,9 +138,10 @@ fn test_two_shared_tiles_of_different_element_sizes() {
     assert_eq!(*scales_gpu.to_host(&stream).unwrap(), [1.5f64; BLOCK]);
 }
 
-// A kernel whose sizes are fixed where it is defined becomes a function, and
-// with it a constant holding the launch configuration the macro derived. That
-// makes the byte count itself assertable, which a launch expression cannot be.
+// A kernel whose sizes are fixed where it is defined becomes a function item, and
+// with it a constant holding the launch configuration the macro derived. That makes
+// the byte count itself assertable -- which an instantiation through `descend_fn!`
+// cannot be, because its constant lives inside the expression's block.
 descend! {
     fn gpu_shared_copy<r1: prv, r2: prv>(
         vec: &r1 uniq gpu.global [i32; 64],

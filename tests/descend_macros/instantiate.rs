@@ -1,10 +1,14 @@
-//! A generic kernel instantiated as a named function.
+//! A generic kernel instantiated at the point of use.
 //!
-//! `descend!` cannot compile `gpu_vec_add` where it is defined: `N` is baked
-//! into the generated CUDA and only becomes a literal where someone names it.
-//! `descend_fn!` names it once, and the kernel becomes an ordinary function item
-//! — which, unlike the macro form, can be exported and called from another
-//! module.
+//! `descend!` cannot compile `gpu_scale_generic` where it is defined: `N` is baked
+//! into the generated CUDA and only becomes a literal where someone instantiates it.
+//! `descend_fn!` is an expression that evaluates to the instantiated function, so the
+//! caller names it with an ordinary `let` — there is no alias to invent, and a second
+//! set of sizes is simply a second binding.
+//!
+//! A procedural macro cannot tell item position from expression position, so the
+//! instantiation is always local. Reaching one from another module means wrapping it
+//! in an ordinary function, as `kernels::scale_1k` does below.
 
 use descend_host::{Context, GpuBuffer};
 use descend_macros::{descend, descend_fn};
@@ -26,12 +30,21 @@ mod kernels {
         }
     }
 
-    descend_fn!(gpu_scale_generic as scale_1k, <N: 1024>);
+    /// Exporting an instantiation takes a wrapper, because `descend_fn!` yields a
+    /// value rather than an item. The PTX is still compiled once, at expansion time,
+    /// and baked into this function.
+    pub fn scale_1k(
+        stream: &::descend_host::Stream,
+        a_array: &mut ::descend_host::GpuBuffer<[i32; 1024]>,
+        b_array: &::descend_host::GpuBuffer<[i32; 1024]>,
+    ) -> ::core::result::Result<(), ::descend_host::error::HostError> {
+        let scale = descend_fn!(gpu_scale_generic, <N: 1024>);
+        scale(stream, a_array, b_array)
+    }
 }
 
-// The instantiation is an item: it is used here through a path, from a module
-// that does not contain the `descend!` block.
-use kernels::{scale_1k, SCALE_1K_CONFIG};
+// Used here through a path, from a module that does not contain the `descend!` block.
+use kernels::scale_1k;
 
 #[test]
 fn test_instantiated_kernel_is_callable_across_modules() {
@@ -44,8 +57,6 @@ fn test_instantiated_kernel_is_callable_across_modules() {
     scale_1k(&stream, &mut a_gpu, &b_gpu).unwrap();
 
     assert_eq!(*a_gpu.to_host(&stream).unwrap(), [42i32; 1024]);
-    assert_eq!(SCALE_1K_CONFIG.grid_dim, (4, 1, 1));
-    assert_eq!(SCALE_1K_CONFIG.block_dim, (256, 1, 1));
 }
 
 // Two instantiations of one kernel are two functions, each carrying its own PTX
@@ -64,13 +75,13 @@ descend! {
     }
 }
 
-descend_fn!(gpu_double as double_512, <N: 512>);
-descend_fn!(gpu_double as double_1k, <N: 1024>);
-// A third instantiation without an alias, which takes the kernel's own name.
-descend_fn!(gpu_double, <N: 256>);
-
 #[test]
 fn test_two_instantiations_of_one_kernel_are_two_functions() {
+    // Two bindings of the same kernel, in one scope. Each instantiation lives in its
+    // own block, so both keep the kernel's name internally without colliding.
+    let double_512 = descend_fn!(gpu_double, <N: 512>);
+    let double_1k = descend_fn!(gpu_double, <N: 1024>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
@@ -82,24 +93,26 @@ fn test_two_instantiations_of_one_kernel_are_two_functions() {
     double_512(&stream, &mut small, &small_addend).unwrap();
     double_1k(&stream, &mut large, &large_addend).unwrap();
 
+    // Each instantiation fixed its own buffer size in its signature, and with it the
+    // grid the kernel declares as `X<N/256>`: 2 blocks for 512 elements, 4 for 1024.
+    // A wrong grid would leave part of the buffer untouched, so these results are
+    // what makes the specialised launch configuration observable.
     assert_eq!(*small.to_host(&stream).unwrap(), [3i32; 512]);
     assert_eq!(*large.to_host(&stream).unwrap(), [3i32; 1024]);
-    // Each instantiation fixed its own buffer size in its signature, and with it
-    // the grid the kernel declares in terms of that size.
-    assert_eq!(DOUBLE_512_CONFIG.grid_dim, (2, 1, 1));
-    assert_eq!(DOUBLE_1K_CONFIG.grid_dim, (4, 1, 1));
 }
 
 #[test]
-fn test_instantiation_without_an_alias_takes_the_kernel_name() {
+fn test_the_binding_names_the_instantiation() {
+    // Nothing ties the binding to the kernel's name; this one reads as its size.
+    let double_256 = descend_fn!(gpu_double, <N: 256>);
+
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 
     let mut values = GpuBuffer::from_host(&[1i32; 256], &stream).unwrap();
     let addend = GpuBuffer::from_host(&[2i32; 256], &stream).unwrap();
 
-    gpu_double(&stream, &mut values, &addend).unwrap();
+    double_256(&stream, &mut values, &addend).unwrap();
 
     assert_eq!(*values.to_host(&stream).unwrap(), [3i32; 256]);
-    assert_eq!(GPU_DOUBLE_CONFIG.grid_dim, (1, 1, 1));
 }

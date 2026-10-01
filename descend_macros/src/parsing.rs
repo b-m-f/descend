@@ -137,12 +137,6 @@ impl Cursor {
             .is_some()
     }
 
-    fn eat_keyword(&mut self, keyword: &str) -> bool {
-        self.tokens
-            .next_if(|tt| matches!(tt, TokenTree::Ident(i) if i == keyword))
-            .is_some()
-    }
-
     fn rest(self) -> TokenStream {
         self.tokens.collect()
     }
@@ -218,7 +212,6 @@ pub fn parse_descend_source<'a>(
 
 pub struct FnInvocation {
     pub kernel: Ident,
-    pub item_name: Ident,
     pub bindings: TokenStream,
 }
 
@@ -231,27 +224,12 @@ pub fn parse_fn_invocation(input: TokenStream) -> Result<FnInvocation, String> {
         );
     };
 
-    let item_name = if cursor.eat_punct(',') {
-        kernel.clone()
-    } else if cursor.eat_keyword("as") {
-        let Some(alias) = cursor.next_ident() else {
-            return Err(format!(
-                "expected a name for the instantiation of `{kernel}`"
-            ));
-        };
-        if !cursor.eat_punct(',') {
-            return Err(format!("expected `,` after the name `{alias}`"));
-        }
-        alias
-    } else {
-        return Err(format!(
-            "expected `,` or `as <name>` after the kernel `{kernel}`"
-        ));
-    };
+    if !cursor.eat_punct(',') {
+        return Err(format!("expected `,` after the kernel `{kernel}`"));
+    }
 
     Ok(FnInvocation {
         kernel,
-        item_name,
         bindings: cursor.rest(),
     })
 }

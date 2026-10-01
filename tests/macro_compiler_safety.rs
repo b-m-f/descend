@@ -8,7 +8,6 @@ fn compile_safety_tests() {
     t.compile_fail("tests/macro_compiler_safety/wrong_element_type.rs");
     t.compile_fail("tests/macro_compiler_safety/shared_param_is_not_an_argument.rs");
     t.compile_fail("tests/macro_compiler_safety/kernel_is_not_launched_by_macro.rs");
-    t.compile_fail("tests/macro_compiler_safety/duplicate_instantiation.rs");
     t.compile_fail("tests/macro_compiler_safety/size_shadowed_by_binding.rs");
     t.compile_fail("tests/macro_compiler_safety/shared_param_not_last.rs");
     t.compile_fail("tests/macro_compiler_safety/shared_param_unsupported_elem.rs");
