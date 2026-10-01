@@ -1,47 +1,51 @@
 use crate::compiler::CompiledKernel;
+use crate::diag::MacroError;
 use crate::kernel::Kernel;
 use crate::nat::{eval_dim, eval_nat};
 use crate::shared_mem::check_shared_mem;
 use crate::types::format_array_dty;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
-use std::collections::HashMap;
 use std::str::FromStr;
 
 pub fn generate_launch_fn(
     kernel: &Kernel,
     compiled: &CompiledKernel,
-    bindings: &HashMap<String, String>,
     item_name: &str,
-) -> Result<TokenStream, String> {
+) -> Result<TokenStream, MacroError> {
     let function = &kernel.function_name;
 
-    check_shared_mem(kernel, compiled.shared_mem_bytes, bindings)?;
+    check_shared_mem(kernel, compiled.shared_mem_bytes)?;
 
     let (Some(grid), Some(block)) = (&kernel.grid_dim, &kernel.block_dim) else {
-        return Err(format!(
-            "kernel `{function}` must declare explicit grid and block dimensions"
+        return Err(MacroError::at(
+            format!("kernel `{function}` must declare explicit grid and block dimensions"),
+            kernel.name_span,
         ));
     };
-    let grid_dim = eval_dim(grid, bindings)?;
-    let block_dim = eval_dim(block, bindings)?;
+    let grid_dim = eval_dim(grid)?;
+    let block_dim = eval_dim(block)?;
 
     let mut parameters: Vec<TokenStream> = vec![quote! { stream: &::descend_host::Stream }];
     let mut pushes: Vec<TokenStream> = Vec::new();
     for param in kernel.params.iter().filter(|p| !p.is_shared_mem) {
-        let binding = rust_parameter_name(&param.name, function)?;
+        let binding = rust_parameter_name(&param.name, function)
+            .map_err(|message| MacroError::at(message, param.span))?;
 
         if param.is_by_value {
             let value_ty = match &param.value_dty {
-                Some(dty) => crate::types::format_dty_eval(dty, bindings)?,
+                Some(dty) => crate::types::format_dty_eval(dty)?,
                 None => param.value_ty_str.clone(),
             };
             let name = format_ident!("{}", binding);
             let value_ty = TokenStream::from_str(&value_ty).map_err(|error| {
-                format!(
-                    "kernel `{function}`: parameter `{}` has a type the generator cannot \
-                         spell in Rust: {error}",
-                    param.name
+                MacroError::at(
+                    format!(
+                        "kernel `{function}`: parameter `{}` has a type the generator cannot \
+                             spell in Rust: {error}",
+                        param.name
+                    ),
+                    param.span,
                 )
             })?;
             parameters.push(quote! { #name: #value_ty });
@@ -50,19 +54,25 @@ pub fn generate_launch_fn(
         }
 
         let Some(elem_ty) = &param.elem_base_ty else {
-            return Err(format!(
-                "kernel `{function}`: parameter `{}` has an element type without a supported \
-                 host representation",
-                param.name
+            return Err(MacroError::at(
+                format!(
+                    "kernel `{function}`: parameter `{}` has an element type without a supported \
+                     host representation",
+                    param.name
+                ),
+                param.span,
             ));
         };
         let mut elements: u64 = 1;
         for nat in &param.dim_nats {
-            let dim = eval_nat(nat, bindings)?;
+            let dim = eval_nat(nat)?;
             elements = elements.checked_mul(u64::from(dim)).ok_or_else(|| {
-                format!(
-                    "kernel `{function}`: parameter `{}` has more elements than can be counted",
-                    param.name
+                MacroError::at(
+                    format!(
+                        "kernel `{function}`: parameter `{}` has more elements than can be counted",
+                        param.name
+                    ),
+                    param.span,
                 )
             })?;
         }
@@ -90,10 +100,13 @@ pub fn generate_launch_fn(
     let (block_x, block_y, block_z) = block_dim;
     let shared_mem_bytes =
         Literal::u32_unsuffixed(u32::try_from(compiled.shared_mem_bytes).map_err(|_| {
-            format!(
+            MacroError::at(
+                format!(
                 "kernel `{function}` requests {} bytes of shared memory, more than a launch can \
-                 express",
-                compiled.shared_mem_bytes
+                     express",
+                    compiled.shared_mem_bytes
+                ),
+                kernel.name_span,
             )
         })?);
 

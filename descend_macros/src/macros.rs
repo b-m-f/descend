@@ -1,20 +1,20 @@
+use crate::diag::MacroError;
 use crate::parsing::{
-    kernel_name_span, parse_descend_source, parse_fn_internal_args, parse_fn_invocation,
-    parse_generic_bindings, to_descend_string, FnInternalArgs, FnInvocation,
+    flatten_source, parse_descend_source, parse_fn_internal_args, parse_fn_invocation,
+    parse_generic_bindings, FnInternalArgs, FnInvocation,
 };
 use crate::pipeline::{compile_kernel_fn, instantiate};
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use quote::{format_ident, quote};
 use std::str::FromStr;
 
-pub fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
+pub fn expand_descend(input: TokenStream) -> Result<TokenStream, MacroError> {
     let source_ts = input.clone();
 
-    let source_str = to_descend_string(source_ts.clone());
-    debug!("MACRO INPUT: {}", source_str);
-    let source = descend::parser::SourceCode::new(source_str);
-    let compilation_unit = parse_descend_source(&source)
-        .map_err(|err| format!("failed to parse the Descend source: {err}"))?;
+    let source = flatten_source(source_ts.clone());
+    debug!("MACRO INPUT: {}", source.text);
+    let source_code = descend::parser::SourceCode::new(source.text.clone());
+    let compilation_unit = parse_descend_source(&source_code)?;
 
     let mut output = TokenStream::new();
 
@@ -30,13 +30,11 @@ pub fn expand_descend(input: TokenStream) -> Result<TokenStream, String> {
                 output.extend(carrier_macro_for(&kernel_name, &source_ts));
 
                 if !has_nat_generics {
-                    match compile_kernel_fn(&kernel_name, &source_ts, &compilation_unit) {
+                    match compile_kernel_fn(&kernel_name, &source, &compilation_unit) {
                         Ok(tokens) => output.extend(tokens),
-                        Err(message) => {
-                            return Ok(match kernel_name_span(&source_ts, &kernel_name) {
-                                Some(span) => crate::diag::error_at(span, &message),
-                                None => crate::diag::compile_error_item(&message),
-                            })
+                        Err(error) => {
+                            let name_span = f.ident.span.and_then(|s| source.span_at(s.begin));
+                            return Ok(error.or_span(name_span).to_tokens());
                         }
                     }
                 }
@@ -79,7 +77,7 @@ fn carrier_macro_for(kernel_name: &str, source_ts: &TokenStream) -> TokenStream 
     }
 }
 
-pub fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, String> {
+pub fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, MacroError> {
     let FnInvocation {
         kernel,
         item_name,
@@ -98,7 +96,7 @@ pub fn expand_descend_fn(input: TokenStream) -> Result<TokenStream, String> {
     Ok(output)
 }
 
-pub fn expand_fn_internal(input: TokenStream) -> Result<TokenStream, String> {
+pub fn expand_fn_internal(input: TokenStream) -> Result<TokenStream, MacroError> {
     let FnInternalArgs {
         source_ts,
         kernel_name,
@@ -109,23 +107,12 @@ pub fn expand_fn_internal(input: TokenStream) -> Result<TokenStream, String> {
 
     let bindings = match parse_generic_bindings(bindings) {
         Ok(bindings) => bindings,
-        Err(message) => return Ok(crate::diag::error_at(item_span, &message)),
+        Err(error) => return Ok(error.or_span(Some(item_span)).to_tokens()),
     };
 
-    let source_str = to_descend_string(source_ts.clone());
-    let source = descend::parser::SourceCode::new(source_str);
-    let compilation_unit = parse_descend_source(&source)
-        .map_err(|err| format!("failed to parse the Descend source: {err}"))?;
-
-    match instantiate(
-        &compilation_unit,
-        source_ts,
-        &kernel_name,
-        &item_name,
-        &bindings,
-    ) {
+    match instantiate(source_ts, &kernel_name, &item_name, &bindings) {
         Ok(tokens) => Ok(tokens),
-        Err(message) => Ok(crate::diag::error_at(item_span, &message)),
+        Err(error) => Ok(error.or_span(Some(item_span)).to_tokens()),
     }
 }
 

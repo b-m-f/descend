@@ -8,6 +8,7 @@ mod const_expr;
 mod emit;
 mod kernel;
 mod macros;
+mod main_fn;
 mod nat;
 mod nvcc;
 mod parsing;
@@ -20,11 +21,11 @@ use proc_macro2::TokenStream;
 
 fn expand_or_error(
     input: proc_macro::TokenStream,
-    expand: fn(TokenStream) -> Result<TokenStream, String>,
+    expand: fn(TokenStream) -> Result<TokenStream, crate::diag::MacroError>,
 ) -> proc_macro::TokenStream {
     match expand(input.into()) {
         Ok(tokens) => tokens,
-        Err(message) => crate::diag::compile_error_item(&message),
+        Err(error) => error.to_tokens(),
     }
     .into()
 }
