@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 descend! {
     fn gpu_buffer_then_val<r: prv>(
@@ -45,6 +45,8 @@ descend! {
 
 #[test]
 fn value_after_buffer_reaches_the_device() {
+    let gpu_buffer_then_val = descend_fn!(gpu_buffer_then_val);
+
     let context = Context::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let mut out = GpuBuffer::from_host(&[0u32; 1], &stream).unwrap();
@@ -57,6 +59,8 @@ fn value_after_buffer_reaches_the_device() {
 
 #[test]
 fn value_before_buffer_keeps_positional_order() {
+    let gpu_val_then_buffer = descend_fn!(gpu_val_then_buffer);
+
     let context = Context::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let mut out = GpuBuffer::from_host(&[0.0f32; 1], &stream).unwrap();
@@ -68,6 +72,8 @@ fn value_before_buffer_keeps_positional_order() {
 
 #[test]
 fn array_is_marshaled_by_value() {
+    let gpu_array_by_val = descend_fn!(gpu_array_by_val);
+
     let context = Context::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let mut out = GpuBuffer::from_host(&[0i32; 3], &stream).unwrap();

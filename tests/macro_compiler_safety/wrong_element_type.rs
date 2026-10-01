@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 fn main() {
     descend! {
@@ -15,6 +15,8 @@ fn main() {
             }
         }
     }
+
+    let gpu_elem_type = descend_fn!(gpu_elem_type);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();

@@ -1,4 +1,4 @@
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 fn main() {
     descend! {
@@ -20,4 +20,7 @@ fn main() {
         }
     }
 
+    // The shared-memory parameters are checked where the kernel is
+    // instantiated, so the instantiation is what reports the error.
+    let _ = descend_fn!(gpu_shared_bytes);
 }

@@ -1,5 +1,5 @@
 use descend_host::{Context, GpuBuffer};
-use descend_macros::descend;
+use descend_macros::{descend, descend_fn};
 
 #[test]
 fn test_vec_add() {
@@ -16,6 +16,8 @@ fn test_vec_add() {
             }
         }
     };
+
+    let gpu_vec_add = descend_fn!(gpu_vec_add);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();

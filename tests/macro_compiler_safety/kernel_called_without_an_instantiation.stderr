@@ -1,0 +1,5 @@
+error[E0425]: cannot find function `gpu_uninstantiated` in this scope
+  --> tests/macro_compiler_safety/kernel_called_without_an_instantiation.rs:28:13
+   |
+28 |     let _ = gpu_uninstantiated(&stream, &mut a_gpu, &b_gpu);
+   |             ^^^^^^^^^^^^^^^^^^ not found in this scope

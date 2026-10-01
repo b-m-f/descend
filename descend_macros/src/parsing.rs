@@ -224,14 +224,19 @@ pub fn parse_fn_invocation(input: TokenStream) -> Result<FnInvocation, String> {
         );
     };
 
-    if !cursor.eat_punct(',') {
-        return Err(format!("expected `,` after the kernel `{kernel}`"));
-    }
+    // `descend_fn!(gpu_vec_add)` for a kernel with no sizes; the comma only separates
+    // the kernel from a size list that is actually there.
+    let bindings = if cursor.eat_punct(',') {
+        cursor.rest()
+    } else {
+        let rest = cursor.rest();
+        if !rest.is_empty() {
+            return Err(format!("expected `,` after the kernel `{kernel}`"));
+        }
+        rest
+    };
 
-    Ok(FnInvocation {
-        kernel,
-        bindings: cursor.rest(),
-    })
+    Ok(FnInvocation { kernel, bindings })
 }
 
 pub struct FnInternalArgs {

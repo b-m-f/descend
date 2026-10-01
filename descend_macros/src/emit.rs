@@ -91,7 +91,6 @@ pub fn generate_launch_fn(
         }
     }
 
-    let config_name = format_ident!("{}_CONFIG", item_name.to_uppercase());
     let function_name = format_ident!("{}", item_name);
     let entry = &compiled.mangled_name;
     let ptx = Literal::byte_string(compiled.ptx.as_bytes());
@@ -111,19 +110,19 @@ pub fn generate_launch_fn(
         })?);
 
     Ok(quote! {
-        pub const #config_name: ::descend_host::KernelLaunchConfig =
-            ::descend_host::KernelLaunchConfig {
-                grid_dim: (#grid_x, #grid_y, #grid_z),
-                block_dim: (#block_x, #block_y, #block_z),
-                shared_mem_bytes: #shared_mem_bytes,
-            };
-
         #[allow(dead_code)]
         pub fn #function_name(
             #(#parameters),*
         ) -> ::core::result::Result<(), ::descend_host::error::HostError> {
             const PTX_BYTES: &[u8] = #ptx;
-            let mut kernel = ::descend_host::Kernel::new(#entry, #config_name);
+            let mut kernel = ::descend_host::Kernel::new(
+                #entry,
+                ::descend_host::KernelLaunchConfig {
+                    grid_dim: (#grid_x, #grid_y, #grid_z),
+                    block_dim: (#block_x, #block_y, #block_z),
+                    shared_mem_bytes: #shared_mem_bytes,
+                },
+            );
             #(#pushes)*
             let launcher = ::descend_host::KernelLauncher::new(
                 stream,

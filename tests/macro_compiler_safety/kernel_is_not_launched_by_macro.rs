@@ -21,8 +21,9 @@ fn main() {
     let mut a_gpu = GpuBuffer::from_host(&Box::new([20i32; 1024]), &stream).unwrap();
     let b_gpu = GpuBuffer::from_host(&Box::new([10i32; 1024]), &stream).unwrap();
 
-    // A kernel is launched through a generated function. The macro of the
-    // kernel's name exists only to carry its source to an instantiation, so
-    // launching through it is refused.
+    // A kernel is launched through a generated function. Nothing named after the
+    // kernel exists in the macro namespace -- the carrier that holds its source is
+    // named so that neither this nor a bare `gpu_generic_add(..)` resolves to the
+    // macro's own plumbing.
     let _ = gpu_generic_add!(&stream, <N: 1024>, &mut a_gpu, &b_gpu);
 }

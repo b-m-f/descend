@@ -13,8 +13,22 @@ pub fn compile_error_item(message: &str) -> proc_macro2::TokenStream {
         .expect("compile_error token generation must succeed")
 }
 
+/// `compile_error!` without the trailing semicolon, for a macro expanded in expression
+/// position. Its type is `!`, so it poisons the expression it replaces and nothing
+/// downstream reports a second, derived error.
+pub fn compile_error_expr(message: &str) -> proc_macro2::TokenStream {
+    use std::str::FromStr;
+    let escaped = format!("compile_error!({message:?})");
+    proc_macro2::TokenStream::from_str(&escaped)
+        .expect("compile_error token generation must succeed")
+}
+
 pub fn error_at(span: proc_macro2::Span, message: &str) -> proc_macro2::TokenStream {
     quote::quote_spanned! {span=> compile_error!(#message); }
+}
+
+pub fn error_at_expr(span: proc_macro2::Span, message: &str) -> proc_macro2::TokenStream {
+    quote::quote_spanned! {span=> compile_error!(#message) }
 }
 
 #[derive(Debug)]
@@ -37,6 +51,14 @@ impl MacroError {
         match self.span {
             Some(span) => error_at(span, &self.message),
             None => compile_error_item(&self.message),
+        }
+    }
+
+    /// For `descend_fn!` and the carrier, which expand in expression position.
+    pub fn to_expr_tokens(&self) -> proc_macro2::TokenStream {
+        match self.span {
+            Some(span) => error_at_expr(span, &self.message),
+            None => compile_error_expr(&self.message),
         }
     }
 }
