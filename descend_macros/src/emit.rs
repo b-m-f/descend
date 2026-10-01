@@ -1,9 +1,8 @@
 use crate::compiler::CompiledKernel;
 use crate::diag::MacroError;
 use crate::kernel::Kernel;
-use crate::nat::{eval_dim, eval_nat};
+use crate::nat::eval_dim;
 use crate::shared_mem::check_shared_mem;
-use crate::types::format_array_dty;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use std::str::FromStr;
@@ -33,12 +32,8 @@ pub fn generate_launch_fn(
             .map_err(|message| MacroError::at(message, param.span))?;
 
         if param.is_by_value {
-            let value_ty = match &param.value_dty {
-                Some(dty) => crate::types::format_dty_eval(dty)?,
-                None => param.value_ty_str.clone(),
-            };
             let name = format_ident!("{}", binding);
-            let value_ty = TokenStream::from_str(&value_ty).map_err(|error| {
+            let value_ty = TokenStream::from_str(&param.host.rust()).map_err(|error| {
                 MacroError::at(
                     format!(
                         "kernel `{function}`: parameter `{}` has a type the generator cannot \
@@ -53,32 +48,18 @@ pub fn generate_launch_fn(
             continue;
         }
 
-        let Some(elem_ty) = &param.elem_base_ty else {
-            return Err(MacroError::at(
+        let elements = param.host.elements().ok_or_else(|| {
+            MacroError::at(
                 format!(
-                    "kernel `{function}`: parameter `{}` has an element type without a supported \
-                     host representation",
+                    "kernel `{function}`: parameter `{}` has more elements than can be counted",
                     param.name
                 ),
                 param.span,
-            ));
-        };
-        let mut elements: u64 = 1;
-        for nat in &param.dim_nats {
-            let dim = eval_nat(nat)?;
-            elements = elements.checked_mul(u64::from(dim)).ok_or_else(|| {
-                MacroError::at(
-                    format!(
-                        "kernel `{function}`: parameter `{}` has more elements than can be counted",
-                        param.name
-                    ),
-                    param.span,
-                )
-            })?;
-        }
+            )
+        })?;
 
         let name = format_ident!("{}", binding);
-        let elem = format_ident!("{}", elem_ty);
+        let elem = format_ident!("{}", param.host.base().rust());
         let elements = Literal::usize_unsuffixed(elements as usize);
         let contents = quote! { ::descend_host::GpuBuffer<[#elem; #elements]> };
 
@@ -156,25 +137,154 @@ fn rust_parameter_name(name: &str, function: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-pub fn format_rust_struct(s: &descend::ast::StructDecl) -> String {
+/// The Rust definition of a type a `descend!` block declares.
+///
+/// `#[repr(C)]` so the field order and offsets are specified rather than left to the
+/// compiler, and `DescendType` so the type can fill a `GpuBuffer`: the macro derived
+/// this definition from the declaration, so it is the only thing that can vouch for it.
+///
+/// Note that a kernel taking a declared type does not compile yet — Descend's code
+/// generator refers to a struct by name but never emits its definition, so nvcc fails
+/// with `identifier "Pair" is undefined`. Modelling the type here is what makes that a
+/// one-sided gap: once the generator emits the C++ definition, the host side is
+/// already in place.
+pub fn format_rust_struct(s: &descend::ast::StructDecl) -> Result<String, String> {
     let mut out = String::new();
-    out.push_str("#[repr(C)]\n#[derive(Clone, Copy)]\npub struct ");
+    out.push_str("#[repr(C)]\n#[derive(Clone, Copy, Debug, PartialEq)]\npub struct ");
     out.push_str(&s.ident.name);
     out.push_str(" {\n");
     for (ident, dty) in &s.fields {
         out.push_str("    pub ");
         out.push_str(&ident.name);
         out.push_str(": ");
-        out.push_str(&format_array_dty(dty));
+        out.push_str(
+            &crate::host_ty::host_ty(dty)
+                .map_err(|reason| {
+                    format!(
+                        "struct `{}`: field `{}` {}",
+                        s.ident.name,
+                        ident.name,
+                        reason.reason()
+                    )
+                })?
+                .rust(),
+        );
         out.push_str(",\n");
     }
     out.push_str("}\n");
-    out
+    out.push_str(&format!(
+        "unsafe impl ::descend_host::traits::DescendType for {} {{}}\n",
+        s.ident.name
+    ));
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Rust definition `descend!` emits for a type it declares.
+    fn declared(source: &str) -> Result<String, String> {
+        use proc_macro2::TokenStream;
+        use std::str::FromStr;
+
+        let flattened =
+            crate::parsing::flatten_source(TokenStream::from_str(source).expect("must tokenize"));
+        let code = descend::parser::SourceCode::new(flattened.text.clone());
+        let unit = crate::capture::with_captured_output(|| descend::parser::parse(&code))
+            .0
+            .unwrap_or_else(|_| panic!("fixture did not parse:\n{}", flattened.text));
+
+        let declared = unit
+            .items
+            .iter()
+            .find_map(|item| match item {
+                descend::ast::Item::StructDecl(s) => Some(s),
+                _ => None,
+            })
+            .expect("fixture declares a struct");
+
+        format_rust_struct(declared)
+    }
+
+    #[test]
+    fn every_scalar_width_maps_to_its_rust_counterpart() {
+        let rust = declared(
+            "struct Scalars { a: i32, b: u8, c: u32, d: u64, e: f32, f: f64, g: bool }",
+        )
+        .unwrap();
+        for field in [
+            "pub a: i32",
+            "pub b: u8",
+            "pub c: u32",
+            "pub d: u64",
+            "pub e: f32",
+            "pub f: f64",
+            "pub g: bool",
+        ] {
+            assert!(rust.contains(field), "{field} missing from:\n{rust}");
+        }
+    }
+
+    #[test]
+    fn the_declared_type_is_repr_c_and_transferable() {
+        let rust = declared("struct Pair { a: i32, b: i32 }").unwrap();
+        assert!(rust.contains("#[repr(C)]"), "{rust}");
+        assert!(
+            rust.contains("unsafe impl ::descend_host::traits::DescendType for Pair"),
+            "a declared type must be usable in a GpuBuffer:\n{rust}"
+        );
+    }
+
+    #[test]
+    fn an_array_field_keeps_its_length() {
+        let rust = declared("struct Window { history: [i32; 4] }").unwrap();
+        assert!(rust.contains("pub history: [i32; 4]"), "{rust}");
+    }
+
+    #[test]
+    fn a_nested_array_field_keeps_both_lengths() {
+        let rust = declared("struct Tile { rows: [[f32; 2]; 3] }").unwrap();
+        assert!(rust.contains("pub rows: [[f32; 2]; 3]"), "{rust}");
+    }
+
+    #[test]
+    fn an_array_length_may_be_an_expression() {
+        let rust = declared("struct Block { cells: [i32; 4*8] }").unwrap();
+        assert!(rust.contains("pub cells: [i32; 32]"), "{rust}");
+    }
+
+    #[test]
+    fn a_nested_declared_type_is_referred_to_by_name() {
+        // `declared` reads the first struct, so the nesting one comes first.
+        let rust =
+            declared("struct Outer { inner: Inner, id: u32 } struct Inner { x: i32 }").unwrap();
+        assert!(rust.contains("pub inner: Inner"), "{rust}");
+    }
+
+    #[test]
+    fn a_tuple_field_is_rejected_rather_than_silently_narrowed() {
+        let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();
+        assert!(error.contains("field `pos`"), "{error}");
+        assert!(error.contains("tuple"), "{error}");
+        assert!(
+            error.contains("memory layout"),
+            "the reason must be the layout, not just a refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn a_unit_field_is_rejected() {
+        let error = declared("struct Empty { nothing: () }").unwrap_err();
+        assert!(error.contains("field `nothing`"), "{error}");
+    }
+
+    #[test]
+    fn an_unresolved_size_in_a_field_is_reported() {
+        let error = declared("struct Open { cells: [i32; N] }").unwrap_err();
+        assert!(error.contains("unresolved size"), "{error}");
+        assert!(error.contains("field `cells`"), "{error}");
+    }
 
     #[test]
     fn an_ordinary_parameter_name_is_kept() {

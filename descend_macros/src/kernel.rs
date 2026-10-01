@@ -1,5 +1,6 @@
+use crate::host_ty::{self, HostTy};
 use crate::parsing::DescendSource;
-use crate::types::*;
+use crate::types::parse_grid_dim;
 use descend::ast::*;
 use proc_macro2::Span;
 
@@ -10,13 +11,10 @@ pub struct KernelParam {
     pub is_uniq: bool,
     pub is_shared_mem: bool,
     pub is_by_value: bool,
-    pub dim_nats: Vec<Nat>,
-    pub elem_bytes: Option<u32>,
-    pub elem_base_ty: Option<String>,
-    pub cpu_ty_str: String,
-    pub value_ty_str: String,
-    pub value_dty: Option<DataTy>,
-    pub shared_ty_str: String,
+    /// The data this parameter names -- what a reference points at, or the value
+    /// itself. Both the Rust signature and the synthesized Descend `main` are spelled
+    /// from this, so the two cannot drift apart.
+    pub host: HostTy,
 }
 
 #[derive(Debug, Clone)]
@@ -64,29 +62,30 @@ impl Kernel {
 
                 for param in &f.param_decls {
                     let p_name = &param.ident.name;
-                    let elem_base_ty = crate::types::format_base_ty(param.ty.as_ref().unwrap());
-                    let (is_uniq, is_shared_mem, is_by_value) = match &param.ty.as_ref().unwrap().ty
-                    {
-                        TyKind::Data(dty) => match &dty.dty {
-                            DataTyKind::Ref(ref_dty) => (
-                                matches!(ref_dty.own, Ownership::Uniq),
-                                matches!(ref_dty.mem, Memory::GpuShared),
-                                false,
-                            ),
-                            _ => (false, false, true),
-                        },
-                        _ => (false, false, true),
+                    let ty = param.ty.as_ref().unwrap();
+
+                    // A parameter is either a reference to memory or a value, and that
+                    // decides both how it reaches the kernel and how the host holds it.
+                    let (is_uniq, is_shared_mem, is_by_value) = match host_ty::reference(ty) {
+                        Some(reference) => (
+                            matches!(reference.own, Ownership::Uniq),
+                            matches!(reference.mem, Memory::GpuShared),
+                            false,
+                        ),
+                        None => (false, false, true),
                     };
-                    let cpu_ty_str = crate::types::format_cpu_ty(param.ty.as_ref().unwrap());
-                    let value_ty_str = crate::types::format_value_ty(param.ty.as_ref().unwrap());
-                    let value_dty = match &param.ty.as_ref().unwrap().ty {
-                        TyKind::Data(dty) if !matches!(dty.dty, DataTyKind::Ref(_)) => {
-                            Some(dty.as_ref().clone())
-                        }
-                        _ => None,
-                    };
-                    let shared_ty_str =
-                        crate::types::format_shared_array_ty(param.ty.as_ref().unwrap());
+
+                    let dty = host_ty::parameter_dty(ty).ok_or_else(|| {
+                        format!(
+                            "kernel `{function_name}`: parameter `{p_name}` has no data type"
+                        )
+                    })?;
+                    let host = host_ty::host_ty(dty).map_err(|reason| {
+                        format!(
+                            "kernel `{function_name}`: parameter `{p_name}` {}",
+                            reason.reason()
+                        )
+                    })?;
 
                     params.push(KernelParam {
                         name: p_name.to_string(),
@@ -94,13 +93,7 @@ impl Kernel {
                         is_uniq,
                         is_shared_mem,
                         is_by_value,
-                        dim_nats: crate::types::extract_dim_nats(param.ty.as_ref().unwrap()),
-                        elem_bytes: crate::types::elem_byte_size(param.ty.as_ref().unwrap()),
-                        elem_base_ty,
-                        cpu_ty_str,
-                        value_ty_str,
-                        value_dty,
-                        shared_ty_str,
+                        host,
                     });
                 }
 

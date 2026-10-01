@@ -1,7 +1,6 @@
 use crate::const_expr::eval_const_int;
 use crate::diag::MacroError;
 use crate::kernel::Kernel;
-use crate::nat::eval_nat;
 
 pub fn shared_bytes_expr(host_fn: &str) -> Result<String, String> {
     let open = host_fn
@@ -47,6 +46,17 @@ pub fn shared_mem_bytes(host_fn: &str) -> Result<u64, String> {
     eval_const_int(&shared_bytes_expr(host_fn)?)
 }
 
+/// The per-element byte width Descend's shared-memory sizing defines for a parameter.
+///
+/// `None` means Descend emits no byte count for that element type, so the macro cannot
+/// check the allocation rather than guess at it.
+fn shared_mem_elem_bytes(param: &crate::kernel::KernelParam) -> Option<u32> {
+    param
+        .host
+        .scalar()
+        .and_then(crate::host_ty::ScalarKind::shared_mem_bytes)
+}
+
 pub fn check_shared_params(kernel: &Kernel) -> Result<(), MacroError> {
     let function = &kernel.function_name;
     let mut seen_shared = false;
@@ -68,7 +78,7 @@ pub fn check_shared_params(kernel: &Kernel) -> Result<(), MacroError> {
         }
         seen_shared = true;
 
-        if param.elem_bytes.is_none() {
+        if shared_mem_elem_bytes(param).is_none() {
             return Err(MacroError::at(
                 format!(
                     "kernel `{function}`: shared parameter `{}` has an element type whose byte \
@@ -93,7 +103,7 @@ pub(crate) fn check_shared_mem(kernel: &Kernel, emitted: u64) -> Result<(), Macr
             continue;
         }
 
-        let elem_bytes = param.elem_bytes.ok_or_else(|| {
+        let elem_bytes = shared_mem_elem_bytes(param).ok_or_else(|| {
             MacroError::at(
                 format!(
                     "kernel `{function}`: shared parameter `{}` has an element type whose byte \
@@ -105,20 +115,16 @@ pub(crate) fn check_shared_mem(kernel: &Kernel, emitted: u64) -> Result<(), Macr
             )
         })?;
 
-        let mut elements: u64 = 1;
-        for nat in &param.dim_nats {
-            let dim = eval_nat(nat)?;
-            elements = elements.checked_mul(u64::from(dim)).ok_or_else(|| {
-                MacroError::at(
-                    format!(
-                        "kernel `{function}`: shared parameter `{}` has more elements than can be \
-                         counted",
-                        param.name
-                    ),
-                    param.span,
-                )
-            })?;
-        }
+        let elements = param.host.elements().ok_or_else(|| {
+            MacroError::at(
+                format!(
+                    "kernel `{function}`: shared parameter `{}` has more elements than can be \
+                     counted",
+                    param.name
+                ),
+                param.span,
+            )
+        })?;
         expected += u64::from(elem_bytes) * elements;
     }
 
