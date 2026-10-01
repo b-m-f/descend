@@ -1,4 +1,4 @@
-use crate::ir::Kernel;
+use crate::kernel::Kernel;
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use std::collections::HashMap;
 
@@ -25,8 +25,8 @@ pub fn synthesize_main_program(
         let mut actual_ty_str_cpu = param.cpu_ty_str.clone();
         let mut actual_shared_ty = param.shared_ty_str.clone();
         for (gen, size) in generic_to_size {
-            actual_ty_str_cpu = crate::nat::substitute_word(&actual_ty_str_cpu, gen, size);
-            actual_shared_ty = crate::nat::substitute_word(&actual_shared_ty, gen, size);
+            actual_ty_str_cpu = substitute_word(&actual_ty_str_cpu, gen, size);
+            actual_shared_ty = substitute_word(&actual_shared_ty, gen, size);
         }
         if param.is_shared_mem {
             shared_mem_configs.push(actual_shared_ty);
@@ -36,7 +36,7 @@ pub fn synthesize_main_program(
         if param.is_by_value {
             let mut value_ty = param.value_ty_str.clone();
             for (gen, size) in generic_to_size {
-                value_ty = crate::nat::substitute_word(&value_ty, gen, size);
+                value_ty = substitute_word(&value_ty, gen, size);
             }
             main_params.push(format!("arg{}: {}", i, value_ty));
             main_args.push(format!("arg{}", i));
@@ -58,7 +58,7 @@ pub fn synthesize_main_program(
 
     let mut actual_grid_dim_str = kernel.grid_dim_str.clone();
     for (gen, size) in generic_to_size {
-        actual_grid_dim_str = crate::nat::substitute_word(&actual_grid_dim_str, gen, size);
+        actual_grid_dim_str = substitute_word(&actual_grid_dim_str, gen, size);
     }
 
     if !shared_mem_configs.is_empty() {
@@ -84,7 +84,7 @@ fn main({}) -[t: cpu.thread]-> () <'a> {{
 
     let specialized = specialize_kernel(source_ts, &kernel.function_name, generic_to_size)?;
 
-    let full_descend = crate::descend_src::to_descend_string(specialized);
+    let full_descend = crate::parsing::to_descend_string(specialized);
 
     Ok(format!("{}\n{}", main_fn, full_descend))
 }
@@ -311,6 +311,41 @@ fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
     out
 }
 
+fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut last_end = 0;
+
+    let bytes = s.as_bytes();
+    let word_bytes = word.as_bytes();
+    let mut i = 0;
+    while i + word.len() <= bytes.len() {
+        if &bytes[i..i + word.len()] == word_bytes {
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_'
+            };
+            let next_idx = i + word.len();
+            let next_ok = if next_idx == bytes.len() {
+                true
+            } else {
+                !bytes[next_idx].is_ascii_alphanumeric() && bytes[next_idx] != b'_'
+            };
+
+            if prev_ok && next_ok {
+                result.push_str(&s[last_end..i]);
+                result.push_str(replacement);
+                i += word.len();
+                last_end = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result.push_str(&s[last_end..]);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,11 +360,8 @@ mod tests {
 
     fn specialize(source: &str, target: &str, pairs: &[(&str, &str)]) -> Result<String, String> {
         let stream = TokenStream::from_str(source).expect("test input must tokenize");
-        let packed = crate::descend_src::to_descend_string(specialize_kernel(
-            stream,
-            target,
-            &sizes(pairs),
-        )?);
+        let packed =
+            crate::parsing::to_descend_string(specialize_kernel(stream, target, &sizes(pairs))?);
         Ok(packed.split_whitespace().collect())
     }
 

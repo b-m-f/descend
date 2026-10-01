@@ -52,38 +52,3 @@ pub fn eval_dim(
         ),
     })
 }
-
-pub fn substitute_word(s: &str, word: &str, replacement: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_end = 0;
-
-    let bytes = s.as_bytes();
-    let word_bytes = word.as_bytes();
-    let mut i = 0;
-    while i + word.len() <= bytes.len() {
-        if &bytes[i..i + word.len()] == word_bytes {
-            let prev_ok = if i == 0 {
-                true
-            } else {
-                !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_'
-            };
-            let next_idx = i + word.len();
-            let next_ok = if next_idx == bytes.len() {
-                true
-            } else {
-                !bytes[next_idx].is_ascii_alphanumeric() && bytes[next_idx] != b'_'
-            };
-
-            if prev_ok && next_ok {
-                result.push_str(&s[last_end..i]);
-                result.push_str(replacement);
-                i += word.len();
-                last_end = i;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    result.push_str(&s[last_end..]);
-    result
-}

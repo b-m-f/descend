@@ -1,57 +1,6 @@
 #![allow(unreachable_patterns)]
 use descend::ast::*;
-use proc_macro2::{TokenStream, TokenTree};
 use std::collections::HashMap;
-
-pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, String>, String> {
-    let mut bindings = HashMap::new();
-    let mut tokens = input.into_iter().peekable();
-
-    match tokens.next() {
-        Some(TokenTree::Punct(p)) if p.as_char() == '<' => {}
-        None => return Ok(bindings),
-        Some(other) => {
-            return Err(format!(
-                "expected `<` to open the generic bindings, found `{other}`"
-            ))
-        }
-    }
-
-    loop {
-        match tokens.next() {
-            Some(TokenTree::Punct(p)) if p.as_char() == '>' => break,
-            Some(TokenTree::Punct(p)) if p.as_char() == ',' => continue,
-            Some(TokenTree::Ident(name)) => {
-                match tokens.next() {
-                    Some(TokenTree::Punct(p)) if p.as_char() == ':' => {}
-                    _ => return Err(format!("expected `:` after generic `{name}`")),
-                }
-                match tokens.next() {
-                    Some(TokenTree::Literal(value)) => {
-                        bindings.insert(name.to_string(), value.to_string());
-                    }
-                    _ => {
-                        return Err(format!(
-                            "generic `{name}` needs an integer literal: a kernel's sizes are \
-                             compiled into its code, so they cannot come from a runtime value"
-                        ))
-                    }
-                }
-            }
-            Some(other) => return Err(format!("unexpected `{other}` in the generic bindings")),
-            None => return Err("the generic bindings are not terminated by `>`".to_string()),
-        }
-    }
-
-    Ok(bindings)
-}
-
-pub fn parse_descend_source<'a>(
-    source: &'a descend::parser::SourceCode,
-) -> Result<CompilUnit<'a>, String> {
-    descend::parser::parse(source)
-        .map_err(|e| format!("Failed to parse descend macro input: {:?}", e))
-}
 
 pub fn parse_grid_dim(exec_kind: &ExecExprKind) -> Option<String> {
     if let BaseExec::GpuGrid(dim_x, dim_y) = &exec_kind.base {
@@ -213,22 +162,6 @@ pub fn format_base_ty(ty: &Ty) -> Option<String> {
     }
 }
 
-pub fn format_rust_struct(s: &descend::ast::StructDecl) -> String {
-    let mut out = String::new();
-    out.push_str("#[repr(C)]\n#[derive(Clone, Copy)]\npub struct ");
-    out.push_str(&s.ident.name);
-    out.push_str(" {\n");
-    for (ident, dty) in &s.fields {
-        out.push_str("    pub ");
-        out.push_str(&ident.name);
-        out.push_str(": ");
-        out.push_str(&format_array_dty(dty));
-        out.push_str(",\n");
-    }
-    out.push_str("}\n");
-    out
-}
-
 pub fn elem_byte_size(ty: &Ty) -> Option<u32> {
     let TyKind::Data(dty) = &ty.ty else {
         return None;
@@ -265,49 +198,4 @@ pub fn extract_dim_nats(ty: &Ty) -> Vec<Nat> {
         current_dty = &elem_ty.dty;
     }
     dims
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    fn bindings(source: &str) -> Result<HashMap<String, String>, String> {
-        parse_generic_bindings(TokenStream::from_str(source).expect("test input must tokenize"))
-    }
-
-    #[test]
-    fn reads_several_sizes() {
-        let parsed = bindings("<bs: 16, m: 64, n: 128, k: 64>").unwrap();
-        assert_eq!(parsed.len(), 4);
-        assert_eq!(parsed["bs"], "16");
-        assert_eq!(parsed["k"], "64");
-    }
-
-    #[test]
-    fn an_empty_binding_list_is_allowed() {
-        assert!(bindings("<>").unwrap().is_empty());
-        assert!(bindings("").unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_runtime_expression_is_rejected_with_the_reason() {
-        let error = bindings("<N: n>").unwrap_err();
-        assert!(
-            error.contains("needs an integer literal") && error.contains("compiled into its code"),
-            "unhelpful error: {error}"
-        );
-    }
-
-    #[test]
-    fn a_missing_colon_is_rejected() {
-        assert!(bindings("<N 16384>").unwrap_err().contains("expected `:`"));
-    }
-
-    #[test]
-    fn an_unterminated_list_is_rejected() {
-        assert!(bindings("<N: 16384")
-            .unwrap_err()
-            .contains("not terminated"));
-    }
 }

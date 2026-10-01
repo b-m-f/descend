@@ -1,7 +1,8 @@
-use crate::compile::CompiledKernel;
-use crate::ir::Kernel;
+use crate::compiler::CompiledKernel;
+use crate::kernel::Kernel;
 use crate::nat::{eval_dim, eval_nat};
 use crate::shared_mem::check_shared_mem;
+use crate::types::format_array_dty;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use std::collections::HashMap;
@@ -32,7 +33,7 @@ pub fn generate_launch_fn(
 
         if param.is_by_value {
             let value_ty = match &param.value_dty {
-                Some(dty) => crate::ast::format_dty_eval(dty, bindings)?,
+                Some(dty) => crate::types::format_dty_eval(dty, bindings)?,
                 None => param.value_ty_str.clone(),
             };
             let name = format_ident!("{}", binding);
@@ -141,6 +142,22 @@ fn rust_parameter_name(name: &str, function: &str) -> Result<String, String> {
         return Ok(format!("r#{name}"));
     }
     Ok(name.to_string())
+}
+
+pub fn format_rust_struct(s: &descend::ast::StructDecl) -> String {
+    let mut out = String::new();
+    out.push_str("#[repr(C)]\n#[derive(Clone, Copy)]\npub struct ");
+    out.push_str(&s.ident.name);
+    out.push_str(" {\n");
+    for (ident, dty) in &s.fields {
+        out.push_str("    pub ");
+        out.push_str(&ident.name);
+        out.push_str(": ");
+        out.push_str(&format_array_dty(dty));
+        out.push_str(",\n");
+    }
+    out.push_str("}\n");
+    out
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use crate::ast::*;
+use crate::types::*;
 use descend::ast::*;
 
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ impl Kernel {
 
                 for param in &f.param_decls {
                     let p_name = &param.ident.name;
-                    let elem_base_ty = crate::ast::format_base_ty(param.ty.as_ref().unwrap());
+                    let elem_base_ty = crate::types::format_base_ty(param.ty.as_ref().unwrap());
                     let (is_uniq, is_shared_mem, is_by_value) = match &param.ty.as_ref().unwrap().ty
                     {
                         TyKind::Data(dty) => match &dty.dty {
@@ -76,8 +76,8 @@ impl Kernel {
                         },
                         _ => (false, false, true),
                     };
-                    let cpu_ty_str = crate::ast::format_cpu_ty(param.ty.as_ref().unwrap());
-                    let value_ty_str = crate::ast::format_value_ty(param.ty.as_ref().unwrap());
+                    let cpu_ty_str = crate::types::format_cpu_ty(param.ty.as_ref().unwrap());
+                    let value_ty_str = crate::types::format_value_ty(param.ty.as_ref().unwrap());
                     let value_dty = match &param.ty.as_ref().unwrap().ty {
                         TyKind::Data(dty) if !matches!(dty.dty, DataTyKind::Ref(_)) => {
                             Some(dty.as_ref().clone())
@@ -85,15 +85,15 @@ impl Kernel {
                         _ => None,
                     };
                     let shared_ty_str =
-                        crate::ast::format_shared_array_ty(param.ty.as_ref().unwrap());
+                        crate::types::format_shared_array_ty(param.ty.as_ref().unwrap());
 
                     params.push(KernelParam {
                         name: p_name.to_string(),
                         is_uniq,
                         is_shared_mem,
                         is_by_value,
-                        dim_nats: crate::ast::extract_dim_nats(param.ty.as_ref().unwrap()),
-                        elem_bytes: crate::ast::elem_byte_size(param.ty.as_ref().unwrap()),
+                        dim_nats: crate::types::extract_dim_nats(param.ty.as_ref().unwrap()),
+                        elem_bytes: crate::types::elem_byte_size(param.ty.as_ref().unwrap()),
                         elem_base_ty,
                         cpu_ty_str,
                         value_ty_str,
