@@ -1,67 +1,33 @@
-use crate::nvcc::{cached_ptx, resolve_nvcc_options, run_nvcc, store_ptx};
-
-pub struct CompiledKernel {
-    pub ptx: String,
-    pub mangled_name: String,
-    pub shared_mem_bytes: u64,
+pub struct DeviceCpp {
+    pub code: String,
+    pub host_fn: String,
 }
 
-pub fn compile_to_ptx(full_descend: &str, fn_name: &str) -> Result<CompiledKernel, String> {
-    debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", full_descend);
-    let full_source = descend::parser::SourceCode::new(full_descend.to_string());
+pub fn translate(program: &str, fn_name: &str) -> Result<DeviceCpp, String> {
+    debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", program);
+    let full_source = descend::parser::SourceCode::new(program.to_string());
     let mut compil_unit = descend::parser::parse(&full_source).map_err(|_| {
         format!(
             "the synthesized Descend program did not parse; the Descend compiler reported the \
              reason above. Source was:\n{}",
-            full_descend
+            program
         )
     })?;
 
     let (checked, captured) =
         crate::capture::with_captured_output(|| descend::ty_check::ty_check(&mut compil_unit));
     if checked.is_err() {
-        return Err(
-            crate::capture::descend_message(&captured).unwrap_or_else(|| {
-                "Descend type checking failed; the Descend compiler reported the reason above"
-                    .to_string()
-            }),
-        );
+        return Err(crate::capture::descend_message(&captured).unwrap_or_else(|| {
+            "Descend type checking failed; the Descend compiler reported the reason above"
+                .to_string()
+        }));
     }
 
-    let DeviceCpp {
-        code: final_cpp_code,
-        host_fn,
-    } = generate_device_cpp(&mut compil_unit, fn_name);
+    let device = generate_device_cpp(&mut compil_unit, fn_name);
 
-    let shared_mem_bytes = crate::shared_mem::shared_mem_bytes(&host_fn)?;
+    debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", fn_name, device.code);
 
-    debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", fn_name, final_cpp_code);
-
-    let nvcc_args = resolve_nvcc_options()?;
-    let ptx_string = match cached_ptx(&final_cpp_code, nvcc_args) {
-        Some(cached) => {
-            debug!("PTX cache hit for {}", fn_name);
-            cached
-        }
-        None => {
-            let ptx = run_nvcc(&final_cpp_code, nvcc_args)?;
-            store_ptx(&final_cpp_code, nvcc_args, &ptx);
-            ptx
-        }
-    };
-
-    let mangled_name = extract_mangled_name(&ptx_string, fn_name);
-
-    Ok(CompiledKernel {
-        ptx: ptx_string,
-        mangled_name,
-        shared_mem_bytes,
-    })
-}
-
-struct DeviceCpp {
-    code: String,
-    host_fn: String,
+    Ok(device)
 }
 
 fn generate_device_cpp(compil_unit: &mut descend::ast::CompilUnit, fn_name: &str) -> DeviceCpp {
@@ -126,26 +92,10 @@ fn split_off_host_fn(cpp: &str, marker: &str) -> DeviceCpp {
     DeviceCpp { code, host_fn }
 }
 
-fn extract_mangled_name(ptx_string: &str, original_fn_name: &str) -> String {
-    let mut mangled_name = original_fn_name.to_string();
-    for line in ptx_string.lines() {
-        if line.starts_with(".visible .entry ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let name = parts[2].trim_end_matches('(');
-                if name.contains(original_fn_name) {
-                    mangled_name = name.to_string();
-                    break;
-                }
-            }
-        }
-    }
-    mangled_name
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launch_scrape::scraped_shared_mem_bytes;
 
     #[test]
     fn the_host_function_is_removed_whole() {
@@ -228,7 +178,7 @@ __global__ auto kernel(int *a) -> void { *a = 1; }
             split.host_fn
         );
         assert_eq!(
-            crate::shared_mem::shared_mem_bytes(&split.host_fn),
+            scraped_shared_mem_bytes(&split.host_fn),
             Ok(0),
             "a kernel with no shared parameters requests no dynamic shared memory"
         );

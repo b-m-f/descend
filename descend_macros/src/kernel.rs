@@ -1,6 +1,5 @@
 use crate::host_ty::{self, HostTy};
-use crate::parsing::DescendSource;
-use crate::types::parse_grid_dim;
+use crate::source::DescendSource;
 use descend::ast::*;
 use proc_macro2::Span;
 
@@ -18,12 +17,16 @@ pub struct KernelParam {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExecDims {
+    pub grid: Dim,
+    pub block: Dim,
+}
+
+#[derive(Debug, Clone)]
 pub struct Kernel {
     pub function_name: String,
     pub name_span: Option<Span>,
-    pub grid_dim: Option<descend::ast::Dim>,
-    pub block_dim: Option<descend::ast::Dim>,
-    pub grid_dim_str: String,
+    pub dims: ExecDims,
     pub params: Vec<KernelParam>,
 }
 
@@ -48,15 +51,16 @@ impl Kernel {
                     continue;
                 }
 
-                let mut grid_dim = None;
-                let mut block_dim = None;
-                if let descend::ast::BaseExec::GpuGrid(g, b) = &f.exec.exec.base {
-                    grid_dim = Some(g.clone());
-                    block_dim = Some(b.clone());
-                }
-
-                let grid_dim_str =
-                    parse_grid_dim(&f.exec.exec).unwrap_or_else(|| "X<1>, X<1>".to_string());
+                let BaseExec::GpuGrid(grid, block) = &f.exec.exec.base else {
+                    return Err(format!(
+                        "kernel `{function_name}` must declare explicit grid and block \
+                         dimensions, as `-[grid: gpu.grid<X<..>, X<..>>]->`"
+                    ));
+                };
+                let dims = ExecDims {
+                    grid: grid.clone(),
+                    block: block.clone(),
+                };
 
                 let mut params = Vec::new();
 
@@ -76,9 +80,7 @@ impl Kernel {
                     };
 
                     let dty = host_ty::parameter_dty(ty).ok_or_else(|| {
-                        format!(
-                            "kernel `{function_name}`: parameter `{p_name}` has no data type"
-                        )
+                        format!("kernel `{function_name}`: parameter `{p_name}` has no data type")
                     })?;
                     let host = host_ty::host_ty(dty).map_err(|reason| {
                         format!(
@@ -100,9 +102,7 @@ impl Kernel {
                 return Ok(Kernel {
                     function_name,
                     name_span: span_of(&f.ident, source),
-                    grid_dim,
-                    block_dim,
-                    grid_dim_str,
+                    dims,
                     params,
                 });
             }
@@ -112,5 +112,50 @@ impl Kernel {
             "Kernel definition '{}' not found in macro body",
             target_name
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proc_macro2::TokenStream;
+    use std::str::FromStr;
+
+    fn extract(source: &str, target: &str) -> Result<Kernel, String> {
+        let flattened =
+            crate::source::flatten_source(TokenStream::from_str(source).expect("must tokenize"));
+        let code = descend::parser::SourceCode::new(flattened.text.clone());
+        let unit = crate::source::parse_descend_source(&code)
+            .unwrap_or_else(|error| panic!("fixture did not parse: {error}\n{}", flattened.text));
+        Kernel::extract(&unit, target, &flattened)
+    }
+
+    #[test]
+    fn a_gpu_grid_kernel_keeps_both_declared_dimensions() {
+        let kernel = extract(
+            "fn gpu_k<r: prv>(a: &r uniq gpu.global [i32; 256])
+                 -[grid: gpu.grid<X<4>, X<64>>]-> () {
+                 sched block in grid { sched thread in block { () } }
+             }",
+            "gpu_k",
+        )
+        .expect("a gpu.grid kernel must extract");
+
+        assert_eq!(crate::nat::eval_dim(&kernel.dims.grid).unwrap(), (4, 1, 1));
+        assert_eq!(crate::nat::eval_dim(&kernel.dims.block).unwrap(), (64, 1, 1));
+    }
+
+    #[test]
+    fn a_function_without_grid_dimensions_is_refused_rather_than_defaulted() {
+        let error = extract(
+            "fn cpu_only(a: i32) -[t: cpu.thread]-> i32 { a + 1 }",
+            "cpu_only",
+        )
+        .expect_err("a cpu.thread function has no grid to launch");
+
+        assert!(
+            error.contains("must declare explicit grid and block dimensions"),
+            "{error}"
+        );
     }
 }

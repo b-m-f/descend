@@ -1,0 +1,10 @@
+error: Span was None: ConflictingBorrow(PlaceExpr { pl_expr: View(PlaceExpr { pl_expr: Deref(PlaceExpr { pl_expr: Ident(Ident { name: "a_array", span: Some(Span { begin: 382, end: 389 }), is_implicit: false }), ty: Some(Ty { ty: Data(DataTy { dty: Ref(RefDty { rgn: Ident(Ident { name: "r", span: Some(Span  [..] (the Descend compiler printed the full diagnostic above)
+  --> tests/macro_compiler_safety/borrow_conflict_is_reported.rs:10:8
+   |
+10 |     fn gpu_conflict<r: prv>(
+   |        ^^^^^^^^^^^^
+...
+26 |     let _ = descend_fn!(gpu_conflict);
+   |             ------------------------- in this macro invocation
+   |
+   = note: this error originates in the macro `__descend_kernel_gpu_conflict` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,34 +1,21 @@
-use crate::compiler::CompiledKernel;
+use crate::artifact::{LaunchConfig, Ptx};
 use crate::diag::MacroError;
 use crate::kernel::Kernel;
-use crate::nat::eval_dim;
-use crate::shared_mem::check_shared_mem;
-use proc_macro2::{Literal, TokenStream};
+use proc_macro2::{Delimiter, Group, Ident, Literal, TokenStream, TokenTree};
 use quote::{format_ident, quote};
 use std::str::FromStr;
 
 pub fn generate_launch_fn(
     kernel: &Kernel,
-    compiled: &CompiledKernel,
-    item_name: &str,
+    launch: &LaunchConfig,
+    compiled: &Ptx,
 ) -> Result<TokenStream, MacroError> {
-    let function = &kernel.function_name;
-
-    check_shared_mem(kernel, compiled.shared_mem_bytes)?;
-
-    let (Some(grid), Some(block)) = (&kernel.grid_dim, &kernel.block_dim) else {
-        return Err(MacroError::at(
-            format!("kernel `{function}` must declare explicit grid and block dimensions"),
-            kernel.name_span,
-        ));
-    };
-    let grid_dim = eval_dim(grid)?;
-    let block_dim = eval_dim(block)?;
+    let kernel_name = &kernel.function_name;
 
     let mut parameters: Vec<TokenStream> = vec![quote! { stream: &::descend_host::Stream }];
     let mut pushes: Vec<TokenStream> = Vec::new();
     for param in kernel.params.iter().filter(|p| !p.is_shared_mem) {
-        let binding = rust_parameter_name(&param.name, function)
+        let binding = rust_parameter_name(&param.name, kernel_name)
             .map_err(|message| MacroError::at(message, param.span))?;
 
         if param.is_by_value {
@@ -36,7 +23,7 @@ pub fn generate_launch_fn(
             let value_ty = TokenStream::from_str(&param.host.rust()).map_err(|error| {
                 MacroError::at(
                     format!(
-                        "kernel `{function}`: parameter `{}` has a type the generator cannot \
+                        "kernel `{kernel_name}`: parameter `{}` has a type the generator cannot \
                              spell in Rust: {error}",
                         param.name
                     ),
@@ -51,7 +38,7 @@ pub fn generate_launch_fn(
         let elements = param.host.elements().ok_or_else(|| {
             MacroError::at(
                 format!(
-                    "kernel `{function}`: parameter `{}` has more elements than can be counted",
+                    "kernel `{kernel_name}`: parameter `{}` has more elements than can be counted",
                     param.name
                 ),
                 param.span,
@@ -72,27 +59,26 @@ pub fn generate_launch_fn(
         }
     }
 
-    let function_name = format_ident!("{}", item_name);
-    let entry = &compiled.mangled_name;
+    let function = format_ident!("{}", kernel_name);
+    let entry = &compiled.entry;
     let ptx = Literal::byte_string(compiled.ptx.as_bytes());
 
-    let (grid_x, grid_y, grid_z) = grid_dim;
-    let (block_x, block_y, block_z) = block_dim;
+    let (grid_x, grid_y, grid_z) = launch.grid;
+    let (block_x, block_y, block_z) = launch.block;
     let shared_mem_bytes =
-        Literal::u32_unsuffixed(u32::try_from(compiled.shared_mem_bytes).map_err(|_| {
+        Literal::u32_unsuffixed(u32::try_from(launch.shared_mem_bytes).map_err(|_| {
             MacroError::at(
                 format!(
-                "kernel `{function}` requests {} bytes of shared memory, more than a launch can \
+                "kernel `{kernel_name}` requests {} bytes of shared memory, more than a launch can \
                      express",
-                    compiled.shared_mem_bytes
+                    launch.shared_mem_bytes
                 ),
                 kernel.name_span,
             )
         })?);
 
     Ok(quote! {
-        #[allow(dead_code)]
-        pub fn #function_name(
+        pub fn #function(
             #(#parameters),*
         ) -> ::core::result::Result<(), ::descend_host::error::HostError> {
             const PTX_BYTES: &[u8] = #ptx;
@@ -116,7 +102,7 @@ pub fn generate_launch_fn(
     })
 }
 
-fn rust_parameter_name(name: &str, function: &str) -> Result<String, String> {
+fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> {
     const UNRAWABLE: [&str; 5] = ["self", "Self", "crate", "super", "_"];
     const KEYWORDS: [&str; 49] = [
         "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
@@ -128,7 +114,7 @@ fn rust_parameter_name(name: &str, function: &str) -> Result<String, String> {
 
     if UNRAWABLE.contains(&name) {
         return Err(format!(
-            "kernel `{function}`: parameter `{name}` cannot name a Rust function parameter"
+            "kernel `{kernel_name}`: parameter `{name}` cannot name a Rust function parameter"
         ));
     }
     if KEYWORDS.contains(&name) {
@@ -179,6 +165,59 @@ pub fn format_rust_struct(s: &descend::ast::StructDecl) -> Result<String, String
     Ok(out)
 }
 
+/// The name of the macro that carries a kernel's source from its `descend!` to an
+/// instantiation.
+///
+/// Deliberately *not* the kernel's own name. A macro named after the kernel would make
+/// `gpu_vec_add(&stream, ..)` — the call someone writes when they forget the
+/// instantiation — resolve in the macro namespace and report `expected function, found
+/// macro`, which describes the macro's own plumbing rather than the mistake. Under a
+/// name nobody writes, the kernel's name is simply not in scope, and the call fails as
+/// `cannot find function` like any other undefined call.
+fn carrier_name(kernel_name: &str) -> Ident {
+    format_ident!("__descend_kernel_{}", kernel_name)
+}
+
+pub fn carrier_macro(kernel_name: &str, source_ts: &TokenStream) -> TokenStream {
+    let carrier = carrier_name(kernel_name);
+
+    quote! {
+        // A kernel may be declared and never instantiated; that is not a mistake, and
+        // the warning would name this macro.
+        #[allow(unused_macros)]
+        macro_rules! #carrier {
+            (@fn $name:ident, $($args:tt)*) => {
+                ::descend_macros::__descend_fn_internal! {
+                    { #source_ts }, $name, $($args)*
+                }
+            };
+        }
+    }
+}
+
+pub fn carrier_invocation(kernel: &Ident, bindings: TokenStream) -> Result<TokenStream, MacroError> {
+    let mut carrier_args = TokenStream::from_str(&format!("@fn {kernel},"))
+        .map_err(|error| format!("malformed instantiation: {error}"))?;
+    carrier_args.extend(bindings);
+
+    let mut invocation = format!("{}!", carrier_name(&kernel.to_string()))
+        .parse::<TokenStream>()
+        .expect("the carrier's name is an identifier");
+    invocation.extend(std::iter::once(TokenTree::Group(Group::new(
+        Delimiter::Brace,
+        carrier_args,
+    ))));
+    Ok(invocation)
+}
+
+/// `{ <items> <name> }` — the items the instantiation generated, followed by the
+/// function's name, so the block evaluates to that function.
+pub fn block_yielding(items: TokenStream, name: &Ident) -> TokenStream {
+    let mut block = items;
+    block.extend(std::iter::once(TokenTree::Ident(name.clone())));
+    TokenStream::from(TokenTree::Group(Group::new(Delimiter::Brace, block)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,7 +228,7 @@ mod tests {
         use std::str::FromStr;
 
         let flattened =
-            crate::parsing::flatten_source(TokenStream::from_str(source).expect("must tokenize"));
+            crate::source::flatten_source(TokenStream::from_str(source).expect("must tokenize"));
         let code = descend::parser::SourceCode::new(flattened.text.clone());
         let unit = crate::capture::with_captured_output(|| descend::parser::parse(&code))
             .0

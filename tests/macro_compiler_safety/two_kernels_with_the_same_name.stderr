@@ -1,0 +1,5 @@
+error: kernel `gpu_twice` is declared twice in this `descend!` block. Each kernel carries its source under a macro named after it, so the second declaration would silently shadow the first
+  --> tests/macro_compiler_safety/two_kernels_with_the_same_name.rs:17:8
+   |
+17 |     fn gpu_twice<N: nat, r: prv>(
+   |        ^^^^^^^^^
