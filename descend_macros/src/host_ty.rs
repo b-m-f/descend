@@ -96,6 +96,20 @@ pub struct ArrayLen {
     descend: String,
 }
 
+impl ArrayLen {
+    /// An array length from both of its spellings.
+    ///
+    /// The two are not derivable from one another -- `descend` keeps the expression the
+    /// kernel wrote, which `value` has already evaluated away -- so a caller that has
+    /// one but not the other has a bug, not a convenience to be offered.
+    pub(crate) fn new(value: u32, descend: impl Into<String>) -> Self {
+        Self {
+            value,
+            descend: descend.into(),
+        }
+    }
+}
+
 /// A Descend data type as the host can represent it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostTy {
@@ -159,9 +173,12 @@ impl HostTy {
 }
 
 /// What a reference parameter points at.
+///
+/// The field names are spelled out in full even though `descend::ast::RefDty` abbreviates
+/// them to `own` and `mem`: this struct is this crate's, and `descend/src/` is not.
 pub struct Reference<'a> {
-    pub own: Ownership,
-    pub mem: Memory,
+    pub ownership: Ownership,
+    pub memory: Memory,
     pub dty: &'a DataTy,
 }
 
@@ -177,8 +194,8 @@ pub fn reference(ty: &Ty) -> Option<Reference<'_>> {
     // is a reference, and a data type Descend adds later is simply not one.
     match &dty.dty {
         DataTyKind::Ref(reference_dty) => Some(Reference {
-            own: reference_dty.own,
-            mem: reference_dty.mem.clone(),
+            ownership: reference_dty.own,
+            memory: reference_dty.mem.clone(),
             dty: &reference_dty.dty,
         }),
         _ => None,
@@ -219,12 +236,12 @@ pub fn host_ty(dty: &DataTy) -> Result<HostTy, Unrepresentable> {
     match &dty.dty {
         DataTyKind::Scalar(scalar) => scalar_host_ty(*scalar),
         DataTyKind::Array(element, length_expression) => {
-            let array_length = ArrayLen {
-                value: crate::nat::eval_nat(length_expression)
+            let array_length = ArrayLen::new(
+                crate::nat::eval_nat(length_expression)
                     .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
-                descend: crate::spell::format_nat(length_expression)
+                crate::spell::format_nat(length_expression)
                     .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
-            };
+            );
             // Carry the element's reason outward, so a rejection names the type the
             // reader actually wrote rather than the element buried inside it.
             let element = host_ty(element).map_err(|reason| {

@@ -1,6 +1,7 @@
 use crate::artifact::{LaunchConfig, Ptx};
 use crate::diag::MacroError;
 use crate::kernel::Kernel;
+use crate::source::DescendSource;
 use proc_macro2::{Delimiter, Group, Ident, Literal, TokenStream, TokenTree};
 use quote::{format_ident, quote};
 use std::str::FromStr;
@@ -51,7 +52,17 @@ pub fn generate_launch_function(
 
         let parameter_ident = format_ident!("{}", rust_name);
         let element = format_ident!("{}", parameter.host.base().rust());
-        let element_count_literal = Literal::usize_unsuffixed(element_count as usize);
+        let element_count_literal =
+            Literal::usize_unsuffixed(usize::try_from(element_count).map_err(|_| {
+                MacroError::at(
+                    format!(
+                        "kernel `{kernel_name}`: parameter `{}` has {element_count} elements, \
+                         more than this machine can index an array by",
+                        parameter.name
+                    ),
+                    parameter.span,
+                )
+            })?);
         let buffer_type = quote! { ::descend_host::GpuBuffer<[#element; #element_count_literal]> };
 
         if parameter.is_uniq {
@@ -65,7 +76,10 @@ pub fn generate_launch_function(
 
     let kernel_ident = format_ident!("{}", kernel_name);
     let entry = &compiled.entry;
-    let ptx_bytes = Literal::byte_string(compiled.text.as_bytes());
+    // `Ptx::text` is a `String`, so it is already UTF-8 -- `nvcc::run_nvcc` read it with
+    // `read_to_string`. Emitting it as a string literal rather than as bytes the caller
+    // decodes again keeps an unreachable `unwrap` out of every generated function.
+    let ptx_source = &compiled.text;
 
     let (grid_x, grid_y, grid_z) = (launch.grid.x, launch.grid.y, launch.grid.z);
     let (block_x, block_y, block_z) = (launch.block.x, launch.block.y, launch.block.z);
@@ -85,7 +99,7 @@ pub fn generate_launch_function(
         pub fn #kernel_ident(
             #(#parameters),*
         ) -> ::core::result::Result<(), ::descend_host::error::HostError> {
-            const PTX_BYTES: &[u8] = #ptx_bytes;
+            const PTX_SOURCE: &str = #ptx_source;
             let mut kernel = ::descend_host::Kernel::new(
                 #entry,
                 ::descend_host::KernelLaunchConfig {
@@ -95,10 +109,7 @@ pub fn generate_launch_function(
                 },
             );
             #(#argument_pushes)*
-            let launcher = ::descend_host::KernelLauncher::new(
-                stream,
-                ::core::str::from_utf8(PTX_BYTES).unwrap(),
-            )?;
+            let launcher = ::descend_host::KernelLauncher::new(stream, PTX_SOURCE)?;
             let launch_result = unsafe { launcher.launch(kernel) };
             stream.synchronize()?;
             launch_result
@@ -107,8 +118,13 @@ pub fn generate_launch_function(
 }
 
 fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> {
-    const UNRAWABLE: [&str; 5] = ["self", "Self", "crate", "super", "_"];
-    const KEYWORDS: [&str; 49] = [
+    // Neither can be made raw: `r#self` is not an identifier, and `_` is a pattern
+    // rather than a name at all.
+    const UNRAWABLE: &[&str] = &["self", "Self", "crate", "super", "_"];
+    // Strict keywords, plus the reserved ones. `r#` makes any of these usable as a
+    // parameter name; the list is a slice rather than a fixed-size array so adding an
+    // entry does not also mean editing a count.
+    const KEYWORDS: &[&str] = &[
         "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
         "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
         "pub", "ref", "return", "static", "struct", "trait", "true", "type", "union", "unsafe",
@@ -138,23 +154,36 @@ fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> 
 /// with `identifier "Pair" is undefined`. Modelling the type here is what makes that a
 /// one-sided gap: once the generator emits the C++ definition, the host side is
 /// already in place.
-pub fn format_rust_struct(struct_decl: &descend::ast::StructDecl) -> Result<String, String> {
+///
+/// A field the host cannot represent is reported against that field, not against the
+/// `descend!` block as a whole: the block can run to twenty lines, and the field is
+/// what the reader has to change.
+pub fn format_rust_struct(
+    struct_decl: &descend::ast::StructDecl,
+    source: &DescendSource,
+) -> Result<String, MacroError> {
+    let struct_name = &struct_decl.ident.name;
+    let struct_span = crate::kernel::span_of(&struct_decl.ident, source);
+
     let mut output = String::new();
     output.push_str("#[repr(C)]\n#[derive(Clone, Copy, Debug, PartialEq)]\npub struct ");
-    output.push_str(&struct_decl.ident.name);
+    output.push_str(struct_name);
     output.push_str(" {\n");
-    for (ident, dty) in &struct_decl.fields {
+    for (field_ident, field_dty) in &struct_decl.fields {
+        let field_name = &field_ident.name;
         output.push_str("    pub ");
-        output.push_str(&ident.name);
+        output.push_str(field_name);
         output.push_str(": ");
         output.push_str(
-            &crate::host_ty::host_ty(dty)
+            &crate::host_ty::host_ty(field_dty)
                 .map_err(|reason| {
-                    format!(
-                        "struct `{}`: field `{}` {}",
-                        struct_decl.ident.name,
-                        ident.name,
-                        reason.reason()
+                    MacroError::at(
+                        format!(
+                            "struct `{struct_name}`: field `{field_name}` {}",
+                            reason.reason()
+                        ),
+                        // The field if it can be located, the struct's name if not.
+                        crate::kernel::span_of(field_ident, source).or(struct_span),
                     )
                 })?
                 .rust(),
@@ -163,8 +192,7 @@ pub fn format_rust_struct(struct_decl: &descend::ast::StructDecl) -> Result<Stri
     }
     output.push_str("}\n");
     output.push_str(&format!(
-        "unsafe impl ::descend_host::traits::DescendType for {} {{}}\n",
-        struct_decl.ident.name
+        "unsafe impl ::descend_host::traits::DescendType for {struct_name} {{}}\n",
     ));
     Ok(output)
 }
@@ -210,10 +238,7 @@ pub fn carrier_invocation(
     let mut invocation = format!("{}!", carrier_name(&kernel.to_string()))
         .parse::<TokenStream>()
         .expect("the carrier's name is an identifier");
-    invocation.extend(std::iter::once(TokenTree::Group(Group::new(
-        Delimiter::Brace,
-        carrier_args,
-    ))));
+    invocation.extend([TokenTree::Group(Group::new(Delimiter::Brace, carrier_args))]);
     Ok(invocation)
 }
 
@@ -221,7 +246,7 @@ pub fn carrier_invocation(
 /// function's name, so the block evaluates to that function.
 pub fn block_yielding(items: TokenStream, name: &Ident) -> TokenStream {
     let mut block = items;
-    block.extend(std::iter::once(TokenTree::Ident(name.clone())));
+    block.extend([TokenTree::Ident(name.clone())]);
     TokenStream::from(TokenTree::Group(Group::new(Delimiter::Brace, block)))
 }
 
@@ -230,7 +255,7 @@ mod tests {
     use super::*;
 
     /// The Rust definition `descend!` emits for a type it declares.
-    fn declared(source_text: &str) -> Result<String, String> {
+    fn declared(source_text: &str) -> Result<String, MacroError> {
         use proc_macro2::TokenStream;
         use std::str::FromStr;
 
@@ -242,16 +267,16 @@ mod tests {
             .0
             .unwrap_or_else(|_| panic!("fixture did not parse:\n{}", source.text));
 
-        let declared = unit
+        let struct_decl = unit
             .items
             .iter()
             .find_map(|item| match item {
-                descend::ast::Item::StructDecl(s) => Some(s),
+                descend::ast::Item::StructDecl(struct_decl) => Some(struct_decl),
                 _ => None,
             })
             .expect("fixture declares a struct");
 
-        format_rust_struct(declared)
+        format_rust_struct(struct_decl, &source)
     }
 
     #[test]
@@ -311,25 +336,36 @@ mod tests {
     #[test]
     fn a_tuple_field_is_rejected_rather_than_silently_narrowed() {
         let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();
-        assert!(error.contains("field `pos`"), "{error}");
-        assert!(error.contains("tuple"), "{error}");
+        assert!(error.message.contains("field `pos`"), "{error}");
+        assert!(error.message.contains("tuple"), "{error}");
         assert!(
-            error.contains("memory layout"),
+            error.message.contains("memory layout"),
             "the reason must be the layout, not just a refusal: {error}"
+        );
+    }
+
+    /// The point of threading `DescendSource` through: a reader is sent to the field
+    /// that is wrong, not made to search the whole `descend!` block for it.
+    #[test]
+    fn a_rejected_field_is_pointed_at_rather_than_the_block_it_is_in() {
+        let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();
+        assert!(
+            error.span.is_some(),
+            "the refusal should point at `pos`: {error}"
         );
     }
 
     #[test]
     fn a_unit_field_is_rejected() {
         let error = declared("struct Empty { nothing: () }").unwrap_err();
-        assert!(error.contains("field `nothing`"), "{error}");
+        assert!(error.message.contains("field `nothing`"), "{error}");
     }
 
     #[test]
     fn an_unresolved_size_in_a_field_is_reported() {
         let error = declared("struct Open { cells: [i32; N] }").unwrap_err();
-        assert!(error.contains("unresolved size"), "{error}");
-        assert!(error.contains("field `cells`"), "{error}");
+        assert!(error.message.contains("unresolved size"), "{error}");
+        assert!(error.message.contains("field `cells`"), "{error}");
     }
 
     #[test]

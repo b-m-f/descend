@@ -7,11 +7,17 @@ pub struct DescendSource {
 }
 
 impl DescendSource {
+    /// The span of the token covering `offset`, if a token does.
+    ///
+    /// Binary search over `spans`, which `write_spanned` appends to in the order it
+    /// writes text -- so the offsets are sorted and non-overlapping, which is what
+    /// `partition_point` requires.
     pub fn span_at(&self, offset: u32) -> Option<Span> {
         let next = self.spans.partition_point(|(begin, _, _)| *begin <= offset);
         let (begin, end, span) = self.spans.get(next.checked_sub(1)?)?;
         (offset >= *begin && offset < *end).then_some(*span)
     }
+
     pub fn from_token_stream(token_stream: TokenStream) -> DescendSource {
         let mut source = DescendSource {
             text: String::new(),
@@ -74,9 +80,7 @@ impl DescendSource {
             }
         }
     }
-}
 
-impl DescendSource {
     fn write_spanned(&mut self, text: &str, span: Span) {
         let begin = self.text.len() as u32;
         self.text.push_str(text);
@@ -86,15 +90,17 @@ impl DescendSource {
 
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
-) -> Result<descend::ast::CompilUnit<'a>, String> {
+) -> Result<descend::ast::CompilUnit<'a>, crate::diag::MacroError> {
     let (parsed, captured) =
         crate::capture::with_captured_output(|| descend::parser::parse(source));
 
     parsed.map_err(|_| {
-        crate::capture::descend_message(&captured).unwrap_or_else(|| {
-            "the Descend source did not parse; the Descend compiler reported the reason above"
-                .to_string()
-        })
+        crate::capture::descend_message(&captured)
+            .unwrap_or_else(|| {
+                "the Descend source did not parse; the Descend compiler reported the reason above"
+                    .to_string()
+            })
+            .into()
     })
 }
 
@@ -196,6 +202,11 @@ mod tests {
     /// line of the `__` it exercises. `__` (line 1049) is one-or-more whitespace, so a
     /// rendering that glued these tokens together would make the source unparsable.
     ///
+    /// The line numbers are citations rather than load-bearing references, and would
+    /// otherwise quietly go stale as the grammar moves. They are checked:
+    /// `every_cited_grammar_line_still_demands_whitespace` reads each one back out of
+    /// the parser and fails if it no longer holds a `__`.
+    ///
     /// The two `__` in `lambda_parameter` (line 430) are left out: that rule is
     /// unreachable, because the lambda expression that used it is commented out at
     /// line 619.
@@ -247,6 +258,40 @@ mod tests {
         }
     }
 
+    /// The table above cites grammar lines it cannot otherwise be checked against. A
+    /// citation that has drifted still reads plausibly, so each one is read back out of
+    /// the parser: if the line no longer holds a `__`, the site it describes has moved
+    /// and the table is stale.
+    #[test]
+    fn every_cited_grammar_line_still_demands_whitespace() {
+        let parser_source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/parser/mod.rs"))
+                .expect("the parser source must be readable");
+        let lines: Vec<&str> = parser_source.lines().collect();
+
+        for (line, site, _) in MANDATORY_WHITESPACE_SITES {
+            let cited = lines.get(*line as usize - 1).unwrap_or_else(|| {
+                panic!("src/parser/mod.rs has no line {line}, cited for ({site})")
+            });
+            assert!(
+                cited.contains("__"),
+                "src/parser/mod.rs:{line} no longer demands whitespace, so the entry ({site}) \
+                 cites the wrong line:\n{cited}"
+            );
+        }
+
+        // The rule the whole table rests on. If this moves, every citation above moves
+        // with it, and the check would otherwise be against a line that merely happens
+        // to hold a `__`.
+        let whitespace_rule = 1049;
+        assert!(
+            lines
+                .get(whitespace_rule - 1)
+                .is_some_and(|line| line.contains("rule __()")),
+            "the `__` rule is no longer at src/parser/mod.rs:{whitespace_rule}"
+        );
+    }
+
     /// The `.` exception to that rule: these must stay glued, because `keyword()`
     /// matches them as whole strings (`src/parser/mod.rs:908` and `:965`).
     #[test]
@@ -274,10 +319,21 @@ mod tests {
     #[test]
     fn every_descend_example_round_trips() {
         fn collect(directory: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(directory).unwrap().flatten() {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() && !path.ends_with("target") {
-                    collect(&path, paths);
+                if path.is_dir() {
+                    // Build output and version control hold copies of these sources and
+                    // nothing that the round trip could say anything new about. `.git`
+                    // also holds files this process is not meant to read.
+                    let skipped = path
+                        .file_name()
+                        .is_some_and(|name| name == "target" || name == ".git");
+                    if !skipped {
+                        collect(&path, paths);
+                    }
                 } else if path
                     .extension()
                     .is_some_and(|extension| extension == "desc")
@@ -285,13 +341,6 @@ mod tests {
                     paths.push(path);
                 }
             }
-        }
-
-        fn parses(text: &str) -> bool {
-            let code = descend::parser::SourceCode::new(text.to_string());
-            crate::capture::with_captured_output(|| descend::parser::parse(&code))
-                .0
-                .is_ok()
         }
 
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");

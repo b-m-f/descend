@@ -1,4 +1,4 @@
-error: Span was None: ConflictingBorrow(PlaceExpr { pl_expr: View(PlaceExpr { pl_expr: Deref(PlaceExpr { pl_expr: Ident(Ident { name: "a_array", span: Some(Span { begin: 382, end: 389 }), is_implicit: false }), ty: Some(Ty { ty: Data(DataTy { dty: Ref(RefDty { rgn: Ident(Ident { name: "r", span: Some(Span  [..] (the Descend compiler printed the full diagnostic above)
+error: Span was None: ConflictingBorrow(PlaceExpr { pl_expr: View(PlaceExpr { pl_expr: Deref(PlaceExpr { pl_expr: Ident(Ident { name: "a_array", span: Some(Span { begin: 394, end: 401 }), is_implicit: false }), ty: Some(Ty { ty: Data(DataTy { dty: Ref(RefDty { rgn: Ident(Ident { name: "r", span: Some(Span  [..] (the Descend compiler printed the full diagnostic above)
   --> tests/macro_compiler_safety/borrow_conflict_is_reported.rs:10:8
    |
 10 |     fn gpu_conflict<r: prv>(
