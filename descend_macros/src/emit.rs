@@ -195,7 +195,10 @@ pub fn carrier_macro(kernel_name: &str, source_ts: &TokenStream) -> TokenStream 
     }
 }
 
-pub fn carrier_invocation(kernel: &Ident, bindings: TokenStream) -> Result<TokenStream, MacroError> {
+pub fn carrier_invocation(
+    kernel: &Ident,
+    bindings: TokenStream,
+) -> Result<TokenStream, MacroError> {
     let mut carrier_args = TokenStream::from_str(&format!("@fn {kernel},"))
         .map_err(|error| format!("malformed instantiation: {error}"))?;
     carrier_args.extend(bindings);
@@ -227,8 +230,9 @@ mod tests {
         use proc_macro2::TokenStream;
         use std::str::FromStr;
 
-        let flattened =
-            crate::source::flatten_source(TokenStream::from_str(source).expect("must tokenize"));
+        let flattened = crate::source::DescendSource::from_token_stream(
+            TokenStream::from_str(source).expect("must tokenize"),
+        );
         let code = descend::parser::SourceCode::new(flattened.text.clone());
         let unit = crate::capture::with_captured_output(|| descend::parser::parse(&code))
             .0
@@ -248,10 +252,9 @@ mod tests {
 
     #[test]
     fn every_scalar_width_maps_to_its_rust_counterpart() {
-        let rust = declared(
-            "struct Scalars { a: i32, b: u8, c: u32, d: u64, e: f32, f: f64, g: bool }",
-        )
-        .unwrap();
+        let rust =
+            declared("struct Scalars { a: i32, b: u8, c: u32, d: u64, e: f32, f: f64, g: bool }")
+                .unwrap();
         for field in [
             "pub a: i32",
             "pub b: u8",

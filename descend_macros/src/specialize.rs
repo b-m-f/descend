@@ -296,8 +296,12 @@ mod tests {
         pairs: &[(&str, &str)],
     ) -> Result<String, MacroError> {
         let stream = TokenStream::from_str(source).expect("test input must tokenize");
-        let packed =
-            crate::source::flatten_source(specialize_kernel(stream, target, &sizes(pairs))?).text;
+        let packed = crate::source::DescendSource::from_token_stream(specialize_kernel(
+            stream,
+            target,
+            &sizes(pairs),
+        )?)
+        .text;
         Ok(packed.split_whitespace().collect())
     }
 

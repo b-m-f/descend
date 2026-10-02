@@ -122,8 +122,9 @@ mod tests {
     use std::str::FromStr;
 
     fn extract(source: &str, target: &str) -> Result<Kernel, String> {
-        let flattened =
-            crate::source::flatten_source(TokenStream::from_str(source).expect("must tokenize"));
+        let flattened = crate::source::DescendSource::from_token_stream(
+            TokenStream::from_str(source).expect("must tokenize"),
+        );
         let code = descend::parser::SourceCode::new(flattened.text.clone());
         let unit = crate::source::parse_descend_source(&code)
             .unwrap_or_else(|error| panic!("fixture did not parse: {error}\n{}", flattened.text));
@@ -142,7 +143,10 @@ mod tests {
         .expect("a gpu.grid kernel must extract");
 
         assert_eq!(crate::nat::eval_dim(&kernel.dims.grid).unwrap(), (4, 1, 1));
-        assert_eq!(crate::nat::eval_dim(&kernel.dims.block).unwrap(), (64, 1, 1));
+        assert_eq!(
+            crate::nat::eval_dim(&kernel.dims.block).unwrap(),
+            (64, 1, 1)
+        );
     }
 
     #[test]
