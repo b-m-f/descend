@@ -11,16 +11,15 @@ impl DescendSource {
         let (begin, end, span) = self.spans.get(next.checked_sub(1)?)?;
         (offset >= *begin && offset < *end).then_some(*span)
     }
-}
-
-pub fn flatten_source(stream: TokenStream) -> DescendSource {
-    let mut source = DescendSource {
-        text: String::new(),
-        spans: Vec::new(),
-    };
-    let mut last_was_ident_or_lit = false;
-    flatten(stream, &mut source, &mut last_was_ident_or_lit);
-    source
+    pub fn from_token_stream(stream: TokenStream) -> DescendSource {
+        let mut source = DescendSource {
+            text: String::new(),
+            spans: Vec::new(),
+        };
+        let mut last_was_ident_or_lit = false;
+        flatten(stream, &mut source, &mut last_was_ident_or_lit);
+        source
+    }
 }
 
 fn flatten(ts: TokenStream, source: &mut DescendSource, last_was_ident_or_lit: &mut bool) {
@@ -104,7 +103,10 @@ mod tests {
     use std::str::FromStr;
 
     fn packed(source: &str) -> String {
-        flatten_source(TokenStream::from_str(source).expect("test input must tokenize")).text
+        DescendSource::from_token_stream(
+            TokenStream::from_str(source).expect("test input must tokenize"),
+        )
+        .text
     }
 
     #[test]
@@ -125,7 +127,11 @@ mod tests {
         // must hold is that `::<` is not broken up and the argument list stays attached.
         let out = packed("(*a).to_view.grp::<256>[[block]][[thread]]");
         assert!(out.contains("::<256 >"), "{out}");
-        assert!(packed("g::<64>(x)").contains("::<64 >(x)"), "{}", packed("g::<64>(x)"));
+        assert!(
+            packed("g::<64>(x)").contains("::<64 >(x)"),
+            "{}",
+            packed("g::<64>(x)")
+        );
     }
 
     #[test]
@@ -232,7 +238,7 @@ mod tests {
                 "the fixture for src/parser/mod.rs:{line} ({site}) is not valid Descend:\n{source}"
             );
             let stream = TokenStream::from_str(source).expect("fixture must tokenize");
-            let flattened = flatten_source(stream).text;
+            let flattened = DescendSource::from_token_stream(stream).text;
             assert!(
                 parses(&flattened),
                 "src/parser/mod.rs:{line} ({site}) does not survive flattening:\n{flattened}"
@@ -292,12 +298,14 @@ mod tests {
             if !parses(&text) {
                 continue;
             }
-            let stream = TokenStream::from_str(&text)
-                .unwrap_or_else(|err| panic!("{} does not tokenize as Rust: {err}", path.display()));
-            let flattened = flatten_source(stream).text;
+            let stream = TokenStream::from_str(&text).unwrap_or_else(|err| {
+                panic!("{} does not tokenize as Rust: {err}", path.display())
+            });
+            let source = DescendSource::from_token_stream(stream).text;
+
             assert!(
-                parses(&flattened),
-                "{} no longer parses after flattening:\n{flattened}",
+                parses(&source),
+                "{} no longer parses after flattening:\n{source}",
                 path.display()
             );
         }
@@ -317,5 +325,4 @@ mod tests {
         let out = packed("let mut x");
         assert!(out.contains("let mut x"), "{out}");
     }
-
 }

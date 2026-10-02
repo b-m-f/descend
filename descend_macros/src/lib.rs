@@ -54,7 +54,7 @@ pub fn __descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::Toke
 // function only where a `descend_fn!` instantiates it.
 fn declare_kernels(input: TokenStream) -> Result<TokenStream, MacroError> {
     let source_ts = input.clone();
-    let source = flatten(input);
+    let source = parse_to_source(input);
     let code = SourceCode::new(source.text.clone());
     let unit = parse(&code)?;
     declare(&unit, &source, &source_ts)
@@ -95,7 +95,7 @@ fn instantiate(
 
     let sizes = bind_sizes(bindings)?;
     let specialized = specialize(source_ts, &name, &sizes)?;
-    let source = flatten(specialized);
+    let source = parse_to_source(specialized);
     let code = SourceCode::new(source.text.clone());
     let unit = parse(&code)?;
     let kernel = extract(&unit, &name, &source)?;
@@ -109,8 +109,8 @@ fn instantiate(
     emit_launch_fn(&kernel, &launch, &ptx).map_err(|error| error.or_span(declared_at))
 }
 
-fn flatten(input: TokenStream) -> DescendSource {
-    let source = source::flatten_source(input);
+fn parse_to_source(input: TokenStream) -> DescendSource {
+    let source = source::DescendSource::from_token_stream(input);
     debug!("MACRO INPUT: {}", source.text);
     source
 }
@@ -162,11 +162,13 @@ fn declare(
     }
 
     if output.is_empty() {
-        return Err("this `descend!` block declares nothing. A kernel is declared by an \
+        return Err(
+            "this `descend!` block declares nothing. A kernel is declared by an \
                     execution annotation `-[grid: gpu.grid<.., ..>]->`, and a type by a \
                     `struct`; without either, the macro emits no items at all"
-            .to_string()
-            .into());
+                .to_string()
+                .into(),
+        );
     }
 
     Ok(output)

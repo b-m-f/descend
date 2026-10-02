@@ -165,7 +165,7 @@ fn gpu_reduce<gs: nat, bs: nat, r1: prv, r2: prv, r3: prv>(
         )
         .expect("fixture must specialize");
 
-        let source = crate::source::flatten_source(specialized);
+        let source = crate::source::DescendSource::from_token_stream(specialized);
         let code = descend::parser::SourceCode::new(source.text.clone());
         let unit = crate::source::parse_descend_source(&code).expect("fixture must parse");
         let kernel = crate::kernel::Kernel::extract(&unit, "gpu_reduce", &source)
