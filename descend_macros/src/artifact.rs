@@ -1,10 +1,12 @@
+use crate::nat::Dimensions;
+
 pub struct LaunchConfig {
-    pub grid: (u32, u32, u32),
-    pub block: (u32, u32, u32),
-    pub shared_mem_bytes: u64,
+    pub grid: Dimensions,
+    pub block: Dimensions,
+    pub shared_memory_bytes: u64,
 }
 
 pub struct Ptx {
-    pub ptx: String,
+    pub text: String,
     pub entry: String,
 }

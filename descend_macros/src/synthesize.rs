@@ -1,51 +1,51 @@
 use crate::kernel::Kernel;
-use crate::spell::format_dim;
+use crate::spell::format_dimension;
 
-pub fn synthesize_main_fn(kernel: &Kernel) -> Result<String, String> {
-    let mut main_params = Vec::new();
-    let mut main_vars = Vec::new();
-    let mut main_args = Vec::new();
-    let mut shared_mem_configs = Vec::new();
+pub fn synthesize_main_function(kernel: &Kernel) -> Result<String, String> {
+    let mut main_parameters = Vec::new();
+    let mut main_bindings = Vec::new();
+    let mut main_arguments = Vec::new();
+    let mut shared_memory_configurations = Vec::new();
 
-    for (i, param) in kernel.params.iter().enumerate() {
-        let mem_qual = if param.is_uniq { "uniq" } else { "shrd" };
+    for (index, parameter) in kernel.parameters.iter().enumerate() {
+        let ownership = if parameter.is_uniq { "uniq" } else { "shrd" };
 
-        if param.is_shared_mem {
-            shared_mem_configs.push(param.host.descend());
+        if parameter.is_shared_memory {
+            shared_memory_configurations.push(parameter.host.descend());
             continue;
         }
 
-        if param.is_by_value {
-            main_params.push(format!("arg{}: {}", i, param.host.descend()));
-            main_args.push(format!("arg{}", i));
+        if parameter.is_by_value {
+            main_parameters.push(format!("arg{}: {}", index, parameter.host.descend()));
+            main_arguments.push(format!("arg{}", index));
             continue;
         }
 
-        // The host holds the buffer's contents in CPU memory; `mem_qual` is the same
+        // The host holds the buffer's contents in CPU memory; `ownership` is the same
         // ownership the kernel's reference declares.
-        main_params.push(format!(
+        main_parameters.push(format!(
             "arg{}: &'a {} cpu.mem {}",
-            i,
-            mem_qual,
-            param.host.descend()
+            index,
+            ownership,
+            parameter.host.descend()
         ));
 
-        main_vars.push(format!(
+        main_bindings.push(format!(
             "let mut arg{}_gpu = gpu_alloc_copy(&uniq gpu, &shrd *arg{});",
-            i, i
+            index, index
         ));
 
-        main_args.push(format!("&{} arg{}_gpu", mem_qual, i));
+        main_arguments.push(format!("&{} arg{}_gpu", ownership, index));
     }
 
-    let mut launch_dims = format!(
+    let mut launch_dimensions = format!(
         "{}, {}",
-        format_dim(&kernel.dims.grid)?,
-        format_dim(&kernel.dims.block)?
+        format_dimension(&kernel.dimensions.grid)?,
+        format_dimension(&kernel.dimensions.block)?
     );
-    if !shared_mem_configs.is_empty() {
-        launch_dims.push_str("; ");
-        launch_dims.push_str(&shared_mem_configs.join(", "));
+    if !shared_memory_configurations.is_empty() {
+        launch_dimensions.push_str("; ");
+        launch_dimensions.push_str(&shared_memory_configurations.join(", "));
     }
 
     Ok(format!(
@@ -57,10 +57,10 @@ fn main({}) -[t: cpu.thread]-> () <'a> {{
     ()
 }}
 ",
-        main_params.join(", "),
-        main_vars.join("\n    "),
+        main_parameters.join(", "),
+        main_bindings.join("\n    "),
         kernel.function_name,
-        launch_dims,
-        main_args.join(", ")
+        launch_dimensions,
+        main_arguments.join(", ")
     ))
 }

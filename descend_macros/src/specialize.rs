@@ -3,68 +3,72 @@ use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use std::collections::HashMap;
 
 pub fn specialize_kernel(
-    stream: TokenStream,
-    target: &str,
-    generic_to_size: &HashMap<String, String>,
+    token_stream: TokenStream,
+    kernel_name: &str,
+    sizes: &HashMap<String, String>,
 ) -> Result<TokenStream, MacroError> {
-    let mut out = TokenStream::new();
-    let mut iter = stream.into_iter().peekable();
+    let mut output = TokenStream::new();
+    let mut iter = token_stream.into_iter().peekable();
     let mut found = false;
 
-    while let Some(tt) = iter.next() {
-        let is_fn = matches!(&tt, TokenTree::Ident(ident) if ident == "fn");
-        out.extend(std::iter::once(tt));
+    while let Some(token_tree) = iter.next() {
+        let is_fn = matches!(&token_tree, TokenTree::Ident(ident) if ident == "fn");
+        output.extend(std::iter::once(token_tree));
         if !is_fn {
             continue;
         }
 
-        let Some(name_tt) = iter.next() else { break };
-        let is_target = matches!(&name_tt, TokenTree::Ident(ident) if ident == target);
-        out.extend(std::iter::once(name_tt));
-        if !is_target {
+        let Some(name_token_tree) = iter.next() else {
+            break;
+        };
+        let requested = matches!(&name_token_tree, TokenTree::Ident(ident) if ident == kernel_name);
+        output.extend(std::iter::once(name_token_tree));
+        if !requested {
             continue;
         }
         found = true;
 
         let mut declared: Vec<String> = Vec::new();
-        if matches!(iter.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '<') {
+        if matches!(iter.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '<') {
             let left_angle = iter.next().expect("peeked");
             let (inner_tokens, right_angle) = extract_generic_block(&mut iter);
             declared = nat_generic_names(&inner_tokens);
-            let keys: Vec<&str> = generic_to_size.keys().map(|k| k.as_str()).collect();
+            let keys: Vec<&str> = sizes.keys().map(|key| key.as_str()).collect();
             let kept: Vec<TokenTree> = filter_generics(inner_tokens, &keys).into_iter().collect();
             if !kept.is_empty() {
-                out.extend(std::iter::once(left_angle));
-                out.extend(kept);
-                out.extend(std::iter::once(right_angle));
+                output.extend(std::iter::once(left_angle));
+                output.extend(kept);
+                output.extend(std::iter::once(right_angle));
             }
         }
-        check_size_bindings(&declared, target, generic_to_size)?;
+        check_size_bindings(&declared, kernel_name, sizes)?;
 
         let mut kernel_tokens = Vec::new();
-        for tt in iter.by_ref() {
-            let is_body = matches!(&tt, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace);
-            kernel_tokens.push(tt);
+        for token_tree in iter.by_ref() {
+            let is_body = matches!(&token_tree, TokenTree::Group(group) if group.delimiter() == Delimiter::Brace);
+            kernel_tokens.push(token_tree);
             if is_body {
                 break;
             }
         }
-        let kernel_ts: TokenStream = kernel_tokens.into_iter().collect();
-        reject_shadowed_sizes(kernel_ts.clone(), target, generic_to_size)?;
-        out.extend(substitute_generics_in_tokens(kernel_ts, generic_to_size)?);
+        let kernel_token_stream: TokenStream = kernel_tokens.into_iter().collect();
+        reject_shadowed_sizes(kernel_token_stream.clone(), kernel_name, sizes)?;
+        output.extend(substitute_generics_in_tokens(kernel_token_stream, sizes)?);
     }
 
     if !found {
-        return Err(format!("Kernel definition '{target}' not found in macro body").into());
+        return Err(format!("Kernel definition '{kernel_name}' not found in macro body").into());
     }
 
-    Ok(out)
+    Ok(output)
 }
 
 fn nat_generic_names(tokens: &[TokenTree]) -> Vec<String> {
     let mut names = Vec::new();
 
-    for part in tokens.split(|tt| matches!(tt, TokenTree::Punct(p) if p.as_char() == ',')) {
+    for part in tokens
+        .split(|token_tree| matches!(token_tree, TokenTree::Punct(punct) if punct.as_char() == ','))
+    {
         if let [TokenTree::Ident(name), TokenTree::Punct(colon), TokenTree::Ident(kind)] = part {
             if colon.as_char() == ':' && kind == "nat" {
                 names.push(name.to_string());
@@ -76,20 +80,20 @@ fn nat_generic_names(tokens: &[TokenTree]) -> Vec<String> {
 }
 
 fn check_size_bindings(
-    sizes: &[String],
+    declared_sizes: &[String],
     kernel_name: &str,
-    bindings: &HashMap<String, String>,
+    sizes: &HashMap<String, String>,
 ) -> Result<(), MacroError> {
-    for size in sizes {
-        if !bindings.contains_key(size) {
+    for size in declared_sizes {
+        if !sizes.contains_key(size) {
             return Err(format!(
                 "instantiating kernel `{kernel_name}` needs a value for its size `{size}`"
             )
             .into());
         }
     }
-    for bound in bindings.keys() {
-        if !sizes.contains(bound) {
+    for bound in sizes.keys() {
+        if !declared_sizes.contains(bound) {
             return Err(
                 format!("kernel `{kernel_name}` has no size `{bound}` to instantiate").into(),
             );
@@ -100,41 +104,44 @@ fn check_size_bindings(
 }
 
 fn reject_shadowed_sizes(
-    stream: TokenStream,
-    kernel: &str,
-    generic_to_size: &HashMap<String, String>,
+    token_stream: TokenStream,
+    kernel_name: &str,
+    sizes: &HashMap<String, String>,
 ) -> Result<(), MacroError> {
-    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    let tokens: Vec<TokenTree> = token_stream.into_iter().collect();
 
-    for (i, tt) in tokens.iter().enumerate() {
-        if let TokenTree::Group(group) = tt {
-            reject_shadowed_sizes(group.stream(), kernel, generic_to_size)?;
+    for (index, token_tree) in tokens.iter().enumerate() {
+        if let TokenTree::Group(group) = token_tree {
+            reject_shadowed_sizes(group.stream(), kernel_name, sizes)?;
             continue;
         }
-        let TokenTree::Ident(ident) = tt else {
+        let TokenTree::Ident(ident) = token_tree else {
             continue;
         };
         let name = ident.to_string();
-        if !generic_to_size.contains_key(&name) {
+        if !sizes.contains_key(&name) {
             continue;
         }
 
-        let previous = match i.checked_sub(1).and_then(|prev| tokens.get(prev)) {
+        let previous = match index
+            .checked_sub(1)
+            .and_then(|previous_index| tokens.get(previous_index))
+        {
             Some(TokenTree::Ident(ident)) => ident.to_string(),
             _ => String::new(),
         };
         let introduces_arm = matches!(
-            tokens.get(i + 1),
-            Some(TokenTree::Punct(p)) if p.as_char() == '='
+            tokens.get(index + 1),
+            Some(TokenTree::Punct(punct)) if punct.as_char() == '='
         ) && matches!(
-            tokens.get(i + 2),
-            Some(TokenTree::Punct(p)) if p.as_char() == '>'
+            tokens.get(index + 2),
+            Some(TokenTree::Punct(punct)) if punct.as_char() == '>'
         );
 
         if matches!(previous.as_str(), "let" | "mut" | "sched" | "for") || introduces_arm {
             return Err(MacroError::at(
                 format!(
-                    "kernel `{kernel}` binds `{name}`, which is also one of its sizes; rename the \
+                    "kernel `{kernel_name}` binds `{name}`, which is also one of its sizes; rename the \
                      binding, or the size would be replaced by its value here"
                 ),
                 Some(ident.span()),
@@ -146,67 +153,64 @@ fn reject_shadowed_sizes(
 }
 
 fn substitute_generics_in_tokens(
-    stream: TokenStream,
-    generic_to_size: &HashMap<String, String>,
+    token_stream: TokenStream,
+    sizes: &HashMap<String, String>,
 ) -> Result<TokenStream, MacroError> {
-    let mut out = TokenStream::new();
+    let mut output = TokenStream::new();
     let mut previous_is_dot = false;
     let mut penultimate_is_dot = false;
-    for tt in stream {
-        let is_dot = matches!(&tt, TokenTree::Punct(p) if p.as_char() == '.');
+    for token_tree in token_stream {
+        let is_dot = matches!(&token_tree, TokenTree::Punct(punct) if punct.as_char() == '.');
         let follows_dot = previous_is_dot && !penultimate_is_dot;
         penultimate_is_dot = previous_is_dot;
         previous_is_dot = is_dot;
-        match tt {
-            TokenTree::Group(g) => {
-                let mut new_g = Group::new(
-                    g.delimiter(),
-                    substitute_generics_in_tokens(g.stream(), generic_to_size)?,
+        match token_tree {
+            TokenTree::Group(group) => {
+                let mut new_group = Group::new(
+                    group.delimiter(),
+                    substitute_generics_in_tokens(group.stream(), sizes)?,
                 );
-                new_g.set_span(g.span());
-                out.extend(std::iter::once(TokenTree::Group(new_g)));
+                new_group.set_span(group.span());
+                output.extend(std::iter::once(TokenTree::Group(new_group)));
             }
-            TokenTree::Ident(i) => {
-                let name = i.to_string();
-                if let Some(size) = generic_to_size.get(&name).filter(|_| !follows_dot) {
-                    debug!(
-                        "[DEBUG] Applying generic substitution: '{}' -> '{}'",
-                        name, size
-                    );
-                    let ts = size.parse::<TokenStream>().map_err(|error| {
+            TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                if let Some(size) = sizes.get(&name).filter(|_| !follows_dot) {
+                    debug!("substituting size `{name}` with `{size}`");
+                    let size_tokens = size.parse::<TokenStream>().map_err(|error| {
                         MacroError::at(
                             format!(
                                 "the value `{size}` bound to size `{name}` is not a valid size \
                                  expression: {error}"
                             ),
-                            Some(i.span()),
+                            Some(ident.span()),
                         )
                     })?;
-                    out.extend(ts);
+                    output.extend(size_tokens);
                     continue;
                 }
-                out.extend(std::iter::once(TokenTree::Ident(i)));
+                output.extend(std::iter::once(TokenTree::Ident(ident)));
             }
-            _ => out.extend(std::iter::once(tt)),
+            _ => output.extend(std::iter::once(token_tree)),
         }
     }
-    Ok(out)
+    Ok(output)
 }
 
 fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
-    let mut out = TokenStream::new();
+    let mut output = TokenStream::new();
     let mut parts = Vec::new();
     let mut current_part = Vec::new();
 
-    for tt in tokens {
-        if let TokenTree::Punct(ref p) = tt {
-            if p.as_char() == ',' {
+    for token_tree in tokens {
+        if let TokenTree::Punct(punct) = &token_tree {
+            if punct.as_char() == ',' {
                 parts.push(current_part);
                 current_part = Vec::new();
                 continue;
             }
         }
-        current_part.push(tt);
+        current_part.push(token_tree);
     }
     if !current_part.is_empty() {
         parts.push(current_part);
@@ -215,14 +219,9 @@ fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
     let mut keep_parts = Vec::new();
     for part in parts {
         let mut keep = true;
-        for tt in &part {
-            if let TokenTree::Ident(ref i) = tt {
-                debug!(
-                    "[DEBUG] CHECKING KEY: {}, in keys: {:?}",
-                    i.to_string(),
-                    keys
-                );
-                if keys.contains(&i.to_string().as_str()) {
+        for token_tree in &part {
+            if let TokenTree::Ident(ident) = token_tree {
+                if keys.contains(&ident.to_string().as_str()) {
                     keep = false;
                 }
                 break;
@@ -233,19 +232,19 @@ fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
         }
     }
 
-    for (i, part) in keep_parts.into_iter().enumerate() {
-        if i > 0 {
-            out.extend(std::iter::once(TokenTree::Punct(proc_macro2::Punct::new(
+    for (index, part) in keep_parts.into_iter().enumerate() {
+        if index > 0 {
+            output.extend(std::iter::once(TokenTree::Punct(proc_macro2::Punct::new(
                 ',',
                 proc_macro2::Spacing::Alone,
             ))));
         }
-        for tt in part {
-            out.extend(std::iter::once(tt));
+        for token_tree in part {
+            output.extend(std::iter::once(token_tree));
         }
     }
 
-    out
+    output
 }
 
 fn extract_generic_block(
@@ -255,19 +254,19 @@ fn extract_generic_block(
     let mut depth = 1;
     let mut right_angle = None;
 
-    for tt in iter.by_ref() {
-        if let TokenTree::Punct(ref inner_p) = tt {
-            if inner_p.as_char() == '<' {
+    for token_tree in iter.by_ref() {
+        if let TokenTree::Punct(inner_punct) = &token_tree {
+            if inner_punct.as_char() == '<' {
                 depth += 1;
-            } else if inner_p.as_char() == '>' {
+            } else if inner_punct.as_char() == '>' {
                 depth -= 1;
                 if depth == 0 {
-                    right_angle = Some(tt);
+                    right_angle = Some(token_tree);
                     break;
                 }
             }
         }
-        inner_tokens.push(tt);
+        inner_tokens.push(token_tree);
     }
 
     (
@@ -292,38 +291,38 @@ mod tests {
 
     fn specialize(
         source: &str,
-        target: &str,
+        kernel_name: &str,
         pairs: &[(&str, &str)],
     ) -> Result<String, MacroError> {
-        let stream = TokenStream::from_str(source).expect("test input must tokenize");
-        let packed = crate::source::DescendSource::from_token_stream(specialize_kernel(
-            stream,
-            target,
+        let token_stream = TokenStream::from_str(source).expect("test input must tokenize");
+        let rendered = crate::source::DescendSource::from_token_stream(specialize_kernel(
+            token_stream,
+            kernel_name,
             &sizes(pairs),
         )?)
         .text;
-        Ok(packed.split_whitespace().collect())
+        Ok(rendered.split_whitespace().collect())
     }
 
     #[test]
     fn the_targets_sizes_become_literals() {
-        let out = specialize(
+        let rendered = specialize(
             "fn gpu_k<N: nat, r: prv>(a: &r uniq gpu.global [i32; N]) { let x = N; }",
             "gpu_k",
             &[("N", "16384")],
         )
         .unwrap();
-        assert!(out.contains("[i32;16384]"), "{out}");
-        assert!(out.contains("letx=16384"), "{out}");
+        assert!(rendered.contains("[i32;16384]"), "{rendered}");
+        assert!(rendered.contains("letx=16384"), "{rendered}");
         assert!(
-            !out.contains("N:nat"),
-            "the declaration should be gone: {out}"
+            !rendered.contains("N:nat"),
+            "the declaration should be gone: {rendered}"
         );
     }
 
     #[test]
     fn a_sibling_kernel_is_left_alone() {
-        let out = specialize(
+        let rendered = specialize(
             "fn gpu_k<N: nat>(a: &r uniq gpu.global [i32; N]) { let x = N; }
              fn other<N: nat>(b: &r uniq gpu.global [i32; N]) { let N = 1; }",
             "gpu_k",
@@ -331,16 +330,16 @@ mod tests {
         )
         .unwrap();
         assert!(
-            out.contains("[i32;16384]"),
-            "the target was not specialized: {out}"
+            rendered.contains("[i32;16384]"),
+            "the target was not specialized: {rendered}"
         );
         assert!(
-            out.contains("fnother<N:nat>"),
-            "the sibling's generics were touched: {out}"
+            rendered.contains("fnother<N:nat>"),
+            "the sibling's generics were touched: {rendered}"
         );
         assert!(
-            out.contains("letN=1"),
-            "the sibling's body was touched: {out}"
+            rendered.contains("letN=1"),
+            "the sibling's body was touched: {rendered}"
         );
     }
 
@@ -373,13 +372,19 @@ mod tests {
 
     #[test]
     fn a_field_access_is_not_a_size_but_a_range_bound_is() {
-        let out = specialize(
+        let rendered = specialize(
             "fn gpu_k<n: nat>(a: &r uniq gpu.global [i32; n]) { let y = p.n; for i in 0..n { } }",
             "gpu_k",
             &[("n", "128")],
         )
         .unwrap();
-        assert!(out.contains("p.n"), "a field name must survive: {out}");
-        assert!(out.contains("0..128"), "a range bound is a size: {out}");
+        assert!(
+            rendered.contains("p.n"),
+            "a field name must survive: {rendered}"
+        );
+        assert!(
+            rendered.contains("0..128"),
+            "a range bound is a size: {rendered}"
+        );
     }
 }

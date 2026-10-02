@@ -20,7 +20,7 @@ impl Cursor {
     fn next_ident(&mut self) -> Option<Ident> {
         match self
             .tokens
-            .next_if(|tt| matches!(tt, TokenTree::Ident(_)))?
+            .next_if(|token_tree| matches!(token_tree, TokenTree::Ident(_)))?
         {
             TokenTree::Ident(ident) => Some(ident),
             _ => None,
@@ -30,7 +30,7 @@ impl Cursor {
     fn next_literal(&mut self) -> Option<Literal> {
         match self
             .tokens
-            .next_if(|tt| matches!(tt, TokenTree::Literal(_)))?
+            .next_if(|token_tree| matches!(token_tree, TokenTree::Literal(_)))?
         {
             TokenTree::Literal(literal) => Some(literal),
             _ => None,
@@ -40,16 +40,18 @@ impl Cursor {
     fn next_group(&mut self) -> Option<Group> {
         match self
             .tokens
-            .next_if(|tt| matches!(tt, TokenTree::Group(_)))?
+            .next_if(|token_tree| matches!(token_tree, TokenTree::Group(_)))?
         {
             TokenTree::Group(group) => Some(group),
             _ => None,
         }
     }
 
-    fn eat_punct(&mut self, c: char) -> bool {
+    fn eat_punct(&mut self, character: char) -> bool {
         self.tokens
-            .next_if(|tt| matches!(tt, TokenTree::Punct(p) if p.as_char() == c))
+            .next_if(|token_tree| {
+                matches!(token_tree, TokenTree::Punct(punct) if punct.as_char() == character)
+            })
             .is_some()
     }
 
@@ -58,13 +60,13 @@ impl Cursor {
     }
 }
 
-pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, String>, MacroError> {
-    let mut bindings = HashMap::new();
+pub fn parse_sizes(input: TokenStream) -> Result<HashMap<String, String>, MacroError> {
+    let mut sizes = HashMap::new();
     let mut cursor = Cursor::new(input);
 
     match cursor.next() {
-        Some(TokenTree::Punct(p)) if p.as_char() == '<' => {}
-        None => return Ok(bindings),
+        Some(TokenTree::Punct(punct)) if punct.as_char() == '<' => {}
+        None => return Ok(sizes),
         Some(other) => {
             return Err(MacroError::at(
                 format!("expected `<` to open the generic bindings, found `{other}`"),
@@ -75,8 +77,8 @@ pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, Stri
 
     loop {
         match cursor.next() {
-            Some(TokenTree::Punct(p)) if p.as_char() == '>' => break,
-            Some(TokenTree::Punct(p)) if p.as_char() == ',' => continue,
+            Some(TokenTree::Punct(punct)) if punct.as_char() == '>' => break,
+            Some(TokenTree::Punct(punct)) if punct.as_char() == ',' => continue,
             Some(TokenTree::Ident(name)) => {
                 if !cursor.eat_punct(':') {
                     return Err(MacroError::at(
@@ -93,10 +95,7 @@ pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, Stri
                         Some(name.span()),
                     ));
                 };
-                if bindings
-                    .insert(name.to_string(), value.to_string())
-                    .is_some()
-                {
+                if sizes.insert(name.to_string(), value.to_string()).is_some() {
                     return Err(MacroError::at(
                         format!(
                             "size `{name}` is bound twice; one value would silently win, so \
@@ -120,10 +119,10 @@ pub fn parse_generic_bindings(input: TokenStream) -> Result<HashMap<String, Stri
         }
     }
 
-    Ok(bindings)
+    Ok(sizes)
 }
 
-pub struct FnInvocation {
+pub struct FunctionInvocation {
     pub kernel: Ident,
     pub bindings: TokenStream,
 }
@@ -139,7 +138,7 @@ pub fn check_kernel_name(kernel: &Ident) -> Result<(), String> {
     }
 }
 
-pub fn parse_fn_invocation(input: TokenStream) -> Result<FnInvocation, String> {
+pub fn parse_function_invocation(input: TokenStream) -> Result<FunctionInvocation, String> {
     let mut cursor = Cursor::new(input);
 
     let Some(kernel) = cursor.next_ident() else {
@@ -161,16 +160,18 @@ pub fn parse_fn_invocation(input: TokenStream) -> Result<FnInvocation, String> {
         rest
     };
 
-    Ok(FnInvocation { kernel, bindings })
+    Ok(FunctionInvocation { kernel, bindings })
 }
 
-pub struct FnInternalArgs {
-    pub source_ts: TokenStream,
+pub struct FunctionInternalArguments {
+    pub source_token_stream: TokenStream,
     pub kernel: Ident,
     pub bindings: TokenStream,
 }
 
-pub fn parse_fn_internal_args(input: TokenStream) -> Result<FnInternalArgs, String> {
+pub fn parse_function_internal_arguments(
+    input: TokenStream,
+) -> Result<FunctionInternalArguments, String> {
     let mut cursor = Cursor::new(input);
 
     let Some(source_group) = cursor.next_group() else {
@@ -189,8 +190,8 @@ pub fn parse_fn_internal_args(input: TokenStream) -> Result<FnInternalArgs, Stri
         return Err(format!("expected `,` after the kernel `{kernel}`"));
     }
 
-    Ok(FnInternalArgs {
-        source_ts: source_group.stream(),
+    Ok(FunctionInternalArguments {
+        source_token_stream: source_group.stream(),
         kernel,
         bindings: cursor.rest(),
     })
@@ -201,14 +202,14 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    fn bindings(source: &str) -> Result<HashMap<String, String>, String> {
-        parse_generic_bindings(TokenStream::from_str(source).expect("test input must tokenize"))
+    fn sizes(source: &str) -> Result<HashMap<String, String>, String> {
+        parse_sizes(TokenStream::from_str(source).expect("test input must tokenize"))
             .map_err(|error| error.message)
     }
 
     #[test]
     fn reads_several_sizes() {
-        let parsed = bindings("<bs: 16, m: 64, n: 128, k: 64>").unwrap();
+        let parsed = sizes("<bs: 16, m: 64, n: 128, k: 64>").unwrap();
         assert_eq!(parsed.len(), 4);
         assert_eq!(parsed["bs"], "16");
         assert_eq!(parsed["k"], "64");
@@ -216,13 +217,13 @@ mod tests {
 
     #[test]
     fn an_empty_binding_list_is_allowed() {
-        assert!(bindings("<>").unwrap().is_empty());
-        assert!(bindings("").unwrap().is_empty());
+        assert!(sizes("<>").unwrap().is_empty());
+        assert!(sizes("").unwrap().is_empty());
     }
 
     #[test]
     fn a_runtime_expression_is_rejected_with_the_reason() {
-        let error = bindings("<N: n>").unwrap_err();
+        let error = sizes("<N: n>").unwrap_err();
         assert!(
             error.contains("needs an integer literal") && error.contains("compiled into its code"),
             "unhelpful error: {error}"
@@ -231,13 +232,11 @@ mod tests {
 
     #[test]
     fn a_missing_colon_is_rejected() {
-        assert!(bindings("<N 16384>").unwrap_err().contains("expected `:`"));
+        assert!(sizes("<N 16384>").unwrap_err().contains("expected `:`"));
     }
 
     #[test]
     fn an_unterminated_list_is_rejected() {
-        assert!(bindings("<N: 16384")
-            .unwrap_err()
-            .contains("not terminated"));
+        assert!(sizes("<N: 16384").unwrap_err().contains("not terminated"));
     }
 }
