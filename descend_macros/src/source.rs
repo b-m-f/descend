@@ -3,6 +3,7 @@ use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 pub struct DescendSource {
     pub text: String,
     spans: Vec<(u32, u32, Span)>,
+    last_was_ident_or_literal: bool,
 }
 
 impl DescendSource {
@@ -11,65 +12,65 @@ impl DescendSource {
         let (begin, end, span) = self.spans.get(next.checked_sub(1)?)?;
         (offset >= *begin && offset < *end).then_some(*span)
     }
-    pub fn from_token_stream(stream: TokenStream) -> DescendSource {
+    pub fn from_token_stream(token_stream: TokenStream) -> DescendSource {
         let mut source = DescendSource {
             text: String::new(),
             spans: Vec::new(),
+            last_was_ident_or_literal: false,
         };
-        let mut last_was_ident_or_lit = false;
-        flatten(stream, &mut source, &mut last_was_ident_or_lit);
+        source.push_token_stream(token_stream);
         source
     }
-}
 
-fn flatten(ts: TokenStream, source: &mut DescendSource, last_was_ident_or_lit: &mut bool) {
-    for tt in ts {
-        match tt {
-            TokenTree::Group(g) => {
-                let (open, close) = match g.delimiter() {
-                    Delimiter::Parenthesis => ("(", ")"),
-                    Delimiter::Brace => ("{", "}"),
-                    Delimiter::Bracket => ("[", "]"),
-                    Delimiter::None => ("", ""),
-                };
-                // A space here keeps `&uniq (*x)` from collapsing into a call, but after
-                // punctuation it would detach an argument list from its turbofish.
-                if *last_was_ident_or_lit {
-                    source.text.push(' ');
-                }
-                source.text.push_str(open);
-                *last_was_ident_or_lit = false;
+    fn push_token_stream(&mut self, token_stream: TokenStream) {
+        for token_tree in token_stream {
+            match token_tree {
+                TokenTree::Group(group) => {
+                    let (open, close) = match group.delimiter() {
+                        Delimiter::Parenthesis => ("(", ")"),
+                        Delimiter::Brace => ("{", "}"),
+                        Delimiter::Bracket => ("[", "]"),
+                        Delimiter::None => ("", ""),
+                    };
+                    // A space here keeps `&uniq (*x)` from collapsing into a call, but after
+                    // punctuation it would detach an argument list from its turbofish.
+                    if self.last_was_ident_or_literal {
+                        self.text.push(' ');
+                    }
+                    self.text.push_str(open);
+                    self.last_was_ident_or_literal = false;
 
-                flatten(g.stream(), source, last_was_ident_or_lit);
+                    self.push_token_stream(group.stream());
 
-                source.text.push_str(close);
-                source.text.push(' ');
-                *last_was_ident_or_lit = false;
-            }
-            TokenTree::Ident(i) => {
-                if *last_was_ident_or_lit {
-                    source.text.push(' ');
+                    self.text.push_str(close);
+                    self.text.push(' ');
+                    self.last_was_ident_or_literal = false;
                 }
-                source.write_spanned(&i.to_string(), i.span());
-                *last_was_ident_or_lit = true;
-            }
-            TokenTree::Literal(l) => {
-                if *last_was_ident_or_lit {
-                    source.text.push(' ');
+                TokenTree::Ident(ident) => {
+                    if self.last_was_ident_or_literal {
+                        self.text.push(' ');
+                    }
+                    self.write_spanned(&ident.to_string(), ident.span());
+                    self.last_was_ident_or_literal = true;
                 }
-                source.write_spanned(&l.to_string(), l.span());
-                *last_was_ident_or_lit = true;
-            }
-            TokenTree::Punct(p) => {
-                // The grammar's mandatory-whitespace rule `__` always follows a word, so
-                // a word is separated from the punctuation after it. The one exception is
-                // `.`: it glues the dotted keywords (`gpu.global`, `cpu.thread`, ..) that
-                // `keyword()` matches as whole strings, and the view and field chains.
-                if *last_was_ident_or_lit && p.as_char() != '.' {
-                    source.text.push(' ');
+                TokenTree::Literal(literal) => {
+                    if self.last_was_ident_or_literal {
+                        self.text.push(' ');
+                    }
+                    self.write_spanned(&literal.to_string(), literal.span());
+                    self.last_was_ident_or_literal = true;
                 }
-                source.text.push(p.as_char());
-                *last_was_ident_or_lit = false;
+                TokenTree::Punct(punct) => {
+                    // The grammar's mandatory-whitespace rule `__` always follows a word, so
+                    // a word is separated from the punctuation after it. The one exception is
+                    // `.`: it glues the dotted keywords (`gpu.global`, `cpu.thread`, ..) that
+                    // `keyword()` matches as whole strings, and the view and field chains.
+                    if self.last_was_ident_or_literal && punct.as_char() != '.' {
+                        self.text.push(' ');
+                    }
+                    self.text.push(punct.as_char());
+                    self.last_was_ident_or_literal = false;
+                }
             }
         }
     }
@@ -102,7 +103,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    fn packed(source: &str) -> String {
+    fn rendered_source(source: &str) -> String {
         DescendSource::from_token_stream(
             TokenStream::from_str(source).expect("test input must tokenize"),
         )
@@ -111,32 +112,32 @@ mod tests {
 
     #[test]
     fn address_spaces_keep_their_dot() {
-        assert!(packed("gpu.global").contains("gpu.global"));
-        assert!(packed("gpu.shared").contains("gpu.shared"));
+        assert!(rendered_source("gpu.global").contains("gpu.global"));
+        assert!(rendered_source("gpu.shared").contains("gpu.shared"));
     }
 
     #[test]
     fn ownership_and_provenance_stay_separate_words() {
-        let out = packed("a_array: &r uniq gpu.global [i32; N]");
-        assert!(out.contains("&r uniq gpu.global"), "{out}");
+        let rendered = rendered_source("a_array: &r uniq gpu.global [i32; N]");
+        assert!(rendered.contains("&r uniq gpu.global"), "{rendered}");
     }
 
     #[test]
     fn turbofish_stays_glued() {
         // Words are separated from punctuation, so the spelling is `grp ::<256 >`; what
         // must hold is that `::<` is not broken up and the argument list stays attached.
-        let out = packed("(*a).to_view.grp::<256>[[block]][[thread]]");
-        assert!(out.contains("::<256 >"), "{out}");
+        let rendered = rendered_source("(*a).to_view.grp::<256>[[block]][[thread]]");
+        assert!(rendered.contains("::<256 >"), "{rendered}");
         assert!(
-            packed("g::<64>(x)").contains("::<64 >(x)"),
+            rendered_source("g::<64>(x)").contains("::<64 >(x)"),
             "{}",
-            packed("g::<64>(x)")
+            rendered_source("g::<64>(x)")
         );
     }
 
     #[test]
-    fn a_packed_kernel_parses_as_descend() {
-        let source = packed(
+    fn a_rendered_kernel_parses_as_descend() {
+        let source = rendered_source(
             "fn gpu_vec_add<N: nat, r: prv>(
                 a_array: &r uniq gpu.global [i32; N],
                 b_array: &r shrd gpu.global [i32; N]
@@ -152,13 +153,13 @@ mod tests {
         let source_code = descend::parser::SourceCode::new(source.clone());
         assert!(
             descend::parser::parse(&source_code).is_ok(),
-            "the packed source did not parse:\n{source}"
+            "the rendered source did not parse:\n{source}"
         );
     }
 
     #[test]
-    fn a_packed_shared_memory_kernel_parses_as_descend() {
-        let source = packed(
+    fn a_rendered_shared_memory_kernel_parses_as_descend() {
+        let source = rendered_source(
             "fn gpu_copy<r1: prv, r2: prv>(
                 vec: &r1 uniq gpu.global [i32; 64],
                 [grid.forall(X)] tmp: &r2 uniq gpu.shared [i32; 64]
@@ -179,21 +180,21 @@ mod tests {
         let source_code = descend::parser::SourceCode::new(source.clone());
         assert!(
             descend::parser::parse(&source_code).is_ok(),
-            "the packed source did not parse:\n{source}"
+            "the rendered source did not parse:\n{source}"
         );
     }
 
     #[test]
     fn a_keyword_is_separated_from_following_punctuation() {
         // The grammar's `__` is mandatory whitespace, so these must not collapse.
-        assert!(packed("g(&shrd *x)").contains("&shrd *x"));
-        assert!(packed("g(&uniq *x)").contains("&uniq *x"));
-        assert!(packed("for c in &uniq *chunk { () }").contains("in &uniq"));
+        assert!(rendered_source("g(&shrd *x)").contains("&shrd *x"));
+        assert!(rendered_source("g(&uniq *x)").contains("&uniq *x"));
+        assert!(rendered_source("for c in &uniq *chunk { () }").contains("in &uniq"));
     }
 
     /// Every place where the grammar demands whitespace, with the `src/parser/mod.rs`
     /// line of the `__` it exercises. `__` (line 1049) is one-or-more whitespace, so a
-    /// flattening that glued these tokens together would make the source unparsable.
+    /// rendering that glued these tokens together would make the source unparsable.
     ///
     /// The two `__` in `lambda_parameter` (line 430) are left out: that rule is
     /// unreachable, because the lambda expression that used it is commented out at
@@ -231,17 +232,17 @@ mod tests {
     }
 
     #[test]
-    fn every_mandatory_whitespace_site_survives_flattening() {
+    fn every_mandatory_whitespace_site_survives_rendering() {
         for (line, site, source) in MANDATORY_WHITESPACE_SITES {
             assert!(
                 parses(source),
                 "the fixture for src/parser/mod.rs:{line} ({site}) is not valid Descend:\n{source}"
             );
-            let stream = TokenStream::from_str(source).expect("fixture must tokenize");
-            let flattened = DescendSource::from_token_stream(stream).text;
+            let token_stream = TokenStream::from_str(source).expect("fixture must tokenize");
+            let rendered = DescendSource::from_token_stream(token_stream).text;
             assert!(
-                parses(&flattened),
-                "src/parser/mod.rs:{line} ({site}) does not survive flattening:\n{flattened}"
+                parses(&rendered),
+                "src/parser/mod.rs:{line} ({site}) does not survive rendering:\n{rendered}"
             );
         }
     }
@@ -259,22 +260,29 @@ mod tests {
             "gpu.block",
             "gpu.thread",
         ] {
-            let out = packed(keyword);
-            assert!(out.contains(keyword), "{keyword} was split into {out}");
+            let rendered = rendered_source(keyword);
+            assert!(
+                rendered.contains(keyword),
+                "{keyword} was split into {rendered}"
+            );
         }
     }
 
     /// Every Descend source in the repository that the compiler accepts must still be
-    /// accepted after a round trip through the Rust lexer and `flatten_source`.
+    /// accepted after a round trip through the Rust lexer and
+    /// `DescendSource::from_token_stream`.
     #[test]
     fn every_descend_example_round_trips() {
-        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        fn collect(directory: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(directory).unwrap().flatten() {
                 let path = entry.path();
                 if path.is_dir() && !path.ends_with("target") {
-                    collect(&path, out);
-                } else if path.extension().is_some_and(|ext| ext == "desc") {
-                    out.push(path);
+                    collect(&path, paths);
+                } else if path
+                    .extension()
+                    .is_some_and(|extension| extension == "desc")
+                {
+                    paths.push(path);
                 }
             }
         }
@@ -298,14 +306,14 @@ mod tests {
             if !parses(&text) {
                 continue;
             }
-            let stream = TokenStream::from_str(&text).unwrap_or_else(|err| {
-                panic!("{} does not tokenize as Rust: {err}", path.display())
+            let token_stream = TokenStream::from_str(&text).unwrap_or_else(|error| {
+                panic!("{} does not tokenize as Rust: {error}", path.display())
             });
-            let source = DescendSource::from_token_stream(stream).text;
+            let source = DescendSource::from_token_stream(token_stream).text;
 
             assert!(
                 parses(&source),
-                "{} no longer parses after flattening:\n{source}",
+                "{} no longer parses after rendering:\n{source}",
                 path.display()
             );
         }
@@ -313,16 +321,16 @@ mod tests {
 
     #[test]
     fn the_execution_annotation_survives() {
-        let out = packed("-[grid: gpu.grid<X<64>, X<256>>]-> ()");
+        let rendered = rendered_source("-[grid: gpu.grid<X<64>, X<256>>]-> ()");
         // The dotted keyword stays glued; the dimensions may be spaced, as the grammar
         // allows optional whitespace around `<`.
-        assert!(out.contains("gpu.grid"), "{out}");
-        assert!(out.contains("X <64 >"), "{out}");
+        assert!(rendered.contains("gpu.grid"), "{rendered}");
+        assert!(rendered.contains("X <64 >"), "{rendered}");
     }
 
     #[test]
     fn adjacent_identifiers_do_not_merge() {
-        let out = packed("let mut x");
-        assert!(out.contains("let mut x"), "{out}");
+        let rendered = rendered_source("let mut x");
+        assert!(rendered.contains("let mut x"), "{rendered}");
     }
 }

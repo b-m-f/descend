@@ -6,19 +6,25 @@
 
 use descend::ast::*;
 
-pub fn format_dim(dim: &Dim) -> Result<String, String> {
-    Ok(match dim {
+pub fn format_dimension(dimension: &Dim) -> Result<String, String> {
+    Ok(match dimension {
         Dim::X(nat) => format!("X<{}>", format_nat(&nat.0)?),
         Dim::Y(nat) => format!("Y<{}>", format_nat(&nat.0)?),
         Dim::Z(nat) => format!("Z<{}>", format_nat(&nat.0)?),
-        Dim::XY(d) => format!("XY<{}, {}>", format_nat(&d.0)?, format_nat(&d.1)?),
-        Dim::XZ(d) => format!("XZ<{}, {}>", format_nat(&d.0)?, format_nat(&d.1)?),
-        Dim::YZ(d) => format!("YZ<{}, {}>", format_nat(&d.0)?, format_nat(&d.1)?),
-        Dim::XYZ(d) => format!(
+        Dim::XY(dim_2d) => {
+            format!("XY<{}, {}>", format_nat(&dim_2d.0)?, format_nat(&dim_2d.1)?)
+        }
+        Dim::XZ(dim_2d) => {
+            format!("XZ<{}, {}>", format_nat(&dim_2d.0)?, format_nat(&dim_2d.1)?)
+        }
+        Dim::YZ(dim_2d) => {
+            format!("YZ<{}, {}>", format_nat(&dim_2d.0)?, format_nat(&dim_2d.1)?)
+        }
+        Dim::XYZ(dim_3d) => format!(
             "XYZ<{}, {}, {}>",
-            format_nat(&d.0)?,
-            format_nat(&d.1)?,
-            format_nat(&d.2)?
+            format_nat(&dim_3d.0)?,
+            format_nat(&dim_3d.1)?,
+            format_nat(&dim_3d.2)?
         ),
     })
 }
@@ -44,29 +50,29 @@ pub(crate) fn format_nat(nat: &Nat) -> Result<String, String> {
                 format_nat(rhs)?
             )
         }
-        Nat::App(ident, args) => {
-            let args: Vec<String> = args
+        Nat::App(ident, arguments) => {
+            let spelled_arguments: Vec<String> = arguments
                 .iter()
                 .map(format_nat)
                 .collect::<Result<Vec<String>, String>>()?;
-            format!("{}({})", ident.name, args.join(", "))
+            format!("{}({})", ident.name, spelled_arguments.join(", "))
         }
-        Nat::ThreadIdx(dim) => {
+        Nat::ThreadIdx(component) => {
             return Err(position_in_a_size(&format!(
                 "thread_idx_{}",
-                format_dim_compo(*dim)
+                format_dimension_component(*component)
             )))
         }
-        Nat::BlockIdx(dim) => {
+        Nat::BlockIdx(component) => {
             return Err(position_in_a_size(&format!(
                 "block_idx_{}",
-                format_dim_compo(*dim)
+                format_dimension_component(*component)
             )))
         }
-        Nat::BlockDim(dim) => {
+        Nat::BlockDim(component) => {
             return Err(position_in_a_size(&format!(
                 "block_dim_{}",
-                format_dim_compo(*dim)
+                format_dimension_component(*component)
             )))
         }
         Nat::GridIdx => return Err(position_in_a_size("grid_idx")),
@@ -93,8 +99,8 @@ pub(crate) fn format_binop(op: &BinOpNat) -> &'static str {
     }
 }
 
-fn format_dim_compo(dim: DimCompo) -> &'static str {
-    match dim {
+fn format_dimension_component(component: DimCompo) -> &'static str {
+    match component {
         DimCompo::X => "x",
         DimCompo::Y => "y",
         DimCompo::Z => "z",
@@ -123,15 +129,15 @@ mod tests {
     #[test]
     fn every_dimensionality_is_spelled_out() {
         assert_eq!(
-            format_dim(&Dim::X(Box::new(Dim1d(Nat::Lit(64))))).unwrap(),
+            format_dimension(&Dim::X(Box::new(Dim1d(Nat::Lit(64))))).unwrap(),
             "X<64>"
         );
         assert_eq!(
-            format_dim(&Dim::XY(Box::new(Dim2d(Nat::Lit(4), Nat::Lit(2))))).unwrap(),
+            format_dimension(&Dim::XY(Box::new(Dim2d(Nat::Lit(4), Nat::Lit(2))))).unwrap(),
             "XY<4, 2>"
         );
         assert_eq!(
-            format_dim(&Dim::XYZ(Box::new(Dim3d(
+            format_dimension(&Dim::XYZ(Box::new(Dim3d(
                 Nat::Lit(2),
                 Nat::Lit(3),
                 Nat::Lit(4)

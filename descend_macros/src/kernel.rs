@@ -4,11 +4,11 @@ use descend::ast::*;
 use proc_macro2::Span;
 
 #[derive(Debug, Clone)]
-pub struct KernelParam {
+pub struct KernelParameter {
     pub name: String,
     pub span: Option<Span>,
     pub is_uniq: bool,
-    pub is_shared_mem: bool,
+    pub is_shared_memory: bool,
     pub is_by_value: bool,
     /// The data this parameter names -- what a reference points at, or the value
     /// itself. Both the Rust signature and the synthesized Descend `main` are spelled
@@ -17,7 +17,7 @@ pub struct KernelParam {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExecDims {
+pub struct ExecutionDimensions {
     pub grid: Dim,
     pub block: Dim,
 }
@@ -26,51 +26,51 @@ pub struct ExecDims {
 pub struct Kernel {
     pub function_name: String,
     pub name_span: Option<Span>,
-    pub dims: ExecDims,
-    pub params: Vec<KernelParam>,
+    pub dimensions: ExecutionDimensions,
+    pub parameters: Vec<KernelParameter>,
 }
 
 fn span_of(ident: &Ident, source: &DescendSource) -> Option<Span> {
     source.span_at(ident.span?.begin)
 }
 
-pub fn is_launchable(f: &FunDef) -> bool {
-    matches!(f.exec.exec.base, BaseExec::GpuGrid(_, _))
+pub fn is_launchable(fun_def: &FunDef) -> bool {
+    matches!(fun_def.exec.exec.base, BaseExec::GpuGrid(_, _))
 }
 
 impl Kernel {
     pub fn extract(
-        compil_unit: &CompilUnit,
-        target_name: &str,
+        compilation_unit: &CompilUnit,
+        kernel_name: &str,
         source: &DescendSource,
     ) -> Result<Self, String> {
-        for item in &compil_unit.items {
-            if let Item::FunDef(f) = item {
-                let function_name = f.ident.name.to_string();
-                if function_name != target_name {
+        for item in &compilation_unit.items {
+            if let Item::FunDef(fun_def) = item {
+                let function_name = fun_def.ident.name.to_string();
+                if function_name != kernel_name {
                     continue;
                 }
 
-                let BaseExec::GpuGrid(grid, block) = &f.exec.exec.base else {
+                let BaseExec::GpuGrid(grid, block) = &fun_def.exec.exec.base else {
                     return Err(format!(
                         "kernel `{function_name}` must declare explicit grid and block \
                          dimensions, as `-[grid: gpu.grid<X<..>, X<..>>]->`"
                     ));
                 };
-                let dims = ExecDims {
+                let dimensions = ExecutionDimensions {
                     grid: grid.clone(),
                     block: block.clone(),
                 };
 
-                let mut params = Vec::new();
+                let mut parameters = Vec::new();
 
-                for param in &f.param_decls {
-                    let p_name = &param.ident.name;
-                    let ty = param.ty.as_ref().unwrap();
+                for parameter in &fun_def.param_decls {
+                    let parameter_name = &parameter.ident.name;
+                    let ty = parameter.ty.as_ref().unwrap();
 
                     // A parameter is either a reference to memory or a value, and that
                     // decides both how it reaches the kernel and how the host holds it.
-                    let (is_uniq, is_shared_mem, is_by_value) = match host_ty::reference(ty) {
+                    let (is_uniq, is_shared_memory, is_by_value) = match host_ty::reference(ty) {
                         Some(reference) => (
                             matches!(reference.own, Ownership::Uniq),
                             matches!(reference.mem, Memory::GpuShared),
@@ -80,20 +80,22 @@ impl Kernel {
                     };
 
                     let dty = host_ty::parameter_dty(ty).ok_or_else(|| {
-                        format!("kernel `{function_name}`: parameter `{p_name}` has no data type")
+                        format!(
+                            "kernel `{function_name}`: parameter `{parameter_name}` has no data type"
+                        )
                     })?;
                     let host = host_ty::host_ty(dty).map_err(|reason| {
                         format!(
-                            "kernel `{function_name}`: parameter `{p_name}` {}",
+                            "kernel `{function_name}`: parameter `{parameter_name}` {}",
                             reason.reason()
                         )
                     })?;
 
-                    params.push(KernelParam {
-                        name: p_name.to_string(),
-                        span: span_of(&param.ident, source),
+                    parameters.push(KernelParameter {
+                        name: parameter_name.to_string(),
+                        span: span_of(&parameter.ident, source),
                         is_uniq,
-                        is_shared_mem,
+                        is_shared_memory,
                         is_by_value,
                         host,
                     });
@@ -101,16 +103,15 @@ impl Kernel {
 
                 return Ok(Kernel {
                     function_name,
-                    name_span: span_of(&f.ident, source),
-                    dims,
-                    params,
+                    name_span: span_of(&fun_def.ident, source),
+                    dimensions,
+                    parameters,
                 });
             }
         }
 
         Err(format!(
-            "Kernel definition '{}' not found in macro body",
-            target_name
+            "Kernel definition '{kernel_name}' not found in macro body"
         ))
     }
 }
@@ -121,14 +122,14 @@ mod tests {
     use proc_macro2::TokenStream;
     use std::str::FromStr;
 
-    fn extract(source: &str, target: &str) -> Result<Kernel, String> {
-        let flattened = crate::source::DescendSource::from_token_stream(
-            TokenStream::from_str(source).expect("must tokenize"),
+    fn extract(source_text: &str, kernel_name: &str) -> Result<Kernel, String> {
+        let source = crate::source::DescendSource::from_token_stream(
+            TokenStream::from_str(source_text).expect("must tokenize"),
         );
-        let code = descend::parser::SourceCode::new(flattened.text.clone());
+        let code = descend::parser::SourceCode::new(source.text.clone());
         let unit = crate::source::parse_descend_source(&code)
-            .unwrap_or_else(|error| panic!("fixture did not parse: {error}\n{}", flattened.text));
-        Kernel::extract(&unit, target, &flattened)
+            .unwrap_or_else(|error| panic!("fixture did not parse: {error}\n{}", source.text));
+        Kernel::extract(&unit, kernel_name, &source)
     }
 
     #[test]
@@ -142,10 +143,13 @@ mod tests {
         )
         .expect("a gpu.grid kernel must extract");
 
-        assert_eq!(crate::nat::eval_dim(&kernel.dims.grid).unwrap(), (4, 1, 1));
         assert_eq!(
-            crate::nat::eval_dim(&kernel.dims.block).unwrap(),
-            (64, 1, 1)
+            crate::nat::eval_dimensions(&kernel.dimensions.grid).unwrap(),
+            crate::nat::Dimensions { x: 4, y: 1, z: 1 }
+        );
+        assert_eq!(
+            crate::nat::eval_dimensions(&kernel.dimensions.block).unwrap(),
+            crate::nat::Dimensions { x: 64, y: 1, z: 1 }
         );
     }
 

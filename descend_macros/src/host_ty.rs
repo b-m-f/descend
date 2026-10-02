@@ -67,7 +67,7 @@ impl ScalarKind {
     /// invents: it is the set of element types that would abort the Descend compiler.
     /// A shared `[u8; 64]` panics `descendc` outright, and a shared parameter of a
     /// declared type panics it in `get_elem_ty_and_amount`. Reporting those as
-    /// diagnostics is the whole point of `shared_mem::check_shared_params`.
+    /// diagnostics is the whole point of `check::check_shared_parameters`.
     ///
     /// `U8` and `AtomicI32` are therefore absent on purpose. `AtomicI32` is currently
     /// unreachable from Descend source anyway -- the grammar spells only `AtomicU32`
@@ -75,7 +75,7 @@ impl ScalarKind {
     /// spelling is ever added, this keeps the macro's answer and Descend's in step.
     ///
     /// See `tests/macro_compiler_safety/shared_param_unsupported_elem.rs`.
-    pub fn shared_mem_bytes(self) -> Option<u32> {
+    pub fn shared_memory_bytes(self) -> Option<u32> {
         match self {
             ScalarKind::Bool => Some(1),
             ScalarKind::U32 | ScalarKind::I32 | ScalarKind::F32 | ScalarKind::AtomicU32 => Some(4),
@@ -110,7 +110,9 @@ impl HostTy {
     pub fn rust(&self) -> String {
         match self {
             HostTy::Scalar(kind) => kind.rust().to_string(),
-            HostTy::Array(elem, len) => format!("[{}; {}]", elem.rust(), len.value),
+            HostTy::Array(element, array_length) => {
+                format!("[{}; {}]", element.rust(), array_length.value)
+            }
             HostTy::Declared(name) => name.clone(),
         }
     }
@@ -119,7 +121,9 @@ impl HostTy {
     pub fn descend(&self) -> String {
         match self {
             HostTy::Scalar(kind) => kind.descend().to_string(),
-            HostTy::Array(elem, len) => format!("[{}; {}]", elem.descend(), len.descend),
+            HostTy::Array(element, array_length) => {
+                format!("[{}; {}]", element.descend(), array_length.descend)
+            }
             HostTy::Declared(name) => name.clone(),
         }
     }
@@ -127,7 +131,7 @@ impl HostTy {
     /// The type of the innermost element, looking through any array nesting.
     pub fn base(&self) -> &HostTy {
         match self {
-            HostTy::Array(elem, _) => elem.base(),
+            HostTy::Array(element, _) => element.base(),
             HostTy::Scalar(_) | HostTy::Declared(_) => self,
         }
     }
@@ -146,7 +150,9 @@ impl HostTy {
     /// does not fit in a `u64`.
     pub fn elements(&self) -> Option<u64> {
         match self {
-            HostTy::Array(elem, len) => u64::from(len.value).checked_mul(elem.elements()?),
+            HostTy::Array(element, array_length) => {
+                u64::from(array_length.value).checked_mul(element.elements()?)
+            }
             HostTy::Scalar(_) | HostTy::Declared(_) => Some(1),
         }
     }
@@ -170,10 +176,10 @@ pub fn reference(ty: &Ty) -> Option<Reference<'_>> {
     // A wildcard is right here, unlike in `host_ty`: the question is only whether this
     // is a reference, and a data type Descend adds later is simply not one.
     match &dty.dty {
-        DataTyKind::Ref(ref_dty) => Some(Reference {
-            own: ref_dty.own,
-            mem: ref_dty.mem.clone(),
-            dty: &ref_dty.dty,
+        DataTyKind::Ref(reference_dty) => Some(Reference {
+            own: reference_dty.own,
+            mem: reference_dty.mem.clone(),
+            dty: &reference_dty.dty,
         }),
         _ => None,
     }
@@ -212,19 +218,19 @@ impl Unrepresentable {
 pub fn host_ty(dty: &DataTy) -> Result<HostTy, Unrepresentable> {
     match &dty.dty {
         DataTyKind::Scalar(scalar) => scalar_host_ty(*scalar),
-        DataTyKind::Array(elem, len) => {
-            let len = ArrayLen {
-                value: crate::nat::eval_nat(len)
+        DataTyKind::Array(element, length_expression) => {
+            let array_length = ArrayLen {
+                value: crate::nat::eval_nat(length_expression)
                     .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
-                descend: crate::spell::format_nat(len)
+                descend: crate::spell::format_nat(length_expression)
                     .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
             };
             // Carry the element's reason outward, so a rejection names the type the
             // reader actually wrote rather than the element buried inside it.
-            let elem = host_ty(elem).map_err(|reason| {
+            let element = host_ty(element).map_err(|reason| {
                 Unrepresentable(format!("is an array whose element {}", reason.reason()))
             })?;
-            Ok(HostTy::Array(Box::new(elem), len))
+            Ok(HostTy::Array(Box::new(element), array_length))
         }
         DataTyKind::Struct(declared) => Ok(HostTy::Declared(declared.ident.name.to_string())),
         DataTyKind::Ident(name) => Ok(HostTy::Declared(name.name.to_string())),
@@ -273,8 +279,7 @@ fn scalar_host_ty(scalar: ScalarTy) -> Result<HostTy, Unrepresentable> {
             "is the unit type, which holds nothing to transfer.".to_string(),
         )),
         ScalarTy::Gpu => Err(Unrepresentable(
-            "is a GPU handle, which belongs to the context rather than to a buffer."
-                .to_string(),
+            "is a GPU handle, which belongs to the context rather than to a buffer.".to_string(),
         )),
     }
 }
@@ -382,7 +387,9 @@ mod tests {
         ));
         let reason = host_ty(&dty).unwrap_err();
         assert!(
-            reason.reason().starts_with("is an array whose element is a tuple"),
+            reason
+                .reason()
+                .starts_with("is an array whose element is a tuple"),
             "{reason:?}"
         );
     }
@@ -406,7 +413,7 @@ mod tests {
             (ScalarKind::U8, None),
             (ScalarKind::AtomicI32, None),
         ] {
-            assert_eq!(kind.shared_mem_bytes(), expected, "{kind:?}");
+            assert_eq!(kind.shared_memory_bytes(), expected, "{kind:?}");
         }
     }
 

@@ -1,48 +1,92 @@
 use crate::spell::{format_binop, format_nat};
 use descend::ast::Nat;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dimensions {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+impl Dimensions {
+    fn along_x(x: u32) -> Self {
+        Self { x, y: 1, z: 1 }
+    }
+
+    fn along_y(y: u32) -> Self {
+        Self { x: 1, y, z: 1 }
+    }
+
+    fn along_z(z: u32) -> Self {
+        Self { x: 1, y: 1, z }
+    }
+
+    fn plane(x: u32, y: u32) -> Self {
+        Self { x, y, z: 1 }
+    }
+
+    fn depth(x: u32, z: u32) -> Self {
+        Self { x, y: 1, z }
+    }
+
+    fn height(y: u32, z: u32) -> Self {
+        Self { x: 1, y, z }
+    }
+
+    fn space(x: u32, y: u32, z: u32) -> Self {
+        Self { x, y, z }
+    }
+}
+
 pub fn eval_nat(nat: &Nat) -> Result<u32, String> {
     match nat {
-        Nat::Lit(val) => {
-            u32::try_from(*val).map_err(|_| format!("dimension literal {val} exceeds u32::MAX"))
+        Nat::Lit(value) => {
+            u32::try_from(*value).map_err(|_| format!("the literal {value} exceeds u32::MAX"))
         }
-        Nat::Ident(ident) => Err(format!(
-            "unknown identifier in dimension expression: {}",
-            ident.name
-        )),
+        Nat::Ident(ident) => Err(format!("unknown identifier `{}`", ident.name)),
         Nat::BinOp(op, lhs, rhs) => {
-            let l = eval_nat(lhs)?;
-            let r = eval_nat(rhs)?;
+            let left = eval_nat(lhs)?;
+            let right = eval_nat(rhs)?;
             match op {
-                descend::ast::BinOpNat::Add => l.checked_add(r),
-                descend::ast::BinOpNat::Sub => l.checked_sub(r),
-                descend::ast::BinOpNat::Mul => l.checked_mul(r),
-                descend::ast::BinOpNat::Div => l.checked_div(r),
-                descend::ast::BinOpNat::Mod => l.checked_rem(r),
+                descend::ast::BinOpNat::Add => left.checked_add(right),
+                descend::ast::BinOpNat::Sub => left.checked_sub(right),
+                descend::ast::BinOpNat::Mul => left.checked_mul(right),
+                descend::ast::BinOpNat::Div => left.checked_div(right),
+                descend::ast::BinOpNat::Mod => left.checked_rem(right),
             }
             .ok_or_else(|| {
                 format!(
-                    "invalid or overflowing dimension expression: {l} {} {r}",
+                    "invalid or overflowing expression: {left} {} {right}",
                     format_binop(op)
                 )
             })
         }
         other => Err(match format_nat(other) {
-            Ok(spelling) => format!("unsupported dimension expression: {spelling}"),
+            Ok(spelling) => format!("unsupported expression: {spelling}"),
             Err(reason) => reason,
         }),
     }
 }
 
-pub fn eval_dim(dim: &descend::ast::Dim) -> Result<(u32, u32, u32), String> {
-    Ok(match dim {
-        descend::ast::Dim::X(n) => (eval_nat(&n.0)?, 1, 1),
-        descend::ast::Dim::Y(n) => (1, eval_nat(&n.0)?, 1),
-        descend::ast::Dim::Z(n) => (1, 1, eval_nat(&n.0)?),
-        descend::ast::Dim::XY(d) => (eval_nat(&d.0)?, eval_nat(&d.1)?, 1),
-        descend::ast::Dim::XZ(d) => (eval_nat(&d.0)?, 1, eval_nat(&d.1)?),
-        descend::ast::Dim::YZ(d) => (1, eval_nat(&d.0)?, eval_nat(&d.1)?),
-        descend::ast::Dim::XYZ(d) => (eval_nat(&d.0)?, eval_nat(&d.1)?, eval_nat(&d.2)?),
+pub fn eval_dimensions(dimensions: &descend::ast::Dim) -> Result<Dimensions, String> {
+    Ok(match dimensions {
+        descend::ast::Dim::X(dim_1d) => Dimensions::along_x(eval_nat(&dim_1d.0)?),
+        descend::ast::Dim::Y(dim_1d) => Dimensions::along_y(eval_nat(&dim_1d.0)?),
+        descend::ast::Dim::Z(dim_1d) => Dimensions::along_z(eval_nat(&dim_1d.0)?),
+        descend::ast::Dim::XY(dim_2d) => {
+            Dimensions::plane(eval_nat(&dim_2d.0)?, eval_nat(&dim_2d.1)?)
+        }
+        descend::ast::Dim::XZ(dim_2d) => {
+            Dimensions::depth(eval_nat(&dim_2d.0)?, eval_nat(&dim_2d.1)?)
+        }
+        descend::ast::Dim::YZ(dim_2d) => {
+            Dimensions::height(eval_nat(&dim_2d.0)?, eval_nat(&dim_2d.1)?)
+        }
+        descend::ast::Dim::XYZ(dim_3d) => Dimensions::space(
+            eval_nat(&dim_3d.0)?,
+            eval_nat(&dim_3d.1)?,
+            eval_nat(&dim_3d.2)?,
+        ),
     })
 }
 
@@ -52,41 +96,44 @@ mod tests {
     use descend::ast::{BinOpNat, Dim, Dim1d, Dim2d, Dim3d};
 
     /// The grid and block dimensions a kernel declares, as the macro derives them.
-    /// This is the path `emit::generate_launch_fn` takes to build a launch
+    /// This is the path `emit::generate_launch_function` takes to build a launch
     /// configuration, minus the code generation and nvcc.
-    fn dims_of(grid: Dim, block: Dim) -> ((u32, u32, u32), (u32, u32, u32)) {
-        (eval_dim(&grid).unwrap(), eval_dim(&block).unwrap())
+    fn dimensions_of(grid: Dim, block: Dim) -> (Dimensions, Dimensions) {
+        (
+            eval_dimensions(&grid).unwrap(),
+            eval_dimensions(&block).unwrap(),
+        )
     }
 
-    fn x(n: usize) -> Dim {
-        Dim::X(Box::new(Dim1d(Nat::Lit(n))))
+    fn x(size: usize) -> Dim {
+        Dim::X(Box::new(Dim1d(Nat::Lit(size))))
     }
 
     #[test]
     fn one_dimensional_execution_fills_the_unused_axes_with_one() {
-        let (grid, block) = dims_of(x(64), x(256));
-        assert_eq!(grid, (64, 1, 1));
-        assert_eq!(block, (256, 1, 1));
+        let (grid, block) = dimensions_of(x(64), x(256));
+        assert_eq!(grid, Dimensions::along_x(64));
+        assert_eq!(block, Dimensions::along_x(256));
     }
 
     #[test]
     fn two_dimensional_execution_keeps_the_axis_order() {
-        let (grid, block) = dims_of(
+        let (grid, block) = dimensions_of(
             Dim::XY(Box::new(Dim2d(Nat::Lit(4), Nat::Lit(2)))),
             Dim::XY(Box::new(Dim2d(Nat::Lit(16), Nat::Lit(8)))),
         );
-        assert_eq!(grid, (4, 2, 1));
-        assert_eq!(block, (16, 8, 1));
+        assert_eq!(grid, Dimensions::plane(4, 2));
+        assert_eq!(block, Dimensions::plane(16, 8));
     }
 
     #[test]
     fn three_dimensional_execution_is_evaluated_on_every_axis() {
-        let (grid, block) = dims_of(
+        let (grid, block) = dimensions_of(
             Dim::XYZ(Box::new(Dim3d(Nat::Lit(2), Nat::Lit(3), Nat::Lit(4)))),
             Dim::XYZ(Box::new(Dim3d(Nat::Lit(8), Nat::Lit(4), Nat::Lit(2)))),
         );
-        assert_eq!(grid, (2, 3, 4));
-        assert_eq!(block, (8, 4, 2));
+        assert_eq!(grid, Dimensions::space(2, 3, 4));
+        assert_eq!(block, Dimensions::space(8, 4, 2));
     }
 
     #[test]
@@ -97,7 +144,7 @@ mod tests {
             Box::new(Nat::Lit(4096)),
             Box::new(Nat::Lit(256)),
         ))));
-        assert_eq!(eval_dim(&grid).unwrap(), (16, 1, 1));
+        assert_eq!(eval_dimensions(&grid).unwrap(), Dimensions::along_x(16));
     }
 
     #[test]
@@ -124,7 +171,9 @@ mod tests {
     #[test]
     fn a_dimension_literal_wider_than_u32_is_an_error() {
         let too_wide = Nat::Lit(u32::MAX as usize + 1);
-        assert!(eval_nat(&too_wide).unwrap_err().contains("exceeds u32::MAX"));
+        assert!(eval_nat(&too_wide)
+            .unwrap_err()
+            .contains("exceeds u32::MAX"));
     }
 
     #[test]

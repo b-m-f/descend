@@ -1,44 +1,45 @@
 use std::io::Write;
 use std::process::Command;
 
-pub fn run_nvcc(cuda: &str, nvcc_args: &'static [String]) -> Result<String, String> {
-    let mut cu_file = tempfile::Builder::new()
+pub fn run_nvcc(cuda_source: &str, nvcc_arguments: &'static [String]) -> Result<String, String> {
+    let mut cuda_file = tempfile::Builder::new()
         .prefix("descend_kernel_")
         .suffix(".cu")
         .tempfile()
-        .map_err(|e| format!("Failed to create temporary .cu file: {e}"))?;
-    cu_file
-        .write_all(cuda.as_bytes())
-        .map_err(|e| format!("Failed to write to .cu file: {e}"))?;
+        .map_err(|error| format!("Failed to create temporary .cu file: {error}"))?;
+    cuda_file
+        .write_all(cuda_source.as_bytes())
+        .map_err(|error| format!("Failed to write to .cu file: {error}"))?;
 
     let ptx_file = tempfile::Builder::new()
         .prefix("descend_kernel_")
         .suffix(".ptx")
         .tempfile()
-        .map_err(|e| format!("Failed to create temporary .ptx file: {e}"))?;
+        .map_err(|error| format!("Failed to create temporary .ptx file: {error}"))?;
 
-    let mut cmd = Command::new("nvcc");
-    cmd.arg("-ptx")
-        .arg(cu_file.path())
+    let mut command = Command::new("nvcc");
+    command
+        .arg("-ptx")
+        .arg(cuda_file.path())
         .arg("-o")
         .arg(ptx_file.path());
-    for arg in nvcc_args {
-        cmd.arg(arg);
+    for argument in nvcc_arguments {
+        command.arg(argument);
     }
 
-    let output = cmd
+    let output = command
         .output()
-        .map_err(|e| format!("Failed to invoke nvcc: {e}"))?;
+        .map_err(|error| format!("Failed to invoke nvcc: {error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("NVCC Compilation failed:\n{}", stderr));
     }
 
     std::fs::read_to_string(ptx_file.path())
-        .map_err(|e| format!("Failed to read generated PTX file: {e}"))
+        .map_err(|error| format!("Failed to read generated PTX file: {error}"))
 }
 
-fn cache_path(cuda: &str, nvcc_args: &[String]) -> Option<std::path::PathBuf> {
+fn cache_path(cuda_source: &str, nvcc_arguments: &[String]) -> Option<std::path::PathBuf> {
     use std::hash::{DefaultHasher, Hash, Hasher};
 
     if std::env::var_os("DESCEND_NO_CACHE").is_some() {
@@ -46,8 +47,8 @@ fn cache_path(cuda: &str, nvcc_args: &[String]) -> Option<std::path::PathBuf> {
     }
 
     let mut hasher = DefaultHasher::new();
-    cuda.hash(&mut hasher);
-    nvcc_args.hash(&mut hasher);
+    cuda_source.hash(&mut hasher);
+    nvcc_arguments.hash(&mut hasher);
     nvcc_version().hash(&mut hasher);
 
     Some(
@@ -57,12 +58,12 @@ fn cache_path(cuda: &str, nvcc_args: &[String]) -> Option<std::path::PathBuf> {
     )
 }
 
-pub fn cached_ptx(cuda: &str, nvcc_args: &[String]) -> Option<String> {
-    std::fs::read_to_string(cache_path(cuda, nvcc_args)?).ok()
+pub fn cached_ptx(cuda_source: &str, nvcc_arguments: &[String]) -> Option<String> {
+    std::fs::read_to_string(cache_path(cuda_source, nvcc_arguments)?).ok()
 }
 
-pub fn store_ptx(cuda: &str, nvcc_args: &[String], ptx: &str) {
-    let Some(path) = cache_path(cuda, nvcc_args) else {
+pub fn store_ptx(cuda_source: &str, nvcc_arguments: &[String], ptx: &str) {
+    let Some(path) = cache_path(cuda_source, nvcc_arguments) else {
         return;
     };
     if let Some(parent) = path.parent() {
@@ -77,7 +78,7 @@ fn nvcc_version() -> &'static str {
         Command::new("nvcc")
             .arg("--version")
             .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .map(|invocation| String::from_utf8_lossy(&invocation.stdout).into_owned())
             .unwrap_or_default()
     })
 }
@@ -91,10 +92,10 @@ pub fn resolve_nvcc_options() -> Result<&'static [String], String> {
 }
 
 fn probe_nvcc_options() -> Result<Vec<String>, String> {
-    let flags_env = std::env::var("DESCEND_NVCC_FLAGS").unwrap_or_default();
-    let mut options: Vec<String> = flags_env
+    let flags_from_environment = std::env::var("DESCEND_NVCC_FLAGS").unwrap_or_default();
+    let mut options: Vec<String> = flags_from_environment
         .split_whitespace()
-        .map(|s| s.to_string())
+        .map(|argument| argument.to_string())
         .collect();
 
     // TODO: only needed because offline nvcc leaves __CUDACC_RTC__ undefined, so
@@ -106,14 +107,14 @@ fn probe_nvcc_options() -> Result<Vec<String>, String> {
     // flag once the PTX path moves to NVRTC.
     if !options
         .iter()
-        .any(|opt| opt == "--expt-relaxed-constexpr" || opt == "-expt-relaxed-constexpr")
+        .any(|option| option == "--expt-relaxed-constexpr" || option == "-expt-relaxed-constexpr")
     {
         options.push("--expt-relaxed-constexpr".to_string());
     }
 
     if !options
         .iter()
-        .any(|opt| opt.starts_with("-arch=") || opt.starts_with("--gpu-architecture="))
+        .any(|option| option.starts_with("-arch=") || option.starts_with("--gpu-architecture="))
     {
         let output = std::process::Command::new("nvidia-smi")
             .args(["--query-gpu=compute_cap", "--format=csv,noheader"])

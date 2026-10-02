@@ -3,33 +3,33 @@ use std::io::{Read, Seek, SeekFrom, Write};
 pub fn with_captured_output<T>(action: impl FnOnce() -> T) -> (T, String) {
     use std::os::fd::AsRawFd;
 
-    let Ok(mut file) = tempfile::tempfile() else {
+    let Ok(mut capture_file) = tempfile::tempfile() else {
         return (action(), String::new());
     };
 
-    let saved_out = unsafe { libc::dup(libc::STDOUT_FILENO) };
-    let saved_err = unsafe { libc::dup(libc::STDERR_FILENO) };
-    if saved_out < 0 || saved_err < 0 {
-        close_saved(saved_out, saved_err);
+    let saved_stdout = unsafe { libc::dup(libc::STDOUT_FILENO) };
+    let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+    if saved_stdout < 0 || saved_stderr < 0 {
+        close_saved(saved_stdout, saved_stderr);
         return (action(), String::new());
     }
 
-    let target = file.as_raw_fd();
+    let target = capture_file.as_raw_fd();
     let redirected = unsafe { libc::dup2(target, libc::STDOUT_FILENO) } >= 0
         && unsafe { libc::dup2(target, libc::STDERR_FILENO) } >= 0;
     if !redirected {
-        restore(saved_out, saved_err);
+        restore(saved_stdout, saved_stderr);
         return (action(), String::new());
     }
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
 
     let _ = std::io::stdout().flush();
-    restore(saved_out, saved_err);
+    restore(saved_stdout, saved_stderr);
 
     let mut captured = String::new();
-    let _ = file.seek(SeekFrom::Start(0));
-    let _ = file.read_to_string(&mut captured);
+    let _ = capture_file.seek(SeekFrom::Start(0));
+    let _ = capture_file.read_to_string(&mut captured);
 
     match outcome {
         Ok(value) => (value, captured),
@@ -40,29 +40,29 @@ pub fn with_captured_output<T>(action: impl FnOnce() -> T) -> (T, String) {
     }
 }
 
-fn restore(saved_out: libc::c_int, saved_err: libc::c_int) {
+fn restore(saved_stdout: libc::c_int, saved_stderr: libc::c_int) {
     unsafe {
-        libc::dup2(saved_out, libc::STDOUT_FILENO);
-        libc::dup2(saved_err, libc::STDERR_FILENO);
+        libc::dup2(saved_stdout, libc::STDOUT_FILENO);
+        libc::dup2(saved_stderr, libc::STDERR_FILENO);
     }
-    close_saved(saved_out, saved_err);
+    close_saved(saved_stdout, saved_stderr);
 }
 
-fn close_saved(saved_out: libc::c_int, saved_err: libc::c_int) {
+fn close_saved(saved_stdout: libc::c_int, saved_stderr: libc::c_int) {
     unsafe {
-        if saved_out >= 0 {
-            libc::close(saved_out);
+        if saved_stdout >= 0 {
+            libc::close(saved_stdout);
         }
-        if saved_err >= 0 {
-            libc::close(saved_err);
+        if saved_stderr >= 0 {
+            libc::close(saved_stderr);
         }
     }
 }
 
 pub fn descend_message(captured: &str) -> Option<String> {
-    let plain = strip_ansi(captured);
+    let plain_text = strip_ansi(captured);
 
-    let messages: Vec<&str> = plain
+    let messages: Vec<&str> = plain_text
         .lines()
         .map(str::trim)
         .filter_map(|line| line.strip_prefix("error: "))
@@ -73,7 +73,7 @@ pub fn descend_message(captured: &str) -> Option<String> {
         return Some(messages.join("; "));
     }
 
-    let unprefixed: Vec<&str> = plain
+    let unprefixed: Vec<&str> = plain_text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -94,18 +94,18 @@ fn condense(message: &str) -> String {
         return message.to_string();
     }
 
-    let mut cut: String = message.chars().take(LIMIT).collect();
-    cut.push_str(" [..] (the Descend compiler printed the full diagnostic above)");
-    cut
+    let mut truncated: String = message.chars().take(LIMIT).collect();
+    truncated.push_str(" [..] (the Descend compiler printed the full diagnostic above)");
+    truncated
 }
 
 fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+    let mut stripped = String::with_capacity(text.len());
     let mut chars = text.chars();
 
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
+    while let Some(character) = chars.next() {
+        if character != '\u{1b}' {
+            stripped.push(character);
             continue;
         }
         for escaped in chars.by_ref() {
@@ -115,7 +115,7 @@ fn strip_ansi(text: &str) -> String {
         }
     }
 
-    out
+    stripped
 }
 
 #[cfg(test)]
