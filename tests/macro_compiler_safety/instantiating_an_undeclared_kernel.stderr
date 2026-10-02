@@ -1,0 +1,15 @@
+error: cannot find macro `__descend_kernel_gpu_never_declared` in this scope
+  --> tests/macro_compiler_safety/instantiating_an_undeclared_kernel.rs:24:13
+   |
+ 3 | descend! {
+   | -------- similarly named macro `__descend_kernel_gpu_declared` defined here
+...
+24 |     let _ = descend_fn!(gpu_never_declared, <N: 256>);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: a macro with a similar name exists
+   |
+24 -     let _ = descend_fn!(gpu_never_declared, <N: 256>);
+24 +     let _ = __descend_kernel_gpu_declared;
+   |

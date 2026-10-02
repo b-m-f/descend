@@ -14,4 +14,11 @@ fn compile_safety_tests() {
     t.compile_fail("tests/macro_compiler_safety/shared_param_unsupported_elem.rs");
     t.compile_fail("tests/macro_compiler_safety/tuple_field_cannot_cross_to_the_host.rs");
     t.compile_fail("tests/macro_compiler_safety/tuple_parameter_cannot_cross_to_the_host.rs");
+
+    t.compile_fail("tests/macro_compiler_safety/descend_declares_no_kernel.rs");
+    t.compile_fail("tests/macro_compiler_safety/instantiating_an_undeclared_kernel.rs");
+    t.compile_fail("tests/macro_compiler_safety/duplicate_size_binding.rs");
+    t.compile_fail("tests/macro_compiler_safety/a_raw_identifier_does_not_panic_the_macro.rs");
+    t.compile_fail("tests/macro_compiler_safety/two_kernels_with_the_same_name.rs");
+    t.compile_fail("tests/macro_compiler_safety/borrow_conflict_is_reported.rs");
 }

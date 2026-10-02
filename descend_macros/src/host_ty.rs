@@ -216,7 +216,8 @@ pub fn host_ty(dty: &DataTy) -> Result<HostTy, Unrepresentable> {
             let len = ArrayLen {
                 value: crate::nat::eval_nat(len)
                     .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
-                descend: crate::types::format_nat(len),
+                descend: crate::spell::format_nat(len)
+                    .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
             };
             // Carry the element's reason outward, so a rejection names the type the
             // reader actually wrote rather than the element buried inside it.

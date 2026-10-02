@@ -1,6 +1,7 @@
 use crate::kernel::Kernel;
+use crate::spell::format_dim;
 
-pub fn synthesize_main_fn(kernel: &Kernel) -> String {
+pub fn synthesize_main_fn(kernel: &Kernel) -> Result<String, String> {
     let mut main_params = Vec::new();
     let mut main_vars = Vec::new();
     let mut main_args = Vec::new();
@@ -37,13 +38,17 @@ pub fn synthesize_main_fn(kernel: &Kernel) -> String {
         main_args.push(format!("&{} arg{}_gpu", mem_qual, i));
     }
 
-    let mut grid_dim_str = kernel.grid_dim_str.clone();
+    let mut launch_dims = format!(
+        "{}, {}",
+        format_dim(&kernel.dims.grid)?,
+        format_dim(&kernel.dims.block)?
+    );
     if !shared_mem_configs.is_empty() {
-        grid_dim_str.push_str("; ");
-        grid_dim_str.push_str(&shared_mem_configs.join(", "));
+        launch_dims.push_str("; ");
+        launch_dims.push_str(&shared_mem_configs.join(", "));
     }
 
-    format!(
+    Ok(format!(
         "
 fn main({}) -[t: cpu.thread]-> () <'a> {{
     let mut gpu = gpu_device(0);
@@ -55,7 +60,7 @@ fn main({}) -[t: cpu.thread]-> () <'a> {{
         main_params.join(", "),
         main_vars.join("\n    "),
         kernel.function_name,
-        grid_dim_str,
+        launch_dims,
         main_args.join(", ")
-    )
+    ))
 }

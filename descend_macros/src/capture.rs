@@ -69,12 +69,34 @@ pub fn descend_message(captured: &str) -> Option<String> {
         .filter(|message| !message.is_empty())
         .collect();
 
-    if messages.is_empty() {
-        eprint!("{}", captured);
+    if !messages.is_empty() {
+        return Some(messages.join("; "));
+    }
+
+    let unprefixed: Vec<&str> = plain
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    if unprefixed.is_empty() {
         return None;
     }
 
-    Some(messages.join("; "))
+    eprint!("{}", captured);
+    Some(condense(&unprefixed.join("; ")))
+}
+
+fn condense(message: &str) -> String {
+    const LIMIT: usize = 300;
+
+    if message.chars().count() <= LIMIT {
+        return message.to_string();
+    }
+
+    let mut cut: String = message.chars().take(LIMIT).collect();
+    cut.push_str(" [..] (the Descend compiler printed the full diagnostic above)");
+    cut
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -94,4 +116,66 @@ fn strip_ansi(text: &str) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_prefixed_diagnostic_is_reported() {
+        let captured = "error: cannot borrow\n  |\n  ^^^^\n";
+        assert_eq!(descend_message(captured).unwrap(), "cannot borrow");
+    }
+
+    #[test]
+    fn several_prefixed_diagnostics_are_joined() {
+        let captured = "error: first\nnoise\nerror: second\n";
+        assert_eq!(descend_message(captured).unwrap(), "first; second");
+    }
+
+    #[test]
+    fn a_borrow_conflict_without_a_prefix_is_not_dropped() {
+        let captured = "Conflicting borrow!!!\nConflictingAccess\n";
+        let message = descend_message(captured).expect("the diagnostic must not be lost");
+        assert!(message.contains("Conflicting borrow"), "{message}");
+        assert!(message.contains("ConflictingAccess"), "{message}");
+    }
+
+    #[test]
+    fn a_prefixed_diagnostic_wins_over_surrounding_noise() {
+        let captured = "Conflicting borrow!!!\nerror: cannot borrow\nconflicting with Place\n";
+        assert_eq!(descend_message(captured).unwrap(), "cannot borrow");
+    }
+
+    #[test]
+    fn colour_escapes_do_not_hide_the_prefix() {
+        let captured = "\u{1b}[31merror: \u{1b}[0mcannot borrow\n";
+        assert_eq!(descend_message(captured).unwrap(), "cannot borrow");
+    }
+
+    #[test]
+    fn an_ast_dump_is_cut_short_rather_than_reported_whole() {
+        let dump = format!("ConflictingBorrow(PlaceExpr {{ {} }})", "x".repeat(4000));
+        let message = descend_message(&dump).expect("the diagnostic must not be lost");
+        assert!(message.starts_with("ConflictingBorrow"), "{message}");
+        assert!(message.ends_with("full diagnostic above)"), "{message}");
+        assert!(
+            message.chars().count() < 400,
+            "a compile_error! this long is unreadable: {} chars",
+            message.chars().count()
+        );
+    }
+
+    #[test]
+    fn a_short_unprefixed_diagnostic_is_not_cut() {
+        let message = descend_message("ConflictingAccess\n").unwrap();
+        assert_eq!(message, "ConflictingAccess");
+    }
+
+    #[test]
+    fn nothing_captured_stays_none() {
+        assert!(descend_message("").is_none());
+        assert!(descend_message("  \n\n \n").is_none());
+    }
 }

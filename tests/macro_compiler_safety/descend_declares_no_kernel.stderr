@@ -1,0 +1,11 @@
+error: this `descend!` block declares nothing. A kernel is declared by an execution annotation `-[grid: gpu.grid<.., ..>]->`, and a type by a `struct`; without either, the macro emits no items at all
+  --> tests/macro_compiler_safety/descend_declares_no_kernel.rs:6:1
+   |
+ 6 | / descend! {
+ 7 | |     fn cpu_only(a: i32) -[t: cpu.thread]-> i32 {
+ 8 | |         a + 1
+ 9 | |     }
+10 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

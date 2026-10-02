@@ -1,0 +1,7 @@
+error: `r#match` cannot name a kernel: `match` is a Rust keyword, and a kernel's name also names the function generated from it
+ --> tests/macro_compiler_safety/a_raw_identifier_does_not_panic_the_macro.rs:8:13
+  |
+8 |     let _ = descend_fn!(r#match, <N: 256>);
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)
