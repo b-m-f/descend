@@ -1,28 +1,37 @@
+use crate::diag::MacroError;
+
+/// The CUDA nvcc is given, and the host function that was taken out of it.
+///
+/// `host_function` is not part of the pipeline: the launch it describes is only read by
+/// `launch_scrape`, so a test can confirm the shared-memory count Descend's own code
+/// generator emits agrees with the one `check::shared_memory_bytes` derives from the
+/// parameter types.
+#[derive(Debug)]
 pub struct DeviceCpp {
     pub code: String,
     pub host_function: String,
 }
 
-pub fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, String> {
+pub fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, MacroError> {
     debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", program);
     let full_source = descend::parser::SourceCode::new(program.to_string());
     let mut compilation_unit = descend::parser::parse(&full_source).map_err(|_| {
-        format!(
+        MacroError::from(format!(
             "the synthesized Descend program did not parse; the Descend compiler reported the \
              reason above. Source was:\n{}",
             program
-        )
+        ))
     })?;
 
     let (checked, captured) =
         crate::capture::with_captured_output(|| descend::ty_check::ty_check(&mut compilation_unit));
     if checked.is_err() {
-        return Err(
-            crate::capture::descend_message(&captured).unwrap_or_else(|| {
+        return Err(crate::capture::descend_message(&captured)
+            .unwrap_or_else(|| {
                 "Descend type checking failed; the Descend compiler reported the reason above"
                     .to_string()
-            }),
-        );
+            })
+            .into());
     }
 
     let device = generate_device_cpp(&mut compilation_unit, kernel_name);
@@ -32,13 +41,33 @@ pub fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, String> 
     Ok(device)
 }
 
+/// Turning Descend's generated CUDA into a translation unit nvcc will accept as a
+/// device-only module.
+///
+/// Each replacement below undoes one thing `descend::codegen` emits that is right for
+/// a whole program and wrong for a PTX module. They are string replacements rather than
+/// changes to the code generator because `descend/src/` is not this crate's to edit; the
+/// site that produces each one is named so a change there is traceable to here.
 fn generate_device_cpp(
     compilation_unit: &mut descend::ast::CompilUnit,
     kernel_name: &str,
 ) -> DeviceCpp {
     let mut device_code = descend::codegen::gen(compilation_unit);
+
+    // The code generator spells sizes as `std::size_t`, but `descend.cuh` is included
+    // without a `using` for it and device code refers to `size_t` unqualified.
     device_code = device_code.replace("std::size_t", "size_t");
+
+    // `synthesize::synthesize_main_function` writes a Descend `main` purely so the type
+    // checker has something to check the kernel against. Renaming it stops nvcc seeing
+    // two definitions of `main` -- and, once renamed, HOST_FUNCTION_MARKER below can
+    // find it and remove it. If this replacement ever stops matching, that marker
+    // silently stops matching too, and the host launch syntax `<<<...>>>` is left in the
+    // device code for nvcc to reject.
     device_code = device_code.replace("auto main(", "auto dummy_main(");
+
+    // The launcher looks the kernel up by name through `cuModuleGetFunction`, which
+    // needs an unmangled symbol. `assemble::find_entry_symbol` depends on this landing.
     device_code = device_code.replace(
         &format!("__global__ auto {}(", kernel_name),
         &format!("extern \"C\" __global__ auto {}(", kernel_name),
@@ -48,9 +77,17 @@ fn generate_device_cpp(
         code,
         host_function,
     } = split_off_host_function(&device_code, HOST_FUNCTION_MARKER);
+
+    // The code generator names the dynamic shared-memory backing array `$buffer`
+    // (`src/codegen/mod.rs:794`). `$` is a valid identifier character for nvcc but not
+    // for every CUDA front end, and it cannot be spelled in Descend source at all.
     let code = code.replace("$buffer", "_buffer");
 
     DeviceCpp {
+        // `descend::codegen` emits `#include "descend.cuh"` (`src/codegen/mod.rs:64`),
+        // which nvcc could only resolve with an `-I` this crate does not control. The
+        // header is compiled into `descend` as `DESCEND_CUH`, so it is inlined here and
+        // the include is dropped to avoid defining everything twice.
         code: format!(
             "{}\n{}",
             descend::DESCEND_CUH,
@@ -85,9 +122,12 @@ fn split_off_host_function(cuda_source: &str, marker: &str) -> DeviceCpp {
             depth += braces_opened - braces_closed;
             header_seen |= braces_opened > 0;
 
-            if header_seen && depth <= 0 {
-                in_host_function = false;
-            } else if !header_seen && line.trim_end().ends_with(';') {
+            // A definition ends where its braces balance. A forward declaration never
+            // opens one, so it ends at its semicolon instead; `header_seen` tells the
+            // two apart.
+            let definition_ended = header_seen && depth <= 0;
+            let declaration_ended = !header_seen && line.trim_end().ends_with(';');
+            if definition_ended || declaration_ended {
                 in_host_function = false;
             }
             continue;

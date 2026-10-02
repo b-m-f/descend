@@ -1,3 +1,4 @@
+use crate::diag::MacroError;
 use crate::host_ty::{self, HostTy};
 use crate::source::DescendSource;
 use descend::ast::*;
@@ -30,7 +31,11 @@ pub struct Kernel {
     pub parameters: Vec<KernelParameter>,
 }
 
-fn span_of(ident: &Ident, source: &DescendSource) -> Option<Span> {
+/// The span a Descend identifier occupies in the source the macro rendered.
+///
+/// Shared by every stage that reports against something the user wrote, so they all
+/// resolve a span the same way.
+pub(crate) fn span_of(ident: &Ident, source: &DescendSource) -> Option<Span> {
     source.span_at(ident.span?.begin)
 }
 
@@ -38,12 +43,23 @@ pub fn is_launchable(fun_def: &FunDef) -> bool {
     matches!(fun_def.exec.exec.base, BaseExec::GpuGrid(_, _))
 }
 
+/// The diagnostic for a kernel name the source does not define.
+///
+/// Two stages can be the first to notice -- `specialize` walks the tokens, `extract`
+/// walks the parsed AST -- and the reader should get the same sentence from whichever
+/// one it is. Hence one copy here rather than one in each.
+pub(crate) fn not_defined(kernel_name: &str) -> MacroError {
+    MacroError::from(format!(
+        "kernel `{kernel_name}` is not defined in this `descend!` block"
+    ))
+}
+
 impl Kernel {
     pub fn extract(
         compilation_unit: &CompilUnit,
         kernel_name: &str,
         source: &DescendSource,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, MacroError> {
         for item in &compilation_unit.items {
             if let Item::FunDef(fun_def) = item {
                 let function_name = fun_def.ident.name.to_string();
@@ -51,10 +67,15 @@ impl Kernel {
                     continue;
                 }
 
+                let name_span = span_of(&fun_def.ident, source);
+
                 let BaseExec::GpuGrid(grid, block) = &fun_def.exec.exec.base else {
-                    return Err(format!(
-                        "kernel `{function_name}` must declare explicit grid and block \
-                         dimensions, as `-[grid: gpu.grid<X<..>, X<..>>]->`"
+                    return Err(MacroError::at(
+                        format!(
+                            "kernel `{function_name}` must declare explicit grid and block \
+                             dimensions, as `-[grid: gpu.grid<X<..>, X<..>>]->`"
+                        ),
+                        name_span,
                     ));
                 };
                 let dimensions = ExecutionDimensions {
@@ -66,34 +87,42 @@ impl Kernel {
 
                 for parameter in &fun_def.param_decls {
                     let parameter_name = &parameter.ident.name;
+                    let parameter_span = span_of(&parameter.ident, source);
                     let ty = parameter.ty.as_ref().unwrap();
 
                     // A parameter is either a reference to memory or a value, and that
                     // decides both how it reaches the kernel and how the host holds it.
                     let (is_uniq, is_shared_memory, is_by_value) = match host_ty::reference(ty) {
                         Some(reference) => (
-                            matches!(reference.own, Ownership::Uniq),
-                            matches!(reference.mem, Memory::GpuShared),
+                            matches!(reference.ownership, Ownership::Uniq),
+                            matches!(reference.memory, Memory::GpuShared),
                             false,
                         ),
                         None => (false, false, true),
                     };
 
                     let dty = host_ty::parameter_dty(ty).ok_or_else(|| {
-                        format!(
-                            "kernel `{function_name}`: parameter `{parameter_name}` has no data type"
+                        MacroError::at(
+                            format!(
+                                "kernel `{function_name}`: parameter `{parameter_name}` has no \
+                                 data type"
+                            ),
+                            parameter_span,
                         )
                     })?;
                     let host = host_ty::host_ty(dty).map_err(|reason| {
-                        format!(
-                            "kernel `{function_name}`: parameter `{parameter_name}` {}",
-                            reason.reason()
+                        MacroError::at(
+                            format!(
+                                "kernel `{function_name}`: parameter `{parameter_name}` {}",
+                                reason.reason()
+                            ),
+                            parameter_span,
                         )
                     })?;
 
                     parameters.push(KernelParameter {
                         name: parameter_name.to_string(),
-                        span: span_of(&parameter.ident, source),
+                        span: parameter_span,
                         is_uniq,
                         is_shared_memory,
                         is_by_value,
@@ -103,16 +132,14 @@ impl Kernel {
 
                 return Ok(Kernel {
                     function_name,
-                    name_span: span_of(&fun_def.ident, source),
+                    name_span,
                     dimensions,
                     parameters,
                 });
             }
         }
 
-        Err(format!(
-            "Kernel definition '{kernel_name}' not found in macro body"
-        ))
+        Err(not_defined(kernel_name))
     }
 }
 
@@ -122,7 +149,7 @@ mod tests {
     use proc_macro2::TokenStream;
     use std::str::FromStr;
 
-    fn extract(source_text: &str, kernel_name: &str) -> Result<Kernel, String> {
+    fn extract(source_text: &str, kernel_name: &str) -> Result<Kernel, MacroError> {
         let source = crate::source::DescendSource::from_token_stream(
             TokenStream::from_str(source_text).expect("must tokenize"),
         );
@@ -162,7 +189,30 @@ mod tests {
         .expect_err("a cpu.thread function has no grid to launch");
 
         assert!(
-            error.contains("must declare explicit grid and block dimensions"),
+            error
+                .message
+                .contains("must declare explicit grid and block dimensions"),
+            "{error}"
+        );
+        assert!(
+            error.span.is_some(),
+            "the refusal should point at the function's name, not the whole block: {error}"
+        );
+    }
+
+    #[test]
+    fn a_kernel_that_is_not_there_is_said_to_be_missing() {
+        let error = extract(
+            "fn gpu_k<r: prv>(a: &r uniq gpu.global [i32; 256])
+                 -[grid: gpu.grid<X<4>, X<64>>]-> () {
+                 sched block in grid { sched thread in block { () } }
+             }",
+            "gpu_other",
+        )
+        .expect_err("there is no kernel by that name");
+
+        assert!(
+            error.message.contains("gpu_other") && error.message.contains("not defined"),
             "{error}"
         );
     }

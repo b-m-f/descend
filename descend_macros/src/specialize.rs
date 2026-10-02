@@ -13,7 +13,7 @@ pub fn specialize_kernel(
 
     while let Some(token_tree) = iter.next() {
         let is_fn = matches!(&token_tree, TokenTree::Ident(ident) if ident == "fn");
-        output.extend(std::iter::once(token_tree));
+        output.extend([token_tree]);
         if !is_fn {
             continue;
         }
@@ -22,7 +22,7 @@ pub fn specialize_kernel(
             break;
         };
         let requested = matches!(&name_token_tree, TokenTree::Ident(ident) if ident == kernel_name);
-        output.extend(std::iter::once(name_token_tree));
+        output.extend([name_token_tree]);
         if !requested {
             continue;
         }
@@ -31,14 +31,30 @@ pub fn specialize_kernel(
         let mut declared: Vec<String> = Vec::new();
         if matches!(iter.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '<') {
             let left_angle = iter.next().expect("peeked");
+            let opened_at = left_angle.span();
             let (inner_tokens, right_angle) = extract_generic_block(&mut iter);
+
+            // Reported here rather than left to be invented: a closing `>` supplied by
+            // the macro produces a token stream that looks well formed, and the failure
+            // resurfaces as a parse error in Descend pointing at source the reader never
+            // wrote.
+            let Some(right_angle) = right_angle else {
+                return Err(MacroError::at(
+                    format!(
+                        "kernel `{kernel_name}` has a generic parameter list that `<` opens and \
+                         nothing closes"
+                    ),
+                    Some(opened_at),
+                ));
+            };
+
             declared = nat_generic_names(&inner_tokens);
             let keys: Vec<&str> = sizes.keys().map(|key| key.as_str()).collect();
             let kept: Vec<TokenTree> = filter_generics(inner_tokens, &keys).into_iter().collect();
             if !kept.is_empty() {
-                output.extend(std::iter::once(left_angle));
+                output.extend([left_angle]);
                 output.extend(kept);
-                output.extend(std::iter::once(right_angle));
+                output.extend([right_angle]);
             }
         }
         check_size_bindings(&declared, kernel_name, sizes)?;
@@ -57,7 +73,7 @@ pub fn specialize_kernel(
     }
 
     if !found {
-        return Err(format!("Kernel definition '{kernel_name}' not found in macro body").into());
+        return Err(crate::kernel::not_defined(kernel_name));
     }
 
     Ok(output)
@@ -171,7 +187,7 @@ fn substitute_generics_in_tokens(
                     substitute_generics_in_tokens(group.stream(), sizes)?,
                 );
                 new_group.set_span(group.span());
-                output.extend(std::iter::once(TokenTree::Group(new_group)));
+                output.extend([TokenTree::Group(new_group)]);
             }
             TokenTree::Ident(ident) => {
                 let name = ident.to_string();
@@ -189,9 +205,9 @@ fn substitute_generics_in_tokens(
                     output.extend(size_tokens);
                     continue;
                 }
-                output.extend(std::iter::once(TokenTree::Ident(ident)));
+                output.extend([TokenTree::Ident(ident)]);
             }
-            _ => output.extend(std::iter::once(token_tree)),
+            _ => output.extend([token_tree]),
         }
     }
     Ok(output)
@@ -234,25 +250,26 @@ fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
 
     for (index, part) in keep_parts.into_iter().enumerate() {
         if index > 0 {
-            output.extend(std::iter::once(TokenTree::Punct(proc_macro2::Punct::new(
+            output.extend([TokenTree::Punct(proc_macro2::Punct::new(
                 ',',
                 proc_macro2::Spacing::Alone,
-            ))));
+            ))]);
         }
         for token_tree in part {
-            output.extend(std::iter::once(token_tree));
+            output.extend([token_tree]);
         }
     }
 
     output
 }
 
+/// The tokens between a generic parameter list's `<` and its matching `>`, and the `>`
+/// itself -- or `None` for the `>` if the stream ends before one.
 fn extract_generic_block(
     iter: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>,
-) -> (Vec<TokenTree>, TokenTree) {
+) -> (Vec<TokenTree>, Option<TokenTree>) {
     let mut inner_tokens = Vec::new();
     let mut depth = 1;
-    let mut right_angle = None;
 
     for token_tree in iter.by_ref() {
         if let TokenTree::Punct(inner_punct) = &token_tree {
@@ -261,20 +278,14 @@ fn extract_generic_block(
             } else if inner_punct.as_char() == '>' {
                 depth -= 1;
                 if depth == 0 {
-                    right_angle = Some(token_tree);
-                    break;
+                    return (inner_tokens, Some(token_tree));
                 }
             }
         }
         inner_tokens.push(token_tree);
     }
 
-    (
-        inner_tokens,
-        right_angle.unwrap_or_else(|| {
-            TokenTree::Punct(proc_macro2::Punct::new('>', proc_macro2::Spacing::Alone))
-        }),
-    )
+    (inner_tokens, None)
 }
 
 #[cfg(test)]
@@ -385,6 +396,40 @@ mod tests {
         assert!(
             rendered.contains("0..128"),
             "a range bound is a size: {rendered}"
+        );
+    }
+
+    /// The `>` used to be invented here, which produced a token stream that looked well
+    /// formed and then failed inside Descend's parser, pointing at source nobody wrote.
+    #[test]
+    fn a_generic_parameter_list_that_is_never_closed_is_reported() {
+        let error = specialize(
+            "fn gpu_k<N: nat(a: &r uniq gpu.global [i32; N]) { () }",
+            "gpu_k",
+            &[("N", "16384")],
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("nothing closes"),
+            "unhelpful error: {error}"
+        );
+        assert!(
+            error.span.is_some(),
+            "the report should point at the `<` that opened the list: {error}"
+        );
+    }
+
+    #[test]
+    fn a_kernel_the_source_does_not_define_is_said_to_be_missing() {
+        let error = specialize(
+            "fn gpu_k<N: nat>(a: &r uniq gpu.global [i32; N]) { () }",
+            "gpu_other",
+            &[("N", "16384")],
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("gpu_other") && error.message.contains("not defined"),
+            "{error}"
         );
     }
 }

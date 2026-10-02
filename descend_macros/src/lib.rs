@@ -1,3 +1,51 @@
+//! The procedural macros that compile Descend into a callable Rust function.
+//!
+//! Two macros are meant to be written. [`descend!`] declares kernels and types; it
+//! compiles nothing. [`descend_fn!`] instantiates one declared kernel at one set of
+//! sizes, and that is where nvcc runs. A third, [`__descend_fn_internal`], is plumbing:
+//! the carrier macro a `descend!` emits calls it, and nobody writes it by hand.
+//!
+//! Everything else in this crate is private, so the stages below are named as code
+//! rather than linked: rustdoc for a proc-macro crate shows only its macros.
+//!
+//! # The instantiation pipeline
+//!
+//! `instantiate` is the whole of it, and reads as an ordered list of stages:
+//!
+//! 1. `invocation::parse_sizes` — read the `<N: 16384>` bindings.
+//! 2. `specialize::specialize_kernel` — substitute them into the kernel's tokens.
+//! 3. `source::DescendSource` — render the token stream back to Descend source, keeping
+//!    a map from each byte offset to the span it came from.
+//! 4. `source::parse_descend_source` — parse that into Descend's AST.
+//! 5. `kernel::Kernel::extract` — pull the named kernel out, with its parameters as
+//!    `host_ty::HostTy` so the host and device spellings cannot drift apart.
+//! 6. `check::check_kernel` — refuse what cannot be launched, before anything is
+//!    compiled. The bounds are in `limits`.
+//! 7. `synthesize::synthesize_main_function` — write the Descend `main` the kernel is
+//!    type-checked against.
+//! 8. `translate::translate` — type-check, then generate CUDA and strip it down to a
+//!    device-only translation unit.
+//! 9. `assemble::assemble` — run nvcc, and find the kernel's entry symbol in the PTX.
+//! 10. `emit::generate_launch_function` — the Rust function the caller binds.
+//!
+//! # Errors
+//!
+//! A *stage* returns `diag::MacroError`, which carries the span to point the compiler
+//! at. The sub-computations a stage calls — `nat`, `spell`, `host_ty::Unrepresentable` —
+//! return a *reason fragment* instead: a clause that completes a sentence the stage
+//! writes around it, as in ``kernel `k`: parameter `p` is a tuple. …``. Fragments
+//! deliberately do not know about spans, because only the stage knows which token the
+//! reader has to change.
+//!
+//! # Environment
+//!
+//! | Variable | Effect |
+//! |---|---|
+//! | `DESCEND_DEBUG` | Print the rendered Descend source, the generated CUDA, and the PTX cache decisions to stderr. |
+//! | `DESCEND_NVCC_FLAGS` | Extra arguments for nvcc. Without an `-arch=`, one is detected through `nvidia-smi`. |
+//! | `DESCEND_NO_CACHE` | Compile every kernel, ignoring and not writing the PTX cache. |
+//! | `DESCEND_PTX_CACHE` | Where to keep the PTX cache. See `nvcc::cache_directory` for the search order; in practice it lands in `~/.cache/descend/ptx`, because Cargo does not set `CARGO_TARGET_DIR` for a proc macro. |
+
 extern crate proc_macro;
 
 #[macro_use]
@@ -15,6 +63,7 @@ mod invocation;
 mod kernel;
 #[cfg(test)]
 mod launch_scrape;
+mod limits;
 mod nat;
 mod nvcc;
 mod source;
@@ -23,28 +72,50 @@ mod spell;
 mod synthesize;
 mod translate;
 
-use crate::artifact::{LaunchConfig, Ptx};
 use crate::diag::MacroError;
 use crate::invocation::{FunctionInternalArguments, FunctionInvocation};
 use crate::kernel::Kernel;
 use crate::source::DescendSource;
-use crate::translate::DeviceCpp;
 use descend::ast::CompilUnit;
 use descend::parser::SourceCode;
 use proc_macro2::{Ident, TokenStream};
-use std::collections::HashMap;
 
+/// Declare Descend kernels and types.
+///
+/// Each kernel becomes a carrier macro holding its source; nothing is compiled here.
+/// Each `struct` becomes its `#[repr(C)]` Rust counterpart immediately, because a kernel
+/// taking it needs that type in scope to be callable at all.
+///
+/// A kernel is declared by an execution annotation `-[grid: gpu.grid<.., ..>]->`. Use
+/// [`descend_fn!`] to instantiate one.
 #[proc_macro]
 pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, declare_kernels)
 }
 
+/// Instantiate a kernel declared by [`descend!`], evaluating to the function.
+///
+/// ```ignore
+/// let gpu_vec_add = descend_fn!(gpu_vec_add, <N: 16384>);
+/// ```
+///
+/// This is an expression, so the caller names the result with an ordinary `let`. A
+/// procedural macro cannot tell item position from expression position, so this is the
+/// only position the macro supports; an instantiation that has to be reachable elsewhere
+/// goes in a hand-written wrapper function.
+///
+/// Instantiating is what compiles: this runs Descend's type checker and nvcc, and embeds
+/// the resulting PTX in the generated function.
 #[proc_macro]
 pub fn descend_fn(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, route_to_carrier)
 }
 
 /// Internal: invoked only by the carrier a `descend!` emits, never written by hand.
+///
+/// The carrier exists so that a kernel's name is *not* what carries its source. Under a
+/// name nobody writes, calling a declared-but-uninstantiated kernel fails as `cannot
+/// find function` rather than as `expected function, found macro`. See `emit::carrier_name`.
 #[proc_macro]
 pub fn __descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, instantiate_kernel)
@@ -56,17 +127,12 @@ fn declare_kernels(input: TokenStream) -> Result<TokenStream, MacroError> {
     let source_token_stream = input.clone();
     let source = render_source(input);
     let code = SourceCode::new(source.text.clone());
-    let unit = parse(&code)?;
+    let unit = source::parse_descend_source(&code)?;
     declare(&unit, &source, &source_token_stream)
 }
 
-// `descend_fn!` is an expression: it evaluates to the instantiated function, so the
-// caller names it with an ordinary `let`. A procedural macro cannot tell item position
-// from expression position, so this is the only position the macro supports; an
-// instantiation that has to be reachable elsewhere goes in a hand-written wrapper
-// function.
 fn route_to_carrier(input: TokenStream) -> Result<TokenStream, MacroError> {
-    let FunctionInvocation { kernel, bindings } = parse_invocation(input)?;
+    let FunctionInvocation { kernel, bindings } = invocation::parse_function_invocation(input)?;
     emit::carrier_invocation(&kernel, bindings)
 }
 
@@ -75,7 +141,7 @@ fn instantiate_kernel(input: TokenStream) -> Result<TokenStream, MacroError> {
         source_token_stream,
         kernel,
         bindings,
-    } = parse_internal_args(input)?;
+    } = invocation::parse_function_internal_arguments(input)?;
     let asked_at = kernel.span();
 
     instantiate(source_token_stream, &kernel, bindings)
@@ -93,30 +159,34 @@ fn instantiate(
 ) -> Result<TokenStream, MacroError> {
     let kernel_name = kernel.to_string();
 
-    let sizes = parse_sizes(bindings)?;
-    let specialized = specialize(source_token_stream, &kernel_name, &sizes)?;
+    let sizes = invocation::parse_sizes(bindings)?;
+    let specialized = specialize::specialize_kernel(source_token_stream, &kernel_name, &sizes)?;
     let source = render_source(specialized);
     let code = SourceCode::new(source.text.clone());
-    let unit = parse(&code)?;
-    let kernel = extract(&unit, &kernel_name, &source)?;
+    let unit = source::parse_descend_source(&code)?;
+    let kernel = Kernel::extract(&unit, &kernel_name, &source)?;
 
+    // From here the stages are working from Descend's AST rather than from the tokens
+    // the reader wrote, so not all of them can name the token that offended them. The
+    // kernel's declaration is the fallback span for the rest of the pipeline.
     let declared_at = kernel.name_span;
-    let launch = check(&kernel)?;
-    let program = synthesize(&kernel, &source).map_err(|error| error.or_span(declared_at))?;
-    let cpp = translate(&program, &kernel_name).map_err(|error| error.or_span(declared_at))?;
-    let ptx = assemble(&cpp, &kernel_name).map_err(|error| error.or_span(declared_at))?;
+    let launch = check::check_kernel(&kernel)?;
+    let main_function = synthesize::synthesize_main_function(&kernel)
+        .map_err(|error| error.or_span(declared_at))?;
+    let program = format!("{}\n{}", main_function, source.text);
+    let device_cpp =
+        translate::translate(&program, &kernel_name).map_err(|error| error.or_span(declared_at))?;
+    let ptx = assemble::assemble(&device_cpp.code, &kernel_name)
+        .map_err(|error| error.or_span(declared_at))?;
 
-    emit_launch_function(&kernel, &launch, &ptx).map_err(|error| error.or_span(declared_at))
+    emit::generate_launch_function(&kernel, &launch, &ptx)
+        .map_err(|error| error.or_span(declared_at))
 }
 
 fn render_source(input: TokenStream) -> DescendSource {
     let source = source::DescendSource::from_token_stream(input);
     debug!("MACRO INPUT: {}", source.text);
     source
-}
-
-fn parse<'a>(code: &'a SourceCode<'a>) -> Result<CompilUnit<'a>, MacroError> {
-    source::parse_descend_source(code).map_err(MacroError::from)
 }
 
 fn declare(
@@ -153,12 +223,13 @@ fn declare(
             // costs nothing to emit -- no nvcc, just the type -- and a kernel that uses
             // it needs the Rust type in scope to be callable at all.
             descend::ast::Item::StructDecl(struct_decl) => {
-                let struct_code = emit::format_rust_struct(struct_decl)?;
-                output.extend(
-                    struct_code
-                        .parse::<TokenStream>()
-                        .map_err(|error| format!("generated type is malformed: {error}"))?,
-                );
+                let struct_code = emit::format_rust_struct(struct_decl, source)?;
+                output.extend(struct_code.parse::<TokenStream>().map_err(|error| {
+                    MacroError::from(format!(
+                        "the definition generated for struct `{}` is malformed: {error}",
+                        struct_decl.ident.name
+                    ))
+                })?);
             }
             _ => {}
         }
@@ -169,65 +240,11 @@ fn declare(
             "this `descend!` block declares nothing. A kernel is declared by an \
                     execution annotation `-[grid: gpu.grid<.., ..>]->`, and a type by a \
                     `struct`; without either, the macro emits no items at all"
-                .to_string()
                 .into(),
         );
     }
 
     Ok(output)
-}
-
-fn parse_invocation(input: TokenStream) -> Result<FunctionInvocation, MacroError> {
-    invocation::parse_function_invocation(input).map_err(MacroError::from)
-}
-
-fn parse_internal_args(input: TokenStream) -> Result<FunctionInternalArguments, MacroError> {
-    invocation::parse_function_internal_arguments(input).map_err(MacroError::from)
-}
-
-fn parse_sizes(bindings: TokenStream) -> Result<HashMap<String, String>, MacroError> {
-    invocation::parse_sizes(bindings)
-}
-
-fn specialize(
-    source_token_stream: TokenStream,
-    kernel_name: &str,
-    sizes: &HashMap<String, String>,
-) -> Result<TokenStream, MacroError> {
-    specialize::specialize_kernel(source_token_stream, kernel_name, sizes)
-}
-
-fn extract(
-    unit: &CompilUnit,
-    kernel_name: &str,
-    source: &DescendSource,
-) -> Result<Kernel, MacroError> {
-    Kernel::extract(unit, kernel_name, source).map_err(MacroError::from)
-}
-
-fn check(kernel: &Kernel) -> Result<LaunchConfig, MacroError> {
-    check::check_kernel(kernel)
-}
-
-fn synthesize(kernel: &Kernel, source: &DescendSource) -> Result<String, MacroError> {
-    let main_function = synthesize::synthesize_main_function(kernel)?;
-    Ok(format!("{}\n{}", main_function, source.text))
-}
-
-fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, MacroError> {
-    translate::translate(program, kernel_name).map_err(MacroError::from)
-}
-
-fn assemble(cpp: &DeviceCpp, kernel_name: &str) -> Result<Ptx, MacroError> {
-    assemble::assemble(&cpp.code, kernel_name).map_err(MacroError::from)
-}
-
-fn emit_launch_function(
-    kernel: &Kernel,
-    launch: &LaunchConfig,
-    ptx: &Ptx,
-) -> Result<TokenStream, MacroError> {
-    emit::generate_launch_function(kernel, launch, ptx)
 }
 
 fn expand_or_error(
