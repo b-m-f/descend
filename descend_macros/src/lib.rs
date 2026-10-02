@@ -41,13 +41,13 @@ pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 #[proc_macro]
 pub fn descend_fn(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    expand_or_error_expr(input, route_to_carrier)
+    expand_or_error(input, route_to_carrier)
 }
 
 /// Internal: invoked only by the carrier a `descend!` emits, never written by hand.
 #[proc_macro]
 pub fn __descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    expand_or_error_expr(input, instantiate_kernel)
+    expand_or_error(input, instantiate_kernel)
 }
 
 // `descend!` declares; it does not compile. Whatever a kernel's sizes are, it becomes a
@@ -228,19 +228,6 @@ fn expand_or_error(
     match expand(input.into()) {
         Ok(tokens) => tokens,
         Err(error) => error.to_tokens(),
-    }
-    .into()
-}
-
-/// For macros that expand in expression position, where `compile_error!(..);` would be
-/// a statement and leave a syntax error on top of the reported one.
-fn expand_or_error_expr(
-    input: proc_macro::TokenStream,
-    expand: fn(TokenStream) -> Result<TokenStream, MacroError>,
-) -> proc_macro::TokenStream {
-    match expand(input.into()) {
-        Ok(tokens) => tokens,
-        Err(error) => error.to_expr_tokens(),
     }
     .into()
 }
