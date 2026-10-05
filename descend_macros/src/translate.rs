@@ -1,18 +1,18 @@
 use crate::diag::MacroError;
 
-/// The CUDA nvcc is given, and the host function that was taken out of it.
+/// The CUDA nvcc is given, and the host-side `main` that was taken out of it.
 ///
-/// `host_function` is not part of the pipeline: the launch it describes is only read by
+/// `host_code` is not part of the pipeline: the launch it describes is only read by
 /// `launch_scrape`, so a test can confirm the shared-memory count Descend's own code
 /// generator emits agrees with the one `check::shared_memory_bytes` derives from the
 /// parameter types.
 #[derive(Debug)]
-pub struct DeviceCpp {
-    pub code: String,
-    pub host_function: String,
+pub struct CppSource {
+    pub device_code: String,
+    pub host_code: String,
 }
 
-pub fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, MacroError> {
+pub fn translate(program: &str, kernel_name: &str) -> Result<CppSource, MacroError> {
     debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", program);
     let full_source = descend::parser::SourceCode::new(program.to_string());
     let mut compilation_unit = descend::parser::parse(&full_source).map_err(|_| {
@@ -34,11 +34,11 @@ pub fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, MacroErr
             .into());
     }
 
-    let device = generate_device_cpp(&mut compilation_unit, kernel_name);
+    let cpp_source = generate_cpp_source(&mut compilation_unit, kernel_name);
 
-    debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", kernel_name, device.code);
+    debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", kernel_name, cpp_source.device_code);
 
-    Ok(device)
+    Ok(cpp_source)
 }
 
 /// Turning Descend's generated CUDA into a translation unit nvcc will accept as a
@@ -48,10 +48,10 @@ pub fn translate(program: &str, kernel_name: &str) -> Result<DeviceCpp, MacroErr
 /// a whole program and wrong for a PTX module. They are string replacements rather than
 /// changes to the code generator because `descend/src/` is not this crate's to edit; the
 /// site that produces each one is named so a change there is traceable to here.
-fn generate_device_cpp(
+fn generate_cpp_source(
     compilation_unit: &mut descend::ast::CompilUnit,
     kernel_name: &str,
-) -> DeviceCpp {
+) -> CppSource {
     let mut device_code = descend::codegen::gen(compilation_unit);
 
     // The code generator spells sizes as `std::size_t`, but `descend.cuh` is included
@@ -60,7 +60,7 @@ fn generate_device_cpp(
 
     // `synthesize::synthesize_main_function` writes a Descend `main` purely so the type
     // checker has something to check the kernel against. Renaming it stops nvcc seeing
-    // two definitions of `main` -- and, once renamed, HOST_FUNCTION_MARKER below can
+    // two definitions of `main` -- and, once renamed, HOST_SIDE_MAIN_MARKER below can
     // find it and remove it. If this replacement ever stops matching, that marker
     // silently stops matching too, and the host launch syntax `<<<...>>>` is left in the
     // device code for nvcc to reject.
@@ -73,49 +73,49 @@ fn generate_device_cpp(
         &format!("extern \"C\" __global__ auto {}(", kernel_name),
     );
 
-    let DeviceCpp {
-        code,
-        host_function,
-    } = split_off_host_function(&device_code, HOST_FUNCTION_MARKER);
+    let CppSource {
+        device_code,
+        host_code,
+    } = split_off_host_side_main_function(&device_code, HOST_SIDE_MAIN_MARKER);
 
     // The code generator names the dynamic shared-memory backing array `$buffer`
     // (`src/codegen/mod.rs:794`). `$` is a valid identifier character for nvcc but not
     // for every CUDA front end, and it cannot be spelled in Descend source at all.
-    let code = code.replace("$buffer", "_buffer");
+    let device_code = device_code.replace("$buffer", "_buffer");
 
-    DeviceCpp {
+    CppSource {
         // `descend::codegen` emits `#include "descend.cuh"` (`src/codegen/mod.rs:64`),
         // which nvcc could only resolve with an `-I` this crate does not control. The
         // header is compiled into `descend` as `DESCEND_CUH`, so it is inlined here and
         // the include is dropped to avoid defining everything twice.
-        code: format!(
+        device_code: format!(
             "{}\n{}",
             descend::DESCEND_CUH,
-            code.replace("#include \"descend.cuh\"", "")
+            device_code.replace("#include \"descend.cuh\"", "")
         ),
-        host_function,
+        host_code,
     }
 }
 
-const HOST_FUNCTION_MARKER: &str = "__host__ auto dummy_main";
+const HOST_SIDE_MAIN_MARKER: &str = "__host__ auto dummy_main";
 
-fn split_off_host_function(cuda_source: &str, marker: &str) -> DeviceCpp {
-    let mut code = String::new();
-    let mut host_function = String::new();
+fn split_off_host_side_main_function(cuda_source: &str, marker: &str) -> CppSource {
+    let mut device_code = String::new();
+    let mut host_code = String::new();
     let mut depth = 0i32;
-    let mut in_host_function = false;
+    let mut in_host_side_main_function = false;
     let mut header_seen = false;
 
     for line in cuda_source.lines() {
-        if !in_host_function && line.contains(marker) {
-            in_host_function = true;
+        if !in_host_side_main_function && line.contains(marker) {
+            in_host_side_main_function = true;
             header_seen = false;
             depth = 0;
         }
 
-        if in_host_function {
-            host_function.push_str(line);
-            host_function.push('\n');
+        if in_host_side_main_function {
+            host_code.push_str(line);
+            host_code.push('\n');
 
             let braces_opened = line.matches('{').count() as i32;
             let braces_closed = line.matches('}').count() as i32;
@@ -128,18 +128,18 @@ fn split_off_host_function(cuda_source: &str, marker: &str) -> DeviceCpp {
             let definition_ended = header_seen && depth <= 0;
             let declaration_ended = !header_seen && line.trim_end().ends_with(';');
             if definition_ended || declaration_ended {
-                in_host_function = false;
+                in_host_side_main_function = false;
             }
             continue;
         }
 
-        code.push_str(line);
-        code.push('\n');
+        device_code.push_str(line);
+        device_code.push('\n');
     }
 
-    DeviceCpp {
-        code,
-        host_function,
+    CppSource {
+        device_code,
+        host_code,
     }
 }
 
@@ -149,7 +149,7 @@ mod tests {
     use crate::launch_scrape::scraped_shared_memory_bytes;
 
     #[test]
-    fn the_host_function_is_removed_whole() {
+    fn the_host_side_main_function_is_removed_whole() {
         let cpp = "\
 __global__ auto kernel(int *a) -> void { *a = 1; }
 __host__ auto dummy_main() -> void {
@@ -158,22 +158,26 @@ __host__ auto dummy_main() -> void {
 }
 __global__ auto after(int *b) -> void { *b = 2; }
 ";
-        let separated = split_off_host_function(cpp, HOST_FUNCTION_MARKER);
-        assert!(!separated.code.contains("dummy_main"), "{}", separated.code);
+        let separated = split_off_host_side_main_function(cpp, HOST_SIDE_MAIN_MARKER);
         assert!(
-            separated.code.contains("__global__ auto after"),
-            "code after the host function was swallowed: {}",
-            separated.code
-        );
-        assert!(
-            separated.host_function.contains("<<<"),
+            !separated.device_code.contains("dummy_main"),
             "{}",
-            separated.host_function
+            separated.device_code
         );
         assert!(
-            separated.host_function.contains("nested"),
+            separated.device_code.contains("__global__ auto after"),
+            "code after the host function was swallowed: {}",
+            separated.device_code
+        );
+        assert!(
+            separated.host_code.contains("<<<"),
+            "{}",
+            separated.host_code
+        );
+        assert!(
+            separated.host_code.contains("nested"),
             "the nested block belongs to the host function: {}",
-            separated.host_function
+            separated.host_code
         );
     }
 
@@ -183,12 +187,16 @@ __global__ auto after(int *b) -> void { *b = 2; }
 __host__ auto dummy_main() -> void;
 __global__ auto kernel(int *a) -> void { *a = 1; }
 ";
-        let separated = split_off_host_function(cpp, HOST_FUNCTION_MARKER);
-        assert!(!separated.code.contains("dummy_main"), "{}", separated.code);
+        let separated = split_off_host_side_main_function(cpp, HOST_SIDE_MAIN_MARKER);
         assert!(
-            separated.code.contains("__global__ auto kernel"),
+            !separated.device_code.contains("dummy_main"),
             "{}",
-            separated.code
+            separated.device_code
+        );
+        assert!(
+            separated.device_code.contains("__global__ auto kernel"),
+            "{}",
+            separated.device_code
         );
     }
 
@@ -216,27 +224,27 @@ __global__ auto kernel(int *a) -> void { *a = 1; }
             descend::parser::parse(&source).expect("test program must parse");
         descend::ty_check::ty_check(&mut compilation_unit).expect("test program must type check");
 
-        let separated = generate_device_cpp(&mut compilation_unit, "gpu_add");
+        let separated = generate_cpp_source(&mut compilation_unit, "gpu_add");
 
         assert!(
-            !separated.code.contains("dummy_main"),
+            !separated.device_code.contains("dummy_main"),
             "the synthesized host function reached the device code:\n{}",
-            separated.code
+            separated.device_code
         );
         assert!(
             separated
-                .code
+                .device_code
                 .contains("extern \"C\" __global__ auto gpu_add"),
             "the kernel is missing or unmarked:\n{}",
-            separated.code
+            separated.device_code
         );
         assert!(
-            separated.host_function.contains("<<<"),
+            separated.host_code.contains("<<<"),
             "the launch was not captured, so no byte count could be read:\n{}",
-            separated.host_function
+            separated.host_code
         );
         assert_eq!(
-            scraped_shared_memory_bytes(&separated.host_function),
+            scraped_shared_memory_bytes(&separated.host_code),
             Ok(0),
             "a kernel with no shared parameters requests no dynamic shared memory"
         );

@@ -5,7 +5,7 @@
 //! checker then runs over the two together, and it is what proves the kernel's
 //! parameters agree with the buffers the host will hand it.
 //!
-//! That `main` is never compiled -- `translate::generate_device_cpp` renames it and
+//! That `main` is never compiled -- `translate::generate_cpp_source` renames it and
 //! removes it -- but it is the subject of every diagnostic `capture` reports, so its
 //! parameter names are the names a reader is shown.
 
