@@ -6,11 +6,11 @@
 
 use crate::const_expr::eval_const_integer;
 
-pub fn shared_bytes_expression(host_function: &str) -> Result<String, String> {
-    let marker_start = host_function
+pub fn shared_bytes_expression(host_code: &str) -> Result<String, String> {
+    let marker_start = host_code
         .find("<<<")
         .ok_or_else(|| "no kernel launch found in the generated host code".to_string())?;
-    let after_marker = &host_function[marker_start + 3..];
+    let after_marker = &host_code[marker_start + 3..];
     let marker_end = after_marker
         .find(">>>")
         .ok_or_else(|| "the generated kernel launch is not terminated".to_string())?;
@@ -48,8 +48,8 @@ fn split_top_level(arguments: &str) -> Vec<&str> {
     segments
 }
 
-pub fn scraped_shared_memory_bytes(host_function: &str) -> Result<u64, String> {
-    eval_const_integer(&shared_bytes_expression(host_function)?)
+pub fn scraped_shared_memory_bytes(host_code: &str) -> Result<u64, String> {
+    eval_const_integer(&shared_bytes_expression(host_code)?)
 }
 
 #[cfg(test)]
@@ -184,10 +184,10 @@ fn gpu_reduce<gs: nat, bs: nat, r1: prv, r2: prv, r3: prv>(
         let cpp = crate::translate::translate(&program, "gpu_reduce").expect("fixture must build");
 
         assert_eq!(
-            scraped_shared_memory_bytes(&cpp.host_function),
+            scraped_shared_memory_bytes(&cpp.host_code),
             Ok(typed),
             "the generated launch disagrees with the parameter types:\n{}",
-            cpp.host_function
+            cpp.host_code
         );
     }
 

@@ -42,7 +42,7 @@ fn declared_entry_symbols(ptx_text: &str) -> Vec<String> {
 
 /// The PTX entry symbol the launcher has to name.
 ///
-/// `translate::generate_device_cpp` marks the kernel `extern "C"`, so its entry symbol
+/// `translate::generate_cpp_source` marks the kernel `extern "C"`, so its entry symbol
 /// is exactly its own name and there is no mangling to undo. Matching exactly, and
 /// failing when nothing matches, is what keeps this a compile-time question:
 ///
@@ -64,7 +64,7 @@ fn find_entry_symbol(ptx_text: &str, kernel_name: &str) -> Result<String, MacroE
     Err(MacroError::from(format!(
         "the PTX nvcc produced has no entry symbol named `{kernel_name}`: {what_nvcc_produced}. \
          A kernel is compiled `extern \"C\"`, so its entry symbol is its own name; a missing one \
-         means the rename in `translate::generate_device_cpp` did not match what Descend's code \
+         means the rename in `translate::generate_cpp_source` did not match what Descend's code \
          generator emitted"
     )))
 }

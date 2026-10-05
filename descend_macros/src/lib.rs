@@ -174,9 +174,9 @@ fn instantiate(
     let main_function = synthesize::synthesize_main_function(&kernel)
         .map_err(|error| error.or_span(declared_at))?;
     let program = format!("{}\n{}", main_function, source.text);
-    let device_cpp =
+    let cpp_source =
         translate::translate(&program, &kernel_name).map_err(|error| error.or_span(declared_at))?;
-    let ptx = assemble::assemble(&device_cpp.code, &kernel_name)
+    let ptx = assemble::assemble(&cpp_source.device_code, &kernel_name)
         .map_err(|error| error.or_span(declared_at))?;
 
     emit::generate_launch_function(&kernel, &launch, &ptx)
