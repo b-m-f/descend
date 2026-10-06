@@ -1,17 +1,25 @@
 use crate::artifact::Ptx;
 use crate::diag::MacroError;
-use crate::nvcc::{cached_ptx, resolve_nvcc_options, run_nvcc, store_ptx};
+use crate::nvrtc;
+use crate::ptx_cache::{cached_ptx, store_ptx, CacheKey};
 
 pub fn assemble(cpp: &str, kernel_name: &str) -> Result<Ptx, MacroError> {
-    let nvcc_arguments = resolve_nvcc_options()?;
-    let ptx_text = match cached_ptx(cpp, nvcc_arguments) {
+    let toolchain = nvrtc::toolchain()?;
+    let key = CacheKey {
+        device_code: cpp,
+        header: descend::DESCEND_CUH,
+        options: toolchain.options(),
+        compiler_version: toolchain.version(),
+    };
+
+    let ptx_text = match cached_ptx(&key) {
         Some(cached) => {
             debug!("PTX cache hit for {}", kernel_name);
             cached
         }
         None => {
-            let ptx_text = run_nvcc(cpp, nvcc_arguments)?;
-            store_ptx(cpp, nvcc_arguments, &ptx_text);
+            let ptx_text = toolchain.compile(cpp, descend::DESCEND_CUH)?;
+            store_ptx(&key, &ptx_text);
             ptx_text
         }
     };
@@ -57,12 +65,12 @@ fn find_entry_symbol(ptx_text: &str, kernel_name: &str) -> Result<String, MacroE
         return Ok(kernel_name.to_string());
     }
 
-    let what_nvcc_produced = match declared.as_slice() {
+    let what_nvrtc_produced = match declared.as_slice() {
         [] => "it declares no entry symbol at all".to_string(),
         symbols => format!("it declares {}", symbols.join(", ")),
     };
     Err(MacroError::from(format!(
-        "the PTX nvcc produced has no entry symbol named `{kernel_name}`: {what_nvcc_produced}. \
+        "the PTX NVRTC produced has no entry symbol named `{kernel_name}`: {what_nvrtc_produced}. \
          A kernel is compiled `extern \"C\"`, so its entry symbol is its own name; a missing one \
          means the rename in `translate::generate_cpp_source` did not match what Descend's code \
          generator emitted"
@@ -124,7 +132,7 @@ mod tests {
         let error = find_entry_symbol(PTX_WITH_TWO_ENTRIES, "gpu_never_compiled").unwrap_err();
         assert!(
             error.message.contains("gpu_vec_add, gpu_scale"),
-            "the message should list the entries nvcc did produce: {error:?}"
+            "the message should list the entries NVRTC did produce: {error:?}"
         );
     }
 

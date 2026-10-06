@@ -2,7 +2,7 @@
 //!
 //! Two macros are meant to be written. [`descend!`] declares kernels and types; it
 //! compiles nothing. [`descend_fn!`] instantiates one declared kernel at one set of
-//! sizes, and that is where nvcc runs. A third, [`__descend_fn_internal`], is plumbing:
+//! sizes, and that is where NVRTC runs. A third, [`__descend_fn_internal`], is plumbing:
 //! the carrier macro a `descend!` emits calls it, and nobody writes it by hand.
 //!
 //! Everything else in this crate is private, so the stages below are named as code
@@ -25,7 +25,7 @@
 //!    type-checked against.
 //! 8. `translate::translate` — type-check, then generate CUDA and strip it down to a
 //!    device-only translation unit.
-//! 9. `assemble::assemble` — run nvcc, and find the kernel's entry symbol in the PTX.
+//! 9. `assemble::assemble` — compile through NVRTC, and find the kernel's entry symbol in the PTX.
 //! 10. `emit::generate_launch_function` — the Rust function the caller binds.
 //!
 //! # Errors
@@ -41,10 +41,12 @@
 //!
 //! | Variable | Effect |
 //! |---|---|
+//! | `CUDA_PATH` | The fallback toolkit root, used when `DESCEND_CUDA_PATH` is unset. NVIDIA documents neither name for Linux at 13.2 -- its installation guide points at the `/usr/local/cuda` symbolic link instead -- so one of the two has to be set explicitly, which is what `flake.nix` does. |
+//! | `DESCEND_CUDA_PATH` | The CUDA toolkit root, holding both `lib/libnvrtc.so` and `include/`. NVRTC is loaded from it, and its `include/` is what lets the CUDA headers `descend.cuh` needs resolve. Takes precedence over `CUDA_PATH`. |
 //! | `DESCEND_DEBUG` | Print the rendered Descend source, the generated CUDA, and the PTX cache decisions to stderr. |
-//! | `DESCEND_NVCC_FLAGS` | Extra arguments for nvcc. Without an `-arch=`, one is detected through `nvidia-smi`. |
+//! | `DESCEND_NVRTC_FLAGS` | Extra options for NVRTC. Without an `-arch=`, one is detected through `nvidia-smi`. |
 //! | `DESCEND_NO_CACHE` | Compile every kernel, ignoring and not writing the PTX cache. |
-//! | `DESCEND_PTX_CACHE` | Where to keep the PTX cache. See `nvcc::cache_directory` for the search order; in practice it lands in `~/.cache/descend/ptx`, because Cargo does not set `CARGO_TARGET_DIR` for a proc macro. |
+//! | `DESCEND_PTX_CACHE` | Where to keep the PTX cache. See `ptx_cache::cache_directory` for the search order; in practice it lands in `~/.cache/descend/ptx`, because Cargo does not set `CARGO_TARGET_DIR` for a proc macro. |
 
 extern crate proc_macro;
 
@@ -65,7 +67,8 @@ mod kernel;
 mod launch_scrape;
 mod limits;
 mod nat;
-mod nvcc;
+mod nvrtc;
+mod ptx_cache;
 mod source;
 mod specialize;
 mod spell;
@@ -104,7 +107,7 @@ pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// only position the macro supports; an instantiation that has to be reachable elsewhere
 /// goes in a hand-written wrapper function.
 ///
-/// Instantiating is what compiles: this runs Descend's type checker and nvcc, and embeds
+/// Instantiating is what compiles: this runs Descend's type checker and NVRTC, and embeds
 /// the resulting PTX in the generated function.
 #[proc_macro]
 pub fn descend_fn(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -220,7 +223,7 @@ fn declare(
                 output.extend(emit::carrier_macro(&kernel_name, source_token_stream));
             }
             // A declared type becomes its Rust counterpart here. Unlike a kernel this
-            // costs nothing to emit -- no nvcc, just the type -- and a kernel that uses
+            // costs nothing to emit -- no compilation, just the type -- and a kernel that uses
             // it needs the Rust type in scope to be callable at all.
             descend::ast::Item::StructDecl(struct_decl) => {
                 let struct_code = emit::format_rust_struct(struct_decl, source)?;

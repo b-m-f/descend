@@ -8,11 +8,14 @@ facade in `src/backend.rs`.
 
 ## Running the tests
 
-The tests need an NVIDIA driver, a GPU, and the CUDA toolkit (`nvcc`). Tests that
-use `descend!`/`descend_fn!` also need a target architecture:
+The tests need an NVIDIA driver, a GPU, and a CUDA toolkit: the procedural macro loads
+NVRTC from it. `DESCEND_CUDA_PATH`, or `CUDA_PATH` when that is unset, has to name the
+toolkit root -- the directory holding both `lib/libnvrtc.so` and `include/`. The target
+architecture is probed from `nvidia-smi`; `DESCEND_NVRTC_FLAGS=-arch=compute_86`
+overrides it.
 
 ```bash
-DESCEND_NVCC_FLAGS=-arch=compute_86 cargo test --locked --offline -p descend_host
+DESCEND_CUDA_PATH=/usr/local/cuda cargo test --locked --offline -p descend_host
 ```
 
 The compile-fail fixtures in `tests/host_api_safety/` run through `trybuild`.

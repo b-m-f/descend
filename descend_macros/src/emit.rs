@@ -76,9 +76,9 @@ pub fn generate_launch_function(
 
     let kernel_ident = format_ident!("{}", kernel_name);
     let entry = &compiled.entry;
-    // `Ptx::text` is a `String`, so it is already UTF-8 -- `nvcc::run_nvcc` read it with
-    // `read_to_string`. Emitting it as a string literal rather than as bytes the caller
-    // decodes again keeps an unreachable `unwrap` out of every generated function.
+    // `Ptx::text` is a `String`, so it is already UTF-8 -- `nvrtc` decoded it from the
+    // bytes NVRTC returned. Emitting it as a string literal rather than as bytes the
+    // caller decodes again keeps an unreachable `unwrap` out of every generated function.
     let ptx_source = &compiled.text;
 
     let (grid_x, grid_y, grid_z) = (launch.grid.x, launch.grid.y, launch.grid.z);
@@ -150,8 +150,8 @@ fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> 
 /// this definition from the declaration, so it is the only thing that can vouch for it.
 ///
 /// Note that a kernel taking a declared type does not compile yet — Descend's code
-/// generator refers to a struct by name but never emits its definition, so nvcc fails
-/// with `identifier "Pair" is undefined`. Modelling the type here is what makes that a
+/// generator refers to a struct by name but never emits its definition, so the CUDA
+/// compiler fails on the undefined name. Modelling the type here is what makes that a
 /// one-sided gap: once the generator emits the C++ definition, the host side is
 /// already in place.
 ///

@@ -97,7 +97,7 @@ mod tests {
 
     /// The grid and block dimensions a kernel declares, as the macro derives them.
     /// This is the path `emit::generate_launch_function` takes to build a launch
-    /// configuration, minus the code generation and nvcc.
+    /// configuration, minus the code generation and the NVRTC compilation.
     fn dimensions_of(grid: Dim, block: Dim) -> (Dimensions, Dimensions) {
         (
             eval_dimensions(&grid).unwrap(),
