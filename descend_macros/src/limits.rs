@@ -4,8 +4,8 @@
 //! time. They are written down here rather than queried, for two reasons:
 //!
 //! * Opening a CUDA context during macro expansion would make `cargo build` need a GPU,
-//!   which rules out CI and cross-compilation. This crate shells out to `nvcc` and
-//!   `nvidia-smi`, but it never talks to the driver.
+//!   which rules out CI and cross-compilation. This crate shells out to `nvidia-smi` and
+//!   loads NVRTC as a library, but it never talks to the driver.
 //! * A queried answer describes the *build* machine. A launch legal there could be
 //!   rejected for a different target, and one illegal there could be accepted and then
 //!   fail at launch -- the second is the failure this module exists to prevent.

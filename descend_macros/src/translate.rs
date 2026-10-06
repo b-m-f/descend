@@ -1,6 +1,6 @@
 use crate::diag::MacroError;
 
-/// The CUDA nvcc is given, and the host-side `main` that was taken out of it.
+/// The CUDA NVRTC is given, and the host-side `main` that was taken out of it.
 ///
 /// `host_code` is not part of the pipeline: the launch it describes is only read by
 /// `launch_scrape`, so a test can confirm the shared-memory count Descend's own code
@@ -41,7 +41,7 @@ pub fn translate(program: &str, kernel_name: &str) -> Result<CppSource, MacroErr
     Ok(cpp_source)
 }
 
-/// Turning Descend's generated CUDA into a translation unit nvcc will accept as a
+/// Turning Descend's generated CUDA into a translation unit NVRTC will accept as a
 /// device-only module.
 ///
 /// Each replacement below undoes one thing `descend::codegen` emits that is right for
@@ -54,17 +54,13 @@ fn generate_cpp_source(
 ) -> CppSource {
     let mut device_code = descend::codegen::gen(compilation_unit);
 
-    // The code generator spells sizes as `std::size_t`, but `descend.cuh` is included
-    // without a `using` for it and device code refers to `size_t` unqualified.
+    // Descend's printer spells every `SizeT` as `std::size_t`
+    // (`src/codegen/printer.rs:394`), which lands in `for` counters as often as in
+    // generic sizes. NVRTC compiles with `__CUDACC_RTC__` defined, so `descend.cuh` skips
+    // `<cstdint>` and the rest of the standard headers, and `std::size_t` is not declared
+    // -- NVRTC reports `namespace "std" has no member "size_t"`. nvcc took the other
+    // branch of that same guard, which is why this looks unnecessary until it is removed.
     device_code = device_code.replace("std::size_t", "size_t");
-
-    // `synthesize::synthesize_main_function` writes a Descend `main` purely so the type
-    // checker has something to check the kernel against. Renaming it stops nvcc seeing
-    // two definitions of `main` -- and, once renamed, HOST_SIDE_MAIN_MARKER below can
-    // find it and remove it. If this replacement ever stops matching, that marker
-    // silently stops matching too, and the host launch syntax `<<<...>>>` is left in the
-    // device code for nvcc to reject.
-    device_code = device_code.replace("auto main(", "auto dummy_main(");
 
     // The launcher looks the kernel up by name through `cuModuleGetFunction`, which
     // needs an unmangled symbol. `assemble::find_entry_symbol` depends on this landing.
@@ -79,25 +75,20 @@ fn generate_cpp_source(
     } = split_off_host_side_main_function(&device_code, HOST_SIDE_MAIN_MARKER);
 
     // The code generator names the dynamic shared-memory backing array `$buffer`
-    // (`src/codegen/mod.rs:794`). `$` is a valid identifier character for nvcc but not
-    // for every CUDA front end, and it cannot be spelled in Descend source at all.
+    // (`src/codegen/mod.rs:794`). nvcc accepts `$` in an identifier, NVRTC reports
+    // `unrecognized token`, and it cannot be spelled in Descend source at all.
     let device_code = device_code.replace("$buffer", "_buffer");
 
     CppSource {
-        // `descend::codegen` emits `#include "descend.cuh"` (`src/codegen/mod.rs:64`),
-        // which nvcc could only resolve with an `-I` this crate does not control. The
-        // header is compiled into `descend` as `DESCEND_CUH`, so it is inlined here and
-        // the include is dropped to avoid defining everything twice.
-        device_code: format!(
-            "{}\n{}",
-            descend::DESCEND_CUH,
-            device_code.replace("#include \"descend.cuh\"", "")
-        ),
+        device_code,
         host_code,
     }
 }
 
-const HOST_SIDE_MAIN_MARKER: &str = "__host__ auto dummy_main";
+// The open parenthesis is what keeps the marker from matching a `__host__` function whose
+// name merely starts with `main`. `synthesize::synthesize_main_function` writes the `main`
+// it marks, purely so Descend's type checker has something to check the kernel against.
+const HOST_SIDE_MAIN_MARKER: &str = "__host__ auto main(";
 
 fn split_off_host_side_main_function(cuda_source: &str, marker: &str) -> CppSource {
     let mut device_code = String::new();
@@ -152,7 +143,7 @@ mod tests {
     fn the_host_side_main_function_is_removed_whole() {
         let cpp = "\
 __global__ auto kernel(int *a) -> void { *a = 1; }
-__host__ auto dummy_main() -> void {
+__host__ auto main() -> void {
   { int nested = 0; }
   kernel<<<dim3(1, 1, 1), dim3(2, 1, 1), 0>>>(a);
 }
@@ -160,7 +151,7 @@ __global__ auto after(int *b) -> void { *b = 2; }
 ";
         let separated = split_off_host_side_main_function(cpp, HOST_SIDE_MAIN_MARKER);
         assert!(
-            !separated.device_code.contains("dummy_main"),
+            !separated.device_code.contains("auto main("),
             "{}",
             separated.device_code
         );
@@ -184,18 +175,39 @@ __global__ auto after(int *b) -> void { *b = 2; }
     #[test]
     fn a_forward_declaration_ends_at_its_semicolon() {
         let cpp = "\
-__host__ auto dummy_main() -> void;
+__host__ auto main() -> void;
 __global__ auto kernel(int *a) -> void { *a = 1; }
 ";
         let separated = split_off_host_side_main_function(cpp, HOST_SIDE_MAIN_MARKER);
         assert!(
-            !separated.device_code.contains("dummy_main"),
+            !separated.device_code.contains("auto main("),
             "{}",
             separated.device_code
         );
         assert!(
             separated.device_code.contains("__global__ auto kernel"),
             "{}",
+            separated.device_code
+        );
+    }
+
+    /// The regression the marker's open parenthesis prevents: without it, a `__host__`
+    /// function whose name merely starts with `main` is swallowed along with the real one.
+    #[test]
+    fn a_host_function_named_after_main_survives_the_split() {
+        let cpp = "\
+__host__ auto main() -> void { }
+__host__ auto main_loop(int *a) -> void { *a = 1; }
+";
+        let separated = split_off_host_side_main_function(cpp, HOST_SIDE_MAIN_MARKER);
+        assert!(
+            !separated.device_code.contains("auto main("),
+            "{}",
+            separated.device_code
+        );
+        assert!(
+            separated.device_code.contains("__host__ auto main_loop"),
+            "a function whose name starts with `main` was swallowed: {}",
             separated.device_code
         );
     }
@@ -227,7 +239,7 @@ __global__ auto kernel(int *a) -> void { *a = 1; }
         let separated = generate_cpp_source(&mut compilation_unit, "gpu_add");
 
         assert!(
-            !separated.device_code.contains("dummy_main"),
+            !separated.device_code.contains("auto main("),
             "the synthesized host function reached the device code:\n{}",
             separated.device_code
         );

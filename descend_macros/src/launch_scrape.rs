@@ -102,7 +102,7 @@ mod tests {
     /// parameter types give is the count Descend's own code generator emits.
     ///
     /// This runs the instantiation pipeline up to the generated CUDA, so it needs no
-    /// nvcc and no GPU.
+    /// CUDA compiler and no GPU.
     const SHARED_KERNEL: &str = r#"
 fn gpu_reduce<gs: nat, bs: nat, r1: prv, r2: prv, r3: prv>(
         vec: &r1 shrd gpu.global [i32; gs*bs],
