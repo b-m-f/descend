@@ -14,13 +14,11 @@ const FLAGS_ENVIRONMENT_VARIABLE: &str = "DESCEND_NVRTC_FLAGS";
 const HEADER_NAME: &str = "descend.cuh";
 const PROGRAM_NAME: &str = "descend_kernel.cu";
 
-/// The toolkit root, in precedence order.
+/// The toolkit root.
 ///
-/// `CUDA_PATH` is an ecosystem convention rather than a documented guarantee: NVIDIA's
-/// Linux installation guide for 13.2 names the `/usr/local/cuda` symbolic link as the
-/// toolkit location, reserves `CUDAToolkit_ROOT` for CMake, and defines no variable for
-/// the root itself. That gap is why this crate has one of its own.
-const TOOLKIT_ENVIRONMENT_VARIABLES: &[&str] = &["DESCEND_CUDA_PATH", "CUDA_PATH"];
+/// The same variable the `cuda-bindings` build script requires, so one build resolves
+/// one toolkit: the driver bindings and NVRTC cannot come from different places.
+const TOOLKIT_ENVIRONMENT_VARIABLE: &str = "CUDA_TOOLKIT_PATH";
 
 const LIBRARY_DIRECTORIES: &[&str] = &["lib", "lib64"];
 const LIBRARY_NAMES: &[&str] = &["libnvrtc.so", "libnvrtc.so.13", "libnvrtc.so.12"];
@@ -28,7 +26,6 @@ const LIBRARY_NAMES: &[&str] = &["libnvrtc.so", "libnvrtc.so.13", "libnvrtc.so.1
 type ResultCode = c_int;
 type Program = *mut c_void;
 
-type VersionFn = unsafe extern "C" fn(*mut c_int, *mut c_int) -> ResultCode;
 type CreateProgramFn = unsafe extern "C" fn(
     *mut Program,
     *const c_char,
@@ -49,20 +46,9 @@ type GetErrorStringFn = unsafe extern "C" fn(ResultCode) -> *const c_char;
 pub struct Toolchain {
     library_path: PathBuf,
     options: Vec<String>,
-    version: String,
 }
 
 impl Toolchain {
-    pub fn options(&self) -> &[String] {
-        &self.options
-    }
-
-    /// The compiler version, which belongs in the PTX cache key: the same source under a
-    /// different NVRTC is different PTX.
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
     pub fn compile(&self, device_code: &str, header: &str) -> Result<String, MacroError> {
         let nvrtc = Nvrtc::load(&self.library_path)?;
         nvrtc.compile(device_code, HEADER_NAME, header, &self.options)
@@ -88,49 +74,46 @@ pub fn toolchain() -> Result<&'static Toolchain, MacroError> {
 }
 
 fn discover() -> Result<Toolchain, MacroError> {
-    let (root, named_by) = toolkit_root(|name| std::env::var_os(name))?;
+    let root = toolkit_root(|name| std::env::var_os(name))?;
 
     let library_path = find_library(&root)?;
     let include_path = root.join("include");
     if !include_path.is_dir() {
         return Err(format!(
-            "{named_by} points at {}, which has no include/ directory, so NVRTC could not \
-             resolve the CUDA headers descend.cuh includes",
+            "{TOOLKIT_ENVIRONMENT_VARIABLE} points at {}, which has no include/ directory, so \
+             NVRTC could not resolve the CUDA headers descend.cuh includes",
             root.display()
         )
         .into());
     }
 
-    let version = Nvrtc::load(&library_path)?.version()?;
     let options = resolve_options(&include_path)?;
 
     Ok(Toolchain {
         library_path,
         options,
-        version,
     })
 }
 
-/// The toolkit root the environment names, and which variable named it.
+/// The toolkit root the environment names.
 ///
-/// The lookup is a parameter so the precedence can be tested without touching the
-/// process environment, which the rest of the test run reads.
+/// The lookup is a parameter so the refusal can be tested without touching the process
+/// environment, which the rest of the test run reads.
 fn toolkit_root(
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> Result<(PathBuf, &'static str), MacroError> {
-    for name in TOOLKIT_ENVIRONMENT_VARIABLES {
-        if let Some(value) = lookup(name).filter(|value| !value.is_empty()) {
-            return Ok((PathBuf::from(value), name));
-        }
-    }
-
-    Err(format!(
-        "neither {} is set, so the CUDA toolkit cannot be located. Set one of them to the \
-         toolkit root -- the directory holding both lib/libnvrtc.so and include/ -- as in \
-         DESCEND_CUDA_PATH=/usr/local/cuda",
-        TOOLKIT_ENVIRONMENT_VARIABLES.join(", ")
-    )
-    .into())
+) -> Result<PathBuf, MacroError> {
+    lookup(TOOLKIT_ENVIRONMENT_VARIABLE)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            format!(
+                "{TOOLKIT_ENVIRONMENT_VARIABLE} is not set, so the CUDA toolkit cannot be \
+                 located. Set it to the toolkit root -- the directory holding both \
+                 lib/libnvrtc.so and include/ -- as in \
+                 {TOOLKIT_ENVIRONMENT_VARIABLE}=/usr/local/cuda"
+            )
+            .into()
+        })
 }
 
 fn find_library(root: &Path) -> Result<PathBuf, MacroError> {
@@ -229,7 +212,6 @@ fn probe_architecture() -> Result<String, MacroError> {
 }
 
 struct Nvrtc {
-    version: VersionFn,
     create_program: CreateProgramFn,
     compile_program: CompileProgramFn,
     get_ptx_size: GetPtxSizeFn,
@@ -251,7 +233,6 @@ impl Nvrtc {
             .map_err(|error| format!("could not load {}: {error}", path.display()))?;
 
         Ok(Nvrtc {
-            version: bind(&library, path, "nvrtcVersion")?,
             create_program: bind(&library, path, "nvrtcCreateProgram")?,
             compile_program: bind(&library, path, "nvrtcCompileProgram")?,
             get_ptx_size: bind(&library, path, "nvrtcGetPTXSize")?,
@@ -262,17 +243,6 @@ impl Nvrtc {
             get_error_string: bind(&library, path, "nvrtcGetErrorString")?,
             _library: library,
         })
-    }
-
-    fn version(&self) -> Result<String, MacroError> {
-        let mut major = 0;
-        let mut minor = 0;
-        // SAFETY: two out-parameters, written on success and read only then.
-        let result = unsafe { (self.version)(&mut major, &mut minor) };
-        if result != SUCCESS {
-            return Err(self.failure("nvrtcVersion", result));
-        }
-        Ok(format!("{major}.{minor}"))
     }
 
     fn compile(
@@ -519,7 +489,7 @@ mod tests {
         );
     }
 
-    /// A stand-in for the process environment, so the precedence can be tested without
+    /// A stand-in for the process environment, so the refusal can be tested without
     /// setting variables the rest of the test run reads.
     fn environment(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
         let owned: Vec<(String, OsString)> = entries
@@ -536,49 +506,30 @@ mod tests {
     }
 
     #[test]
-    fn the_project_variable_wins_over_the_ecosystem_one() {
-        let (root, named_by) = toolkit_root(environment(&[
-            ("DESCEND_CUDA_PATH", "/chosen"),
-            ("CUDA_PATH", "/ignored"),
-        ]))
+    fn the_toolkit_root_is_the_one_the_environment_names() {
+        let root = toolkit_root(environment(&[(
+            TOOLKIT_ENVIRONMENT_VARIABLE,
+            "/usr/local/cuda",
+        )]))
         .expect("a toolkit must be found");
 
-        assert_eq!(root, PathBuf::from("/chosen"));
-        assert_eq!(named_by, "DESCEND_CUDA_PATH");
-    }
-
-    #[test]
-    fn the_ecosystem_variable_is_used_when_the_project_one_is_absent() {
-        let (root, named_by) = toolkit_root(environment(&[("CUDA_PATH", "/usr/local/cuda")]))
-            .expect("a toolkit must be found");
-
         assert_eq!(root, PathBuf::from("/usr/local/cuda"));
-        assert_eq!(named_by, "CUDA_PATH");
     }
 
     #[test]
     fn an_empty_value_counts_as_absent() {
-        let (root, named_by) = toolkit_root(environment(&[
-            ("DESCEND_CUDA_PATH", ""),
-            ("CUDA_PATH", "/usr/local/cuda"),
-        ]))
-        .expect("a toolkit must be found");
-
-        assert_eq!(root, PathBuf::from("/usr/local/cuda"));
-        assert_eq!(named_by, "CUDA_PATH");
+        assert!(toolkit_root(environment(&[(TOOLKIT_ENVIRONMENT_VARIABLE, "")])).is_err());
     }
 
-    /// A reader who has set neither has to be told which names would have worked.
+    /// The first failure a reader hits, so it has to name the variable to set.
     #[test]
-    fn no_toolkit_variable_names_every_one_that_was_tried() {
+    fn a_missing_toolkit_names_the_variable_to_set() {
         let error = toolkit_root(environment(&[])).unwrap_err();
 
-        for name in TOOLKIT_ENVIRONMENT_VARIABLES {
-            assert!(
-                error.message.contains(name),
-                "`{name}` is missing from: {}",
-                error.message
-            );
-        }
+        assert!(
+            error.message.contains(TOOLKIT_ENVIRONMENT_VARIABLE),
+            "{}",
+            error.message
+        );
     }
 }

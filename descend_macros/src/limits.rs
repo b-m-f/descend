@@ -56,5 +56,6 @@ pub const MAX_GRID_DIM_Z: u32 = 65535;
 ///
 /// The dynamic shared memory a launch may request without opting in through
 /// `cuFuncSetAttribute`. 48 KiB on every architecture; see the module documentation for
-/// why the opt-in ceiling is not what is checked here.
-pub const MAX_SHARED_MEMORY_BYTES: u64 = 49152;
+/// why the opt-in ceiling is not what is checked here. The count is checked against this
+/// by [`crate::shared_memory::SharedMemoryBytes`].
+pub const MAX_SHARED_MEMORY_BYTES: u32 = 49152;

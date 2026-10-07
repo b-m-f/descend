@@ -41,12 +41,9 @@
 //!
 //! | Variable | Effect |
 //! |---|---|
-//! | `CUDA_PATH` | The fallback toolkit root, used when `DESCEND_CUDA_PATH` is unset. NVIDIA documents neither name for Linux at 13.2 -- its installation guide points at the `/usr/local/cuda` symbolic link instead -- so one of the two has to be set explicitly, which is what `flake.nix` does. |
-//! | `DESCEND_CUDA_PATH` | The CUDA toolkit root, holding both `lib/libnvrtc.so` and `include/`. NVRTC is loaded from it, and its `include/` is what lets the CUDA headers `descend.cuh` needs resolve. Takes precedence over `CUDA_PATH`. |
-//! | `DESCEND_DEBUG` | Print the rendered Descend source, the generated CUDA, and the PTX cache decisions to stderr. |
+//! | `CUDA_TOOLKIT_PATH` | Required. The CUDA toolkit root, holding both `lib/libnvrtc.so` and `include/`. NVRTC is loaded from it, and its `include/` is what lets the CUDA headers `descend.cuh` needs resolve. It is also what the `cuda-bindings` build script requires, so one build resolves one toolkit. |
+//! | `DESCEND_DEBUG` | Print the rendered Descend source and the generated CUDA to stderr. |
 //! | `DESCEND_NVRTC_FLAGS` | Extra options for NVRTC. Without an `-arch=`, one is detected through `nvidia-smi`. |
-//! | `DESCEND_NO_CACHE` | Compile every kernel, ignoring and not writing the PTX cache. |
-//! | `DESCEND_PTX_CACHE` | Where to keep the PTX cache. See `ptx_cache::cache_directory` for the search order; in practice it lands in `~/.cache/descend/ptx`, because Cargo does not set `CARGO_TARGET_DIR` for a proc macro. |
 
 extern crate proc_macro;
 
@@ -68,7 +65,7 @@ mod launch_scrape;
 mod limits;
 mod nat;
 mod nvrtc;
-mod ptx_cache;
+mod shared_memory;
 mod source;
 mod specialize;
 mod spell;

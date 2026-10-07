@@ -3,22 +3,12 @@ use crate::diag::MacroError;
 use crate::kernel::{Kernel, KernelParameter};
 use crate::limits;
 use crate::nat::{eval_dimensions, Dimensions};
+use crate::shared_memory::SharedMemoryBytes;
 
 pub fn check_kernel(kernel: &Kernel) -> Result<LaunchConfig, MacroError> {
     check_shared_parameter_order(kernel)?;
 
     let shared_memory_bytes = shared_memory_bytes(kernel)?;
-    if shared_memory_bytes > limits::MAX_SHARED_MEMORY_BYTES {
-        return Err(MacroError::at(
-            format!(
-                "kernel `{}` requests {shared_memory_bytes} bytes of dynamic shared memory, above \
-                 the {} KiB a launch may request without opting in through cuFuncSetAttribute",
-                kernel.function_name,
-                limits::MAX_SHARED_MEMORY_BYTES / 1024
-            ),
-            kernel.name_span,
-        ));
-    }
 
     let evaluate = |expression, axis| {
         eval_dimensions(expression).map_err(|error| {
@@ -179,7 +169,7 @@ fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
 /// This is the macro's own answer, not one read back out of the generated CUDA. The
 /// agreement between the two is pinned by
 /// `launch_scrape::tests::the_typed_count_agrees_with_the_generated_launch`.
-pub fn shared_memory_bytes(kernel: &Kernel) -> Result<u64, MacroError> {
+pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroError> {
     let function = &kernel.function_name;
     let mut total: u64 = 0;
 
@@ -213,7 +203,16 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<u64, MacroError> {
         total += u64::from(element_bytes) * elements;
     }
 
-    Ok(total)
+    SharedMemoryBytes::new(total).ok_or_else(|| {
+        MacroError::at(
+            format!(
+                "kernel `{function}` requests {total} bytes of dynamic shared memory, above the \
+                 {} KiB a launch may request without opting in through cuFuncSetAttribute",
+                limits::MAX_SHARED_MEMORY_BYTES / 1024
+            ),
+            kernel.name_span,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -354,7 +353,7 @@ mod tests {
             shared_parameter("right", ScalarKind::Bool, 256),
         ]);
         // 256 f64 is 2048 bytes; 256 bool is 256.
-        assert_eq!(shared_memory_bytes(&kernel).unwrap(), 2048 + 256);
+        assert_eq!(shared_memory_bytes(&kernel).unwrap().value(), 2048 + 256);
     }
 
     #[test]
@@ -387,6 +386,18 @@ mod tests {
     #[test]
     fn a_kernel_with_no_shared_parameters_requests_no_shared_memory() {
         let kernel = kernel_with(vec![global_parameter("vec")]);
-        assert_eq!(shared_memory_bytes(&kernel).unwrap(), 0);
+        assert_eq!(shared_memory_bytes(&kernel).unwrap().value(), 0);
+    }
+
+    /// The ceiling is a constant in `limits`, but the refusal is this function's: a count
+    /// above it never becomes a `SharedMemoryBytes`, so no launch can be emitted for it.
+    #[test]
+    fn a_shared_request_above_the_portable_ceiling_is_refused() {
+        let kernel = kernel_with(vec![shared_parameter("big", ScalarKind::I32, 16384)]);
+        let error = shared_memory_bytes(&kernel).unwrap_err();
+
+        assert!(error.message.contains("65536 bytes"), "{error}");
+        assert!(error.message.contains("48 KiB"), "{error}");
+        assert!(error.message.contains("`gpu_k`"), "{error}");
     }
 }

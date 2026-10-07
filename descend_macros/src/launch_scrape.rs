@@ -174,7 +174,11 @@ fn gpu_reduce<gs: nat, bs: nat, r1: prv, r2: prv, r3: prv>(
             .expect("fixture must extract");
 
         let typed = crate::check::shared_memory_bytes(&kernel).expect("typed count");
-        assert_eq!(typed, 64 * 4, "a shared [i32; 64] tile is 256 bytes");
+        assert_eq!(
+            typed.value(),
+            64 * 4,
+            "a shared [i32; 64] tile is 256 bytes"
+        );
 
         let program = format!(
             "{}\n{}",
@@ -185,7 +189,7 @@ fn gpu_reduce<gs: nat, bs: nat, r1: prv, r2: prv, r3: prv>(
 
         assert_eq!(
             scraped_shared_memory_bytes(&cpp.host_code),
-            Ok(typed),
+            Ok(u64::from(typed.value())),
             "the generated launch disagrees with the parameter types:\n{}",
             cpp.host_code
         );
