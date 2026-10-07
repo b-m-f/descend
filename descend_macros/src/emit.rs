@@ -86,7 +86,7 @@ pub fn generate_launch_function(
     let shared_memory_bytes = Literal::u32_unsuffixed(launch.shared_memory_bytes.value());
 
     Ok(quote! {
-        pub fn #kernel_ident(
+        fn #kernel_ident(
             #(#parameters),*
         ) -> ::core::result::Result<(), ::descend_host::error::HostError> {
             const PTX_SOURCE: &str = #ptx_source;

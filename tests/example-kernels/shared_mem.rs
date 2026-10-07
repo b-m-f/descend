@@ -141,7 +141,7 @@ fn test_two_shared_tiles_of_different_element_sizes() {
 // Sizes fixed where the kernel is defined change nothing about how it is launched:
 // it is instantiated like any other kernel. The 64 `i32` elements it asks for in
 // shared memory are derived by the macro; `shared_mem_bytes` in
-// `descend_macros::shared_mem` covers that derivation directly.
+// `shared_mem` covers that derivation directly.
 descend! {
     fn gpu_shared_copy<r1: prv, r2: prv>(
         vec: &r1 uniq gpu.global [i32; 64],
