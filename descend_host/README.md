@@ -9,13 +9,13 @@ facade in `src/backend.rs`.
 ## Running the tests
 
 The tests need an NVIDIA driver, a GPU, and a CUDA toolkit: the procedural macro loads
-NVRTC from it. `DESCEND_CUDA_PATH`, or `CUDA_PATH` when that is unset, has to name the
-toolkit root -- the directory holding both `lib/libnvrtc.so` and `include/`. The target
-architecture is probed from `nvidia-smi`; `DESCEND_NVRTC_FLAGS=-arch=compute_86`
-overrides it.
+NVRTC from it. `CUDA_TOOLKIT_PATH` has to name the toolkit root -- the directory holding
+both `lib/libnvrtc.so` and `include/` -- and is the same variable the `cuda-bindings`
+build script requires. The target architecture is probed from `nvidia-smi`;
+`DESCEND_NVRTC_FLAGS=-arch=compute_86` overrides it.
 
 ```bash
-DESCEND_CUDA_PATH=/usr/local/cuda cargo test --locked --offline -p descend_host
+CUDA_TOOLKIT_PATH=/usr/local/cuda cargo test --locked --offline -p descend_host
 ```
 
 The compile-fail fixtures in `tests/host_api_safety/` run through `trybuild`.

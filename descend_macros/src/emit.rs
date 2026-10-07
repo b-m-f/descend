@@ -83,17 +83,7 @@ pub fn generate_launch_function(
 
     let (grid_x, grid_y, grid_z) = (launch.grid.x, launch.grid.y, launch.grid.z);
     let (block_x, block_y, block_z) = (launch.block.x, launch.block.y, launch.block.z);
-    let shared_memory_bytes =
-        Literal::u32_unsuffixed(u32::try_from(launch.shared_memory_bytes).map_err(|_| {
-            MacroError::at(
-                format!(
-                "kernel `{kernel_name}` requests {} bytes of shared memory, more than a launch can \
-                     express",
-                    launch.shared_memory_bytes
-                ),
-                kernel.name_span,
-            )
-        })?);
+    let shared_memory_bytes = Literal::u32_unsuffixed(launch.shared_memory_bytes.value());
 
     Ok(quote! {
         pub fn #kernel_ident(

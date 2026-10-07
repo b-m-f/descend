@@ -1,29 +1,10 @@
 use crate::artifact::Ptx;
 use crate::diag::MacroError;
 use crate::nvrtc;
-use crate::ptx_cache::{cached_ptx, store_ptx, CacheKey};
 
 pub fn assemble(cpp: &str, kernel_name: &str) -> Result<Ptx, MacroError> {
     let toolchain = nvrtc::toolchain()?;
-    let key = CacheKey {
-        device_code: cpp,
-        header: descend::DESCEND_CUH,
-        options: toolchain.options(),
-        compiler_version: toolchain.version(),
-    };
-
-    let ptx_text = match cached_ptx(&key) {
-        Some(cached) => {
-            debug!("PTX cache hit for {}", kernel_name);
-            cached
-        }
-        None => {
-            let ptx_text = toolchain.compile(cpp, descend::DESCEND_CUH)?;
-            store_ptx(&key, &ptx_text);
-            ptx_text
-        }
-    };
-
+    let ptx_text = toolchain.compile(cpp, descend::DESCEND_CUH)?;
     let entry = find_entry_symbol(&ptx_text, kernel_name)?;
 
     Ok(Ptx {
