@@ -1,15 +1,16 @@
 #ifndef DESCEND_DESCEND_CUH
 #define DESCEND_DESCEND_CUH
-#include <cstdint>
-
-#include <array>
+// should work with both compilers
 #include <cooperative_groups.h>
 #include <cuda/atomic>
-#include <iostream>
-#include <sstream>
+#include <cuda/std/array>
+#include <cuda/std/cstdint>
 #include <thrust/tuple.h>
-#include <vector>
 
+// probably only works with nvcc and is also only required for host code
+// #include <iostream>
+// #include <sstream>
+// #include <vector>
 #define CHECK_CUDA_ERR(err)                                                    \
   {                                                                            \
     check_cuda_err((err), __FILE__, __LINE__);                                 \
