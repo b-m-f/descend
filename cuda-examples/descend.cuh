@@ -1,52 +1,48 @@
 #ifndef DESCEND_DESCEND_CUH
 #define DESCEND_DESCEND_CUH
-
-#ifndef __CUDACC_RTC__
 #include <cstdint>
+
 #include <array>
-#include <thrust/tuple.h>
+#include <cooperative_groups.h>
+#include <cuda/atomic>
 #include <iostream>
 #include <sstream>
+#include <thrust/tuple.h>
 #include <vector>
-#endif
 
-// We assume nvrtc include path provides these
-#include <cuda/atomic>
-#include <cooperative_groups.h>
-
-#ifndef __CUDACC_RTC__
-#define CHECK_CUDA_ERR(err) { check_cuda_err((err), __FILE__, __LINE__); }
-inline void check_cuda_err(const cudaError_t err, const char * const file, const int line) {
-    if (err != cudaSuccess) {
-        std::cerr << "Cuda Error: " << cudaGetErrorString(err) << " "  << file << " " << line << std::endl;
-        exit(err);
-    }
+#define CHECK_CUDA_ERR(err)                                                    \
+  {                                                                            \
+    check_cuda_err((err), __FILE__, __LINE__);                                 \
+  }
+inline void check_cuda_err(const cudaError_t err, const char *const file,
+                           const int line) {
+  if (err != cudaSuccess) {
+    std::cerr << "Cuda Error: " << cudaGetErrorString(err) << " " << file << " "
+              << line << std::endl;
+    exit(err);
+  }
 }
-#endif
 
 template <int First, int Last, typename Lambda>
-__host__ __device__ inline void static_for(Lambda const& f)
-{
-#ifndef __CUDACC_RTC__
-    if constexpr (First < Last)
-    {
-        f(std::integral_constant<int, First>{});
-        static_for<First + 1, Last>(f);
-    }
-#endif
+inline void static_for(Lambda const &f) {
+  if constexpr (First < Last) {
+    f(std::integral_constant<int, First>{});
+    static_for<First + 1, Last>(f);
+  }
 }
-
 
 //
 // Define BENCH in order to enable benchmarking (of kernels).
-// If BENCH is defined, the file that is including this header must define the variable `benchmark`.
-// A `Benchmark` is created by supplying a configuration `BenchConfig`, that includes the names of all the kernels
-//  that are executed in a single run. The names of the kernels have to be specified in the order of the kernel calls.
+// If BENCH is defined, the file that is including this header must define the
+// variable `benchmark`. A `Benchmark` is created by supplying a configuration
+// `BenchConfig`, that includes the names of all the kernels
+//  that are executed in a single run. The names of the kernels have to be
+//  specified in the order of the kernel calls.
 // `benchmark` will hold all measurements.
 //
 #ifdef BENCH
 namespace descend {
-    class Benchmark;
+class Benchmark;
 };
 extern descend::Benchmark benchmark;
 #endif
@@ -55,184 +51,163 @@ namespace descend {
 #ifdef BENCH
 class Timing {
 private:
-    cudaEvent_t begin_, end_;
+  cudaEvent_t begin_, end_;
 
 public:
-    Timing() {
-        CHECK_CUDA_ERR( cudaEventCreate(&begin_) );
-        CHECK_CUDA_ERR( cudaEventCreate(&end_) );
-    }
+  Timing() {
+    CHECK_CUDA_ERR(cudaEventCreate(&begin_));
+    CHECK_CUDA_ERR(cudaEventCreate(&end_));
+  }
 
-    auto time_in_ms() const -> float {
-        float time;
-        CHECK_CUDA_ERR( cudaEventElapsedTime(&time, begin_, end_) );
-        return time;
-    }
+  auto time_in_ms() const -> float {
+    float time;
+    CHECK_CUDA_ERR(cudaEventElapsedTime(&time, begin_, end_));
+    return time;
+  }
 
-    auto record_begin() -> void { CHECK_CUDA_ERR( cudaEventRecord(begin_) )}
-    auto record_end() -> void { CHECK_CUDA_ERR( cudaEventRecord(end_) )}
+  auto record_begin() -> void { CHECK_CUDA_ERR(cudaEventRecord(begin_)) }
+  auto record_end() -> void { CHECK_CUDA_ERR(cudaEventRecord(end_)) }
 
-    auto begin() const -> cudaEvent_t { return begin_; }
-    auto end() const -> cudaEvent_t { return end_; }
+  auto begin() const -> cudaEvent_t { return begin_; }
+  auto end() const -> cudaEvent_t { return end_; }
 };
 
 class BenchRun {
 private:
-    size_t num_kernels_;
-    std::vector<Timing> timings_;
+  size_t num_kernels_;
+  std::vector<Timing> timings_;
 
 public:
-    BenchRun(size_t num_kernels): num_kernels_{num_kernels} {}
+  BenchRun(size_t num_kernels) : num_kernels_{num_kernels} {}
 
-    auto insert_timing(Timing t) -> void {
-        if (timings_.size() < num_kernels_)
-            timings_.push_back(t);
-        else
-            throw std::logic_error("Trying to add timing for non-specified kernel.");
-    }
+  auto insert_timing(Timing t) -> void {
+    if (timings_.size() < num_kernels_)
+      timings_.push_back(t);
+    else
+      throw std::logic_error("Trying to add timing for non-specified kernel.");
+  }
 
-    // Compute runtime as time from beginning of first kernel execution to end of last
-    auto full_runtime_in_ms() const -> float {
-        float time = 0;
-        CHECK_CUDA_ERR( cudaEventElapsedTime(&time, timings_.front().begin(), timings_.back().end()) );
-        return time;
-    }
+  // Compute runtime as time from beginning of first kernel execution to end of
+  // last
+  auto full_runtime_in_ms() const -> float {
+    float time = 0;
+    CHECK_CUDA_ERR(cudaEventElapsedTime(&time, timings_.front().begin(),
+                                        timings_.back().end()));
+    return time;
+  }
 
-    auto is_finished() const -> bool {
-        return timings_.size() == num_kernels_;
-    }
+  auto is_finished() const -> bool { return timings_.size() == num_kernels_; }
 
-    auto kernel_runtimes_in_ms() const -> std::vector<float> {
-        std::vector<float> ts;
-        for (const auto& t : timings_) {
-            ts.push_back(t.time_in_ms());
-        }
-        return ts;
+  auto kernel_runtimes_in_ms() const -> std::vector<float> {
+    std::vector<float> ts;
+    for (const auto &t : timings_) {
+      ts.push_back(t.time_in_ms());
     }
+    return ts;
+  }
 
-    auto csv_line() const -> std::string {
-        std::stringstream sstr;
-        for (const auto t : kernel_runtimes_in_ms()) {
-             sstr << t << ", ";
-        }
-        sstr << full_runtime_in_ms() << std::endl;
-        return sstr.str();
+  auto csv_line() const -> std::string {
+    std::stringstream sstr;
+    for (const auto t : kernel_runtimes_in_ms()) {
+      sstr << t << ", ";
     }
+    sstr << full_runtime_in_ms() << std::endl;
+    return sstr.str();
+  }
 };
 
 class BenchConfig {
 private:
-    std::vector<std::string> kernel_idents_;
+  std::vector<std::string> kernel_idents_;
 
 public:
-    BenchConfig(std::initializer_list<std::string> kernel_idents): kernel_idents_(kernel_idents) {}
-    BenchConfig(size_t num_kernels){
-        for (int i = 0; i < num_kernels; i++){
-            std::stringstream ss;
-            ss << "kernel_" << i;
-            kernel_idents_.push_back(ss.str());
-        }
+  BenchConfig(std::initializer_list<std::string> kernel_idents)
+      : kernel_idents_(kernel_idents) {}
+  BenchConfig(std::size_t num_kernels) {
+    for (int i = 0; i < num_kernels; i++) {
+      std::stringstream ss;
+      ss << "kernel_" << i;
+      kernel_idents_.push_back(ss.str());
     }
-    auto num_kernels() const -> size_t {
-        return kernel_idents_.size();
-    }
+  }
+  auto num_kernels() const -> size_t { return kernel_idents_.size(); }
 
-    auto get_kernel_idents() const -> std::vector<std::string> {
-        return kernel_idents_;
-    }
+  auto get_kernel_idents() const -> std::vector<std::string> {
+    return kernel_idents_;
+  }
 };
 
 class Benchmark {
 private:
-    BenchConfig cfg_;
-    std::vector<BenchRun> runs_;
+  BenchConfig cfg_;
+  std::vector<BenchRun> runs_;
 
-    auto csv_header() const -> std::string {
-        std::stringstream sstr;
-        for (const auto& ident : cfg_.get_kernel_idents()) {
-            sstr << "kernel:" << ident << ", ";
-        }
-        sstr << "Total kernel runtime" << std::endl;
-        return sstr.str();
+  auto csv_header() const -> std::string {
+    std::stringstream sstr;
+    for (const auto &ident : cfg_.get_kernel_idents()) {
+      sstr << "kernel:" << ident << ", ";
     }
+    sstr << "Total kernel runtime" << std::endl;
+    return sstr.str();
+  }
 
 public:
-    Benchmark(BenchConfig cfg): cfg_{cfg} {
-        runs_.push_back(BenchRun{cfg_.num_kernels()});
+  Benchmark(BenchConfig cfg) : cfg_{cfg} {
+    runs_.push_back(BenchRun{cfg_.num_kernels()});
+  }
+
+  auto current_run() -> BenchRun & {
+    BenchRun &current = runs_.back();
+    if (current.is_finished()) {
+      runs_.push_back(BenchRun{cfg_.num_kernels()});
+    }
+    return runs_.back();
+  }
+
+  auto to_csv() const -> std::string {
+    std::stringstream sstr;
+    sstr << csv_header();
+    for (const auto &r : runs_) {
+      sstr << r.csv_line();
+    }
+    return sstr.str();
+  }
+
+  // The last value in the result vector is the average total time
+  auto avg_kernel_timings() const -> std::vector<float> {
+    std::vector<float> avg_timings(cfg_.num_kernels() + 1);
+    for (const auto &r : runs_) {
+      auto iter = avg_timings.begin();
+      for (const auto &t : r.kernel_runtimes_in_ms()) {
+        *iter += t;
+        iter++;
+      }
+      avg_timings.back() += r.full_runtime_in_ms();
+    }
+    for (auto &avg_t : avg_timings) {
+      avg_t = avg_t / runs_.size();
     }
 
-    auto current_run() -> BenchRun& {
-        BenchRun& current = runs_.back();
-        if (current.is_finished()) {
-            runs_.push_back(BenchRun{cfg_.num_kernels()});
-        }
-        return runs_.back();
-    }
+    return avg_timings;
+  }
 
-    auto to_csv() const -> std::string {
-        std::stringstream sstr;
-        sstr << csv_header();
-        for (const auto& r : runs_) {
-            sstr << r.csv_line();
-        }
-        return sstr.str();
+  auto avg_to_csv() const -> std::string {
+    std::stringstream sstr;
+    sstr << csv_header();
+    for (const auto &avg : avg_kernel_timings()) {
+      sstr << avg << ", ";
     }
+    sstr << std::endl;
+    return sstr.str();
+  }
 
-    // The last value in the result vector is the average total time
-    auto avg_kernel_timings() const -> std::vector<float> {
-        std::vector<float> avg_timings(cfg_.num_kernels() + 1);
-        for (const auto& r : runs_) {
-            auto iter = avg_timings.begin();
-            for (const auto& t : r.kernel_runtimes_in_ms()) {
-                *iter += t;
-                iter++;
-            }
-            avg_timings.back() += r.full_runtime_in_ms();
-        }
-        for (auto& avg_t: avg_timings) {
-            avg_t = avg_t / runs_.size();
-        }
-
-        return avg_timings;
-    }
-
-    auto avg_to_csv() const -> std::string {
-        std::stringstream sstr;
-        sstr << csv_header();
-        for (const auto& avg : avg_kernel_timings()) {
-            sstr << avg << ", ";
-        }
-        sstr << std::endl;
-        return sstr.str();
-    }
-
-    auto reset() {
-        runs_.clear();
-        runs_.push_back(BenchRun{cfg_.num_kernels()});
-    }
+  auto reset() {
+    runs_.clear();
+    runs_.push_back(BenchRun{cfg_.num_kernels()});
+  }
 };
 #endif
 
-
-#ifdef __CUDACC_RTC__
-using i32 = int;
-using u8 = unsigned char;
-using u32 = unsigned int;
-using u64 = unsigned long long;
-using f32 = float;
-using f64 = double;
-using byte = unsigned char;
-
-template<typename T, size_t n>
-struct array {
-    T data_[n];
-    __host__ __device__ T& operator[](size_t idx) { return data_[idx]; }
-    __host__ __device__ const T& operator[](size_t idx) const { return data_[idx]; }
-};
-
-template<typename ... Types>
-struct tuple {};
-#else
 using i32 = std::int32_t;
 extern const i32 NO_ERROR = -1;
 using u8 = std::uint8_t;
@@ -244,329 +219,295 @@ using f64 = double;
 static_assert(sizeof(f64) == 8);
 using byte = std::uint8_t;
 
-template<typename T, size_t n>
-using array = std::array<T, n>;
+template <typename T, std::size_t n> using array = std::array<T, n>;
 
-template<typename ... Types>
-using tuple = thrust::tuple<Types...>;
-#endif
+template <typename... Types> using tuple = thrust::tuple<Types...>;
 
-
-template<typename T>
+template <typename T>
 using atomic_ref = cuda::atomic_ref<T, cuda::thread_scope_device>;
 
 using Warp = cooperative_groups::thread_block_tile<32>;
 
-#ifndef __CUDACC_RTC__
-template<typename T>
-constexpr auto size_in_bytes() -> size_t {
-    return sizeof(T);
+template <typename T> constexpr auto size_in_bytes() -> std::size_t {
+  return sizeof(T);
 };
 
-template<
-template<typename, typename> typename Array,
-typename E
->
-constexpr auto size_in_bytes< Array<E,size_t> >() -> size_t {
-    return std::tuple_size<Array<E, size_t>>::value * size_in_bytes<E>();
+template <template <typename, typename> typename Array, typename E>
+constexpr auto size_in_bytes<Array<E, std::size_t>>() -> std::size_t {
+  return std::tuple_size<Array<E, std::size_t>>::value * size_in_bytes<E>();
 };
 
-template<
-template<typename ...> typename Tuple,
-typename Head, typename ... Tail
->
-constexpr auto size_in_bytes< Tuple<Head, Tail...> >() -> size_t {
-    return size_in_bytes<Head>() + size_in_bytes<Tail ...>();
-};
-#endif
-
-#ifndef __CUDACC_RTC__
-enum Memory {
-    CpuHeap,
-    GpuGlobal
+template <template <typename...> typename Tuple, typename Head,
+          typename... Tail>
+constexpr auto size_in_bytes<Tuple<Head, Tail...>>() -> std::size_t {
+  return size_in_bytes<Head>() + size_in_bytes<Tail...>();
 };
 
-template<Memory mem, typename DescendType>
-class Buffer;
+enum Memory { CpuHeap, GpuGlobal };
 
-
+template <Memory mem, typename DescendType> class Buffer;
 
 // TODO remove copy constructor, assign constructor and add move constructor
 using Gpu = size_t;
 
-Gpu gpu_device(size_t device_id) {
-    return device_id;
-};
+Gpu gpu_device(size_t device_id) { return device_id; };
 
-
-template<typename DescendType>
-class Buffer<Memory::CpuHeap, DescendType> {
-    DescendType * const ptr_;
+template <typename DescendType> class Buffer<Memory::CpuHeap, DescendType> {
+  DescendType *const ptr_;
 
 public:
-    static constexpr size_t size = size_in_bytes<DescendType>;
+  static constexpr std::size_t size = size_in_bytes<DescendType>;
 
-    Buffer(const DescendType init_val) : ptr_{new DescendType(init_val)} {}
-    Buffer(const DescendType * const __restrict__ init_ptr) : ptr_{new DescendType(*init_ptr)} {}
-    ~Buffer() {
-        delete ptr_;
-    }
+  Buffer(const DescendType init_val) : ptr_{new DescendType(init_val)} {}
+  Buffer(const DescendType *const __restrict__ init_ptr)
+      : ptr_{new DescendType(*init_ptr)} {}
+  ~Buffer() { delete ptr_; }
 
-    auto operator&() -> DescendType * {
-        return ptr_;
-    }
+  auto operator&() -> DescendType * { return ptr_; }
 
-    auto operator&() const -> const DescendType * {
-        return ptr_;
-    }
+  auto operator&() const -> const DescendType * { return ptr_; }
 };
 
-template<typename DescendType, size_t n>
+template <typename DescendType, std::size_t n>
 class Buffer<Memory::CpuHeap, descend::array<DescendType, n>> {
-    descend::array<DescendType, n> * const ptr_;
+  descend::array<DescendType, n> *const ptr_;
 
 public:
-    static constexpr size_t size = size_in_bytes<descend::array<DescendType, n>>();
+  static constexpr std::size_t size =
+      size_in_bytes<descend::array<DescendType, n>>();
 
-    Buffer(const DescendType default_value): ptr_{new descend::array<DescendType, n>} {
-        std::fill(ptr_->begin(), ptr_->end(), default_value);
-    }
+  Buffer(const DescendType default_value)
+      : ptr_{new descend::array<DescendType, n>} {
+    std::fill(ptr_->begin(), ptr_->end(), default_value);
+  }
 
-    Buffer(const descend::array<DescendType, n> init) : ptr_{new descend::array<DescendType, n>} {
-        std::copy(init.begin(), init.end(), ptr_->data());
-    }
+  Buffer(const descend::array<DescendType, n> init)
+      : ptr_{new descend::array<DescendType, n>} {
+    std::copy(init.begin(), init.end(), ptr_->data());
+  }
 
-    Buffer(const DescendType * const __restrict__ init_ptr) : ptr_{new descend::array<DescendType, n>} {
-        std::copy(init_ptr, init_ptr + size, ptr_->data());
-    }
-    ~Buffer() {
-        delete ptr_;
-    }
+  Buffer(const DescendType *const __restrict__ init_ptr)
+      : ptr_{new descend::array<DescendType, n>} {
+    std::copy(init_ptr, init_ptr + size, ptr_->data());
+  }
+  ~Buffer() { delete ptr_; }
 
-    auto operator&() -> DescendType * {
-        return ptr_->data();
-    }
+  auto operator&() -> DescendType * { return ptr_->data(); }
 
-    auto operator&() const -> const DescendType * {
-        return ptr_->data();
-    }
+  auto operator&() const -> const DescendType * { return ptr_->data(); }
 
-    DescendType& operator[](size_t idx) { return (*ptr_)[idx]; }
-    const DescendType& operator[](size_t idx) const { return (*ptr_)[idx]; }
+  DescendType &operator[](std::size_t idx) { return (*ptr_)[idx]; }
+  const DescendType &operator[](std::size_t idx) const { return (*ptr_)[idx]; }
 };
 
-template<typename DescendType>
-class Buffer<Memory::GpuGlobal, DescendType> {
-    const Gpu gpu_;
-    DescendType * dev_ptr_;
+template <typename DescendType> class Buffer<Memory::GpuGlobal, DescendType> {
+  const Gpu gpu_;
+  DescendType *dev_ptr_;
 
 public:
-    static constexpr size_t size = size_in_bytes<DescendType>();
+  static constexpr std::size_t size = size_in_bytes<DescendType>();
 
-    Buffer(const Gpu * const __restrict__ gpu, const DescendType * const __restrict__ init_ptr): gpu_{*gpu} {
-        CHECK_CUDA_ERR( cudaSetDevice(gpu_) );
-        CHECK_CUDA_ERR( cudaMalloc(&dev_ptr_, size) );
-        CHECK_CUDA_ERR( cudaMemcpy(dev_ptr_, init_ptr, size_in_bytes<DescendType>(), cudaMemcpyHostToDevice) );
-    }
+  Buffer(const Gpu *const __restrict__ gpu,
+         const DescendType *const __restrict__ init_ptr)
+      : gpu_{*gpu} {
+    CHECK_CUDA_ERR(cudaSetDevice(gpu_));
+    CHECK_CUDA_ERR(cudaMalloc(&dev_ptr_, size));
+    CHECK_CUDA_ERR(cudaMemcpy(dev_ptr_, init_ptr, size_in_bytes<DescendType>(),
+                              cudaMemcpyHostToDevice));
+  }
 
-    ~Buffer() {
-        CHECK_CUDA_ERR( cudaSetDevice(gpu_) );
-        CHECK_CUDA_ERR( cudaFree(dev_ptr_) );
-    }
+  ~Buffer() {
+    CHECK_CUDA_ERR(cudaSetDevice(gpu_));
+    CHECK_CUDA_ERR(cudaFree(dev_ptr_));
+  }
 
-    auto operator&() -> DescendType * {
-        return dev_ptr_;
-    }
+  auto operator&() -> DescendType * { return dev_ptr_; }
 
-    auto operator&() const -> const DescendType * {
-        return dev_ptr_;
-    }
+  auto operator&() const -> const DescendType * { return dev_ptr_; }
 };
 
-template<typename DescendType, size_t n>
+template <typename DescendType, std::size_t n>
 class Buffer<Memory::GpuGlobal, descend::array<DescendType, n>> {
-    const Gpu gpu_;
-    DescendType * dev_ptr_;
+  const Gpu gpu_;
+  DescendType *dev_ptr_;
 
 public:
-    static constexpr size_t size = size_in_bytes<array<DescendType, n>>();
+  static constexpr std::size_t size = size_in_bytes<array<DescendType, n>>();
 
-    Buffer(const Gpu * const __restrict__ gpu, const DescendType default_value): gpu_{*gpu} {
-        CHECK_CUDA_ERR( cudaSetDevice(gpu_) );
-        CHECK_CUDA_ERR( cudaMalloc(&dev_ptr_, size) );
-        CHECK_CUDA_ERR( cudaMemset(dev_ptr_, default_value, size));
-    }
+  Buffer(const Gpu *const __restrict__ gpu, const DescendType default_value)
+      : gpu_{*gpu} {
+    CHECK_CUDA_ERR(cudaSetDevice(gpu_));
+    CHECK_CUDA_ERR(cudaMalloc(&dev_ptr_, size));
+    CHECK_CUDA_ERR(cudaMemset(dev_ptr_, default_value, size));
+  }
 
-    Buffer(const Gpu * const __restrict__ gpu, const DescendType * const __restrict__ init_ptr) : gpu_{*gpu} {
-        CHECK_CUDA_ERR( cudaSetDevice(gpu_) );
-        CHECK_CUDA_ERR( cudaMalloc(&dev_ptr_, size) );
-        CHECK_CUDA_ERR( cudaMemcpy(dev_ptr_, init_ptr, size, cudaMemcpyHostToDevice) );
-    }
+  Buffer(const Gpu *const __restrict__ gpu,
+         const DescendType *const __restrict__ init_ptr)
+      : gpu_{*gpu} {
+    CHECK_CUDA_ERR(cudaSetDevice(gpu_));
+    CHECK_CUDA_ERR(cudaMalloc(&dev_ptr_, size));
+    CHECK_CUDA_ERR(
+        cudaMemcpy(dev_ptr_, init_ptr, size, cudaMemcpyHostToDevice));
+  }
 
-    ~Buffer() {
-        CHECK_CUDA_ERR( cudaSetDevice(gpu_) );
-        CHECK_CUDA_ERR( cudaFree(dev_ptr_) );
-    }
+  ~Buffer() {
+    CHECK_CUDA_ERR(cudaSetDevice(gpu_));
+    CHECK_CUDA_ERR(cudaFree(dev_ptr_));
+  }
 
-    auto operator&() -> DescendType * {
-        return dev_ptr_;
-    }
-    auto operator&() const -> const DescendType * {
-        return dev_ptr_;
-    }
+  auto operator&() -> DescendType * { return dev_ptr_; }
+  auto operator&() const -> const DescendType * { return dev_ptr_; }
 };
 
-template<typename DescendType>
+template <typename DescendType>
 using HeapBuffer = Buffer<Memory::CpuHeap, DescendType>;
 
-template<typename DescendType>
+template <typename DescendType>
 using GpuBuffer = Buffer<Memory::GpuGlobal, DescendType>;
 
-template<typename DescendType, typename PtrType>
-auto gpu_alloc_copy(const Gpu * const __restrict__ gpu, const PtrType * const __restrict__ init_ptr) -> GpuBuffer<DescendType>  {
-    return descend::GpuBuffer<DescendType>(gpu, init_ptr);
+template <typename DescendType, typename PtrType>
+auto gpu_alloc_copy(const Gpu *const __restrict__ gpu,
+                    const PtrType *const __restrict__ init_ptr)
+    -> GpuBuffer<DescendType> {
+  return descend::GpuBuffer<DescendType>(gpu, init_ptr);
 }
 
-template<typename DescendType, typename PtrTypeDev, typename PtrTypeHost>
-auto copy_to_host(const PtrTypeDev * const __restrict__ device_ptr, PtrTypeHost * const __restrict__ host_ptr) -> void {
-    CHECK_CUDA_ERR( cudaMemcpy(host_ptr, device_ptr, size_in_bytes<DescendType>(), cudaMemcpyDeviceToHost) );
+template <typename DescendType, typename PtrTypeDev, typename PtrTypeHost>
+auto copy_to_host(const PtrTypeDev *const __restrict__ device_ptr,
+                  PtrTypeHost *const __restrict__ host_ptr) -> void {
+  CHECK_CUDA_ERR(cudaMemcpy(host_ptr, device_ptr, size_in_bytes<DescendType>(),
+                            cudaMemcpyDeviceToHost));
 }
 
-template<typename DescendType, typename PtrTypeDev, typename PtrTypeHost>
-auto copy_to_gpu(PtrTypeDev * const __restrict__ device_ptr, const PtrTypeHost * const __restrict__ host_ptr) -> void {
-    CHECK_CUDA_ERR( cudaMemcpy(device_ptr, host_ptr, size_in_bytes<DescendType>(), cudaMemcpyHostToDevice) );
+template <typename DescendType, typename PtrTypeDev, typename PtrTypeHost>
+auto copy_to_gpu(PtrTypeDev *const __restrict__ device_ptr,
+                 const PtrTypeHost *const __restrict__ host_ptr) -> void {
+  CHECK_CUDA_ERR(cudaMemcpy(device_ptr, host_ptr, size_in_bytes<DescendType>(),
+                            cudaMemcpyHostToDevice));
 }
 
 template <typename F, typename... Args>
-__global__ void launch(F f, Args... args)
-{
-    f(args...);
+__global__ void launch(F f, Args... args) {
+  f(args...);
 }
 
 template <typename F, typename... Args>
-auto exec(dim3 num_blocks, dim3 num_threads, size_t shared_mem_bytes, F &&f, Args... args) -> void {
-    CHECK_CUDA_ERR( cudaSetDevice(gpu_device(0)) );
+auto exec(dim3 num_blocks, dim3 num_threads, std::size_t shared_mem_bytes,
+          F &&f, Args... args) -> void {
+  CHECK_CUDA_ERR(cudaSetDevice(gpu_device(0)));
 #ifdef BENCH
-    Timing timing{};
-    timing.record_begin();
+  Timing timing{};
+  timing.record_begin();
 #endif
-    launch<<<num_blocks, num_threads, shared_mem_bytes>>>(f, args...);
+  launch<<<num_blocks, num_threads, shared_mem_bytes>>>(f, args...);
 #ifdef BENCH
-    timing.record_end();
-    benchmark.current_run().insert_timing(timing);
+  timing.record_end();
+  benchmark.current_run().insert_timing(timing);
 #endif
-    CHECK_CUDA_ERR( cudaPeekAtLastError() );
-    CHECK_CUDA_ERR( cudaDeviceSynchronize() );
+  CHECK_CUDA_ERR(cudaPeekAtLastError());
+  CHECK_CUDA_ERR(cudaDeviceSynchronize());
 }
 
 // required to launch kernels that utilize grid synchronization
-template<size_t num_blocks, size_t num_threads, typename F, typename... Args>
-auto cooperative_exec(const descend::Gpu * const gpu, F &&f, Args... args) -> void {
-    CHECK_CUDA_ERR( cudaSetDevice(*gpu) );
-    // check if the GPU supports cooperative launches
-    int supports_coop_launch = 0;
-    CHECK_CUDA_ERR( cudaDeviceGetAttribute(&supports_coop_launch, cudaDevAttrCooperativeLaunch, *gpu) );
-    if (supports_coop_launch != 1){
-        std::cerr << "Error: GPU does not support cooperative launches!";
-        exit(EXIT_FAILURE);
-    }
-    // check whether the given grid/block dimensions guarantee co-residency of all blocks on the GPU
-    // (needed for grid synchronization)
-    int max_blocks_per_sm = 0;
-    cudaDeviceProp device_prop;
-    CHECK_CUDA_ERR( cudaGetDeviceProperties(&device_prop, *gpu) );
-    CHECK_CUDA_ERR( cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &max_blocks_per_sm,
-            (void *) launch<F, Args...>,
-            num_threads,
-            0
-    ));
-    if (num_blocks > max_blocks_per_sm * device_prop.multiProcessorCount) {
-        std::cerr << "Error: Given grid/block dimensions do not guarantee co-residency of all blocks on the GPU when launching the given kernel!";
-        exit(EXIT_FAILURE);
-    }
-    dim3 dim_block(num_threads, 1, 1);
-    dim3 dim_grid(num_blocks, 1, 1);
-    void* launch_args[] = {(void *) &f, (void *) &args...};
+template <std::size_t num_blocks, std::size_t num_threads, typename F,
+          typename... Args>
+auto cooperative_exec(const descend::Gpu *const gpu, F &&f, Args... args)
+    -> void {
+  CHECK_CUDA_ERR(cudaSetDevice(*gpu));
+  // check if the GPU supports cooperative launches
+  int supports_coop_launch = 0;
+  CHECK_CUDA_ERR(cudaDeviceGetAttribute(&supports_coop_launch,
+                                        cudaDevAttrCooperativeLaunch, *gpu));
+  if (supports_coop_launch != 1) {
+    std::cerr << "Error: GPU does not support cooperative launches!";
+    exit(EXIT_FAILURE);
+  }
+  // check whether the given grid/block dimensions guarantee co-residency of all
+  // blocks on the GPU (needed for grid synchronization)
+  int max_blocks_per_sm = 0;
+  cudaDeviceProp device_prop;
+  CHECK_CUDA_ERR(cudaGetDeviceProperties(&device_prop, *gpu));
+  CHECK_CUDA_ERR(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &max_blocks_per_sm, (void *)launch<F, Args...>, num_threads, 0));
+  if (num_blocks > max_blocks_per_sm * device_prop.multiProcessorCount) {
+    std::cerr
+        << "Error: Given grid/block dimensions do not guarantee co-residency "
+           "of all blocks on the GPU when launching the given kernel!";
+    exit(EXIT_FAILURE);
+  }
+  dim3 dim_block(num_threads, 1, 1);
+  dim3 dim_grid(num_blocks, 1, 1);
+  void *launch_args[] = {(void *)&f, (void *)&args...};
 #ifdef BENCH
-    Timing timing{};
-    timing.record_begin();
+  Timing timing{};
+  timing.record_begin();
 #endif
-    cudaLaunchCooperativeKernel((void *) launch<F, Args...>, dim_grid, dim_block, launch_args);
+  cudaLaunchCooperativeKernel((void *)launch<F, Args...>, dim_grid, dim_block,
+                              launch_args);
 #ifdef BENCH
-    timing.record_end();
-    benchmark.current_run().insert_timing(timing);
+  timing.record_end();
+  benchmark.current_run().insert_timing(timing);
 #endif
-    CHECK_CUDA_ERR( cudaPeekAtLastError() );
-    CHECK_CUDA_ERR( cudaDeviceSynchronize() );
-}
-
-#endif
-template <typename T>
-inline __device__ T atomic_load(
-        atomic_ref<T> target,
-        cuda::std::memory_order order = cuda::memory_order_relaxed) {
-    return target.load(order);
+  CHECK_CUDA_ERR(cudaPeekAtLastError());
+  CHECK_CUDA_ERR(cudaDeviceSynchronize());
 }
 
 template <typename T>
-inline __device__ void atomic_store(
-        atomic_ref<T> target,
-        T val,
-        cuda::std::memory_order order = cuda::memory_order_relaxed) {
-    target.store(val, order);
+inline __device__ T
+atomic_load(atomic_ref<T> target,
+            cuda::std::memory_order order = cuda::memory_order_relaxed) {
+  return target.load(order);
 }
 
 template <typename T>
-inline __device__ T atomic_fetch_or(
-        atomic_ref<T> target,
-        T val,
-        cuda::std::memory_order order = cuda::memory_order_relaxed) {
-    return target.fetch_or(val, order);
+inline __device__ void
+atomic_store(atomic_ref<T> target, T val,
+             cuda::std::memory_order order = cuda::memory_order_relaxed) {
+  target.store(val, order);
 }
 
 template <typename T>
-inline __device__ T atomic_fetch_add(
-        atomic_ref<T> target,
-        T val,
-        cuda::std::memory_order order = cuda::memory_order_relaxed) {
-    return target.fetch_add(val, order);
+inline __device__ T
+atomic_fetch_or(atomic_ref<T> target, T val,
+                cuda::std::memory_order order = cuda::memory_order_relaxed) {
+  return target.fetch_or(val, order);
+}
+
+template <typename T>
+inline __device__ T
+atomic_fetch_add(atomic_ref<T> target, T val,
+                 cuda::std::memory_order order = cuda::memory_order_relaxed) {
+  return target.fetch_add(val, order);
 }
 
 inline __device__ Warp to_warps() {
-    return cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block());
+  return cooperative_groups::tiled_partition<32>(
+      cooperative_groups::this_thread_block());
 }
 
-#ifndef __CUDACC_RTC__
-namespace detail
-{
-    template <typename T, size_t ... Is>
-    constexpr descend::array<T, sizeof...(Is)>
-    create_array(T value, std::index_sequence<Is...>)
-    {
-        // cast Is to void to remove the warning: unused value
-        return {{(static_cast<void>(Is), value)...}};
-    }
-};
-
-template <size_t N, typename T>
-constexpr descend::array<T, N> create_array(const T& value)
-{
-    return detail::create_array(value, std::make_index_sequence<N>());
+namespace detail {
+template <typename T, std::size_t... Is>
+constexpr descend::array<T, sizeof...(Is)>
+create_array(T value, std::index_sequence<Is...>) {
+  // cast Is to void to remove the warning: unused value
+  return {{(static_cast<void>(Is), value)...}};
 }
-#endif
+}; // namespace detail
 
-template <typename T>
-inline __device__ T* to_raw_ptr(T* ptr) {
-    return ptr - (blockIdx.x * blockDim.x + threadIdx.x);
+template <std::size_t N, typename T>
+constexpr descend::array<T, N> create_array(const T &value) {
+  return detail::create_array(value, std::make_index_sequence<N>());
+}
+
+template <typename T> inline __device__ T *to_raw_ptr(T *ptr) {
+  return ptr - (blockIdx.x * blockDim.x + threadIdx.x);
 }
 
 template <typename T>
-inline __host__ __device__ T* offset_raw_ptr(T* ptr, i32 off) {
-    return ptr + off;
+inline __host__ __device__ T *offset_raw_ptr(T *ptr, i32 off) {
+  return ptr + off;
 }
 
-};
+}; // namespace descend
 
-
-#endif //DESCEND_DESCEND_CUH
+#endif // DESCEND_DESCEND_CUH
