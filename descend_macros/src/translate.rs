@@ -54,14 +54,6 @@ fn generate_cpp_source(
 ) -> CppSource {
     let mut device_code = descend::codegen::gen(compilation_unit);
 
-    // Descend's printer spells every `SizeT` as `std::size_t`
-    // (`src/codegen/printer.rs:394`), which lands in `for` counters as often as in
-    // generic sizes. NVRTC compiles with `__CUDACC_RTC__` defined, so `descend.cuh` skips
-    // `<cstdint>` and the rest of the standard headers, and `std::size_t` is not declared
-    // -- NVRTC reports `namespace "std" has no member "size_t"`. nvcc took the other
-    // branch of that same guard, which is why this looks unnecessary until it is removed.
-    device_code = device_code.replace("std::size_t", "size_t");
-
     // The launcher looks the kernel up by name through `cuModuleGetFunction`, which
     // needs an unmangled symbol. `assemble::find_entry_symbol` depends on this landing.
     device_code = device_code.replace(

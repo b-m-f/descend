@@ -147,6 +147,10 @@ fn resolve_options(include_path: &Path) -> Result<Vec<String>, MacroError> {
         .map(|option| option.to_string())
         .collect();
 
+    // `descend.cuh` declares its host-side helpers without an execution-space annotation,
+    // and NVRTC refuses an unannotated function outright in JIT mode.
+    options.push("-default-device".to_string());
+
     options.push(format!(
         "-I{}",
         include_path
