@@ -8,9 +8,11 @@
 #include <thrust/tuple.h>
 
 // probably only works with nvcc and is also only required for host code
-// #include <iostream>
-// #include <sstream>
-// #include <vector>
+#ifndef __CUDACC_RTC__
+#include <iostream>
+#include <sstream>
+#include <vector>
+
 #define CHECK_CUDA_ERR(err)                                                    \
   {                                                                            \
     check_cuda_err((err), __FILE__, __LINE__);                                 \
@@ -31,6 +33,7 @@ inline void static_for(Lambda const &f) {
     static_for<First + 1, Last>(f);
   }
 }
+#endif
 
 //
 // Define BENCH in order to enable benchmarking (of kernels).
@@ -124,7 +127,7 @@ private:
 public:
   BenchConfig(std::initializer_list<std::string> kernel_idents)
       : kernel_idents_(kernel_idents) {}
-  BenchConfig(std::size_t num_kernels) {
+  BenchConfig(cuda::std::size_t num_kernels) {
     for (int i = 0; i < num_kernels; i++) {
       std::stringstream ss;
       ss << "kernel_" << i;
@@ -209,18 +212,18 @@ public:
 };
 #endif
 
-using i32 = std::int32_t;
+using i32 = cuda::std::int32_t;
 extern const i32 NO_ERROR = -1;
-using u8 = std::uint8_t;
-using u32 = std::uint32_t;
-using u64 = std::uint64_t;
+using u8 = cuda::std::uint8_t;
+using u32 = cuda::std::uint32_t;
+using u64 = cuda::std::uint64_t;
 using f32 = float;
 static_assert(sizeof(f32) == 4);
 using f64 = double;
 static_assert(sizeof(f64) == 8);
-using byte = std::uint8_t;
+using byte = cuda::std::uint8_t;
 
-template <typename T, std::size_t n> using array = std::array<T, n>;
+template <typename T, cuda::std::size_t n> using array = cuda::std::array<T, n>;
 
 template <typename... Types> using tuple = thrust::tuple<Types...>;
 
@@ -229,18 +232,20 @@ using atomic_ref = cuda::atomic_ref<T, cuda::thread_scope_device>;
 
 using Warp = cooperative_groups::thread_block_tile<32>;
 
-template <typename T> constexpr auto size_in_bytes() -> std::size_t {
+template <typename T> constexpr auto size_in_bytes() -> cuda::std::size_t {
   return sizeof(T);
 };
 
 template <template <typename, typename> typename Array, typename E>
-constexpr auto size_in_bytes<Array<E, std::size_t>>() -> std::size_t {
-  return std::tuple_size<Array<E, std::size_t>>::value * size_in_bytes<E>();
+constexpr auto size_in_bytes<Array<E, cuda::std::size_t>>()
+    -> cuda::std::size_t {
+  return std::tuple_size<Array<E, cuda::std::size_t>>::value *
+         size_in_bytes<E>();
 };
 
 template <template <typename...> typename Tuple, typename Head,
           typename... Tail>
-constexpr auto size_in_bytes<Tuple<Head, Tail...>>() -> std::size_t {
+constexpr auto size_in_bytes<Tuple<Head, Tail...>>() -> cuda::std::size_t {
   return size_in_bytes<Head>() + size_in_bytes<Tail...>();
 };
 
@@ -257,7 +262,7 @@ template <typename DescendType> class Buffer<Memory::CpuHeap, DescendType> {
   DescendType *const ptr_;
 
 public:
-  static constexpr std::size_t size = size_in_bytes<DescendType>;
+  static constexpr cuda::std::size_t size = size_in_bytes<DescendType>;
 
   Buffer(const DescendType init_val) : ptr_{new DescendType(init_val)} {}
   Buffer(const DescendType *const __restrict__ init_ptr)
@@ -269,12 +274,12 @@ public:
   auto operator&() const -> const DescendType * { return ptr_; }
 };
 
-template <typename DescendType, std::size_t n>
+template <typename DescendType, cuda::std::size_t n>
 class Buffer<Memory::CpuHeap, descend::array<DescendType, n>> {
   descend::array<DescendType, n> *const ptr_;
 
 public:
-  static constexpr std::size_t size =
+  static constexpr cuda::std::size_t size =
       size_in_bytes<descend::array<DescendType, n>>();
 
   Buffer(const DescendType default_value)
@@ -297,8 +302,10 @@ public:
 
   auto operator&() const -> const DescendType * { return ptr_->data(); }
 
-  DescendType &operator[](std::size_t idx) { return (*ptr_)[idx]; }
-  const DescendType &operator[](std::size_t idx) const { return (*ptr_)[idx]; }
+  DescendType &operator[](cuda::std::size_t idx) { return (*ptr_)[idx]; }
+  const DescendType &operator[](cuda::std::size_t idx) const {
+    return (*ptr_)[idx];
+  }
 };
 
 template <typename DescendType> class Buffer<Memory::GpuGlobal, DescendType> {
@@ -306,7 +313,7 @@ template <typename DescendType> class Buffer<Memory::GpuGlobal, DescendType> {
   DescendType *dev_ptr_;
 
 public:
-  static constexpr std::size_t size = size_in_bytes<DescendType>();
+  static constexpr cuda::std::size_t size = size_in_bytes<DescendType>();
 
   Buffer(const Gpu *const __restrict__ gpu,
          const DescendType *const __restrict__ init_ptr)
@@ -327,13 +334,14 @@ public:
   auto operator&() const -> const DescendType * { return dev_ptr_; }
 };
 
-template <typename DescendType, std::size_t n>
+template <typename DescendType, cuda::std::size_t n>
 class Buffer<Memory::GpuGlobal, descend::array<DescendType, n>> {
   const Gpu gpu_;
   DescendType *dev_ptr_;
 
 public:
-  static constexpr std::size_t size = size_in_bytes<array<DescendType, n>>();
+  static constexpr cuda::std::size_t size =
+      size_in_bytes<array<DescendType, n>>();
 
   Buffer(const Gpu *const __restrict__ gpu, const DescendType default_value)
       : gpu_{*gpu} {
@@ -393,7 +401,7 @@ __global__ void launch(F f, Args... args) {
 }
 
 template <typename F, typename... Args>
-auto exec(dim3 num_blocks, dim3 num_threads, std::size_t shared_mem_bytes,
+auto exec(dim3 num_blocks, dim3 num_threads, cuda::std::size_t shared_mem_bytes,
           F &&f, Args... args) -> void {
   CHECK_CUDA_ERR(cudaSetDevice(gpu_device(0)));
 #ifdef BENCH
@@ -410,8 +418,8 @@ auto exec(dim3 num_blocks, dim3 num_threads, std::size_t shared_mem_bytes,
 }
 
 // required to launch kernels that utilize grid synchronization
-template <std::size_t num_blocks, std::size_t num_threads, typename F,
-          typename... Args>
+template <cuda::std::size_t num_blocks, cuda::std::size_t num_threads,
+          typename F, typename... Args>
 auto cooperative_exec(const descend::Gpu *const gpu, F &&f, Args... args)
     -> void {
   CHECK_CUDA_ERR(cudaSetDevice(*gpu));
@@ -487,15 +495,15 @@ inline __device__ Warp to_warps() {
 }
 
 namespace detail {
-template <typename T, std::size_t... Is>
+template <typename T, cuda::std::size_t... Is>
 constexpr descend::array<T, sizeof...(Is)>
-create_array(T value, std::index_sequence<Is...>) {
+create_array(T value, cuda::std::index_sequence<Is...>) {
   // cast Is to void to remove the warning: unused value
   return {{(static_cast<void>(Is), value)...}};
 }
 }; // namespace detail
 
-template <std::size_t N, typename T>
+template <cuda::std::size_t N, typename T>
 constexpr descend::array<T, N> create_array(const T &value) {
   return detail::create_array(value, std::make_index_sequence<N>());
 }
