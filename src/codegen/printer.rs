@@ -391,7 +391,7 @@ impl std::fmt::Display for ScalarTy {
             I64 => write!(f, "descend::i64"),
             F32 => write!(f, "descend::f32"),
             F64 => write!(f, "descend::f64"),
-            SizeT => write!(f, "cuda::std::size_t"),
+            SizeT => write!(f, "std::size_t"),
             Bool => write!(f, "bool"),
             Memory => write!(f, "descend::Memory"),
             Gpu => write!(f, "descend::Gpu"),

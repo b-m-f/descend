@@ -54,6 +54,12 @@ fn generate_cpp_source(
 ) -> CppSource {
     let mut device_code = descend::codegen::gen(compilation_unit);
 
+    // Descend's printer spells every `SizeT` as `std::size_t`
+    // (`src/codegen/printer.rs:394`), which lands in `for` counters as often as in
+    // generic sizes. NVRTC has no C++ standard library on its include path at all, so
+    // only the unqualified spelling is declared there.
+    device_code = device_code.replace("std::size_t", "size_t");
+
     // The launcher looks the kernel up by name through `cuModuleGetFunction`, which
     // needs an unmangled symbol. `assemble::find_entry_symbol` depends on this landing.
     device_code = device_code.replace(
@@ -65,11 +71,6 @@ fn generate_cpp_source(
         device_code,
         host_code,
     } = split_off_host_side_main_function(&device_code, HOST_SIDE_MAIN_MARKER);
-
-    // The code generator names the dynamic shared-memory backing array `$buffer`
-    // (`src/codegen/mod.rs:794`). nvcc accepts `$` in an identifier, NVRTC reports
-    // `unrecognized token`, and it cannot be spelled in Descend source at all.
-    let device_code = device_code.replace("$buffer", "_buffer");
 
     CppSource {
         device_code,
