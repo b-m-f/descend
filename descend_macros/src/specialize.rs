@@ -202,7 +202,10 @@ fn substitute_generics_in_tokens(
                             Some(ident.span()),
                         )
                     })?;
-                    output.extend(size_tokens);
+                    output.extend(size_tokens.into_iter().map(|mut token| {
+                        token.set_span(ident.span());
+                        token
+                    }));
                     continue;
                 }
                 output.extend([TokenTree::Ident(ident)]);

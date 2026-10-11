@@ -43,22 +43,6 @@ impl ScalarKind {
         }
     }
 
-    /// How Descend spells it, for the `main` the macro synthesizes.
-    pub fn descend(self) -> &'static str {
-        match self {
-            ScalarKind::U8 => "u8",
-            ScalarKind::U32 => "u32",
-            ScalarKind::U64 => "u64",
-            ScalarKind::I32 => "i32",
-            ScalarKind::I64 => "i64",
-            ScalarKind::F32 => "f32",
-            ScalarKind::F64 => "f64",
-            ScalarKind::Bool => "bool",
-            ScalarKind::AtomicU32 => "AtomicU32",
-            ScalarKind::AtomicI32 => "AtomicI32",
-        }
-    }
-
     /// The width Descend's shared-memory sizing defines for this scalar, or `None`
     /// where Descend defines none.
     ///
@@ -126,17 +110,6 @@ impl HostTy {
             HostTy::Scalar(kind) => kind.rust().to_string(),
             HostTy::Array(element, array_length) => {
                 format!("[{}; {}]", element.rust(), array_length.value)
-            }
-            HostTy::Declared(name) => name.clone(),
-        }
-    }
-
-    /// The Descend spelling of this type.
-    pub fn descend(&self) -> String {
-        match self {
-            HostTy::Scalar(kind) => kind.descend().to_string(),
-            HostTy::Array(element, array_length) => {
-                format!("[{}; {}]", element.descend(), array_length.descend)
             }
             HostTy::Declared(name) => name.clone(),
         }
@@ -337,10 +310,7 @@ mod tests {
             ),
         ));
         let host = host_ty(&dty).unwrap();
-        // Rust gets the value; Descend keeps the expression, because its type checker
-        // compares sizes syntactically.
         assert_eq!(host.rust(), "[i32; 32]");
-        assert_eq!(host.descend(), "[i32; 4 * 8]");
         assert_eq!(host.elements(), Some(32));
     }
 

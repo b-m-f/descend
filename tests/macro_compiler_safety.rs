@@ -21,4 +21,7 @@ fn compile_safety_tests() {
     t.compile_fail("tests/macro_compiler_safety/a_raw_identifier_does_not_panic_the_macro.rs");
     t.compile_fail("tests/macro_compiler_safety/two_kernels_with_the_same_name.rs");
     t.compile_fail("tests/macro_compiler_safety/borrow_conflict_is_reported.rs");
+    t.compile_fail("tests/macro_compiler_safety/parse_unexpected_punctuation.rs");
+    t.compile_fail("tests/macro_compiler_safety/parse_missing_expression.rs");
+    t.compile_fail("tests/macro_compiler_safety/parse_end_of_input.rs");
 }

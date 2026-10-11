@@ -21,12 +21,10 @@
 //!    `host_ty::HostTy` so the host and device spellings cannot drift apart.
 //! 6. `check::check_kernel` — refuse what cannot be launched, before anything is
 //!    compiled. The bounds are in `limits`.
-//! 7. `synthesize::synthesize_main_function` — write the Descend `main` the kernel is
-//!    type-checked against.
-//! 8. `translate::translate` — type-check, then generate CUDA and strip it down to a
-//!    device-only translation unit.
-//! 9. `assemble::assemble` — compile through NVRTC, and find the kernel's entry symbol in the PTX.
-//! 10. `emit::generate_launch_function` — the Rust function the caller binds.
+//! 7. `translate::translate` — type-check the kernel on its own, then generate CUDA for
+//!    a device-only translation unit.
+//! 8. `assemble::assemble` — compile through NVRTC, and find the kernel's entry symbol in the PTX.
+//! 9. `emit::generate_launch_function` — the Rust function the caller binds.
 //!
 //! # Errors
 //!
@@ -52,16 +50,13 @@ mod diag;
 
 mod artifact;
 mod assemble;
+#[cfg(test)]
 mod capture;
 mod check;
-#[cfg(test)]
-mod const_expr;
 mod emit;
 mod host_ty;
 mod invocation;
 mod kernel;
-#[cfg(test)]
-mod launch_scrape;
 mod limits;
 mod nat;
 mod nvrtc;
@@ -69,7 +64,6 @@ mod shared_memory;
 mod source;
 mod specialize;
 mod spell;
-mod synthesize;
 mod translate;
 
 use crate::diag::MacroError;
@@ -127,7 +121,7 @@ fn declare_kernels(input: TokenStream) -> Result<TokenStream, MacroError> {
     let source_token_stream = input.clone();
     let source = render_source(input);
     let code = SourceCode::new(source.text.clone());
-    let unit = source::parse_descend_source(&code)?;
+    let unit = source::parse_descend_source(&code, &source)?;
     declare(&unit, &source, &source_token_stream)
 }
 
@@ -163,7 +157,7 @@ fn instantiate(
     let specialized = specialize::specialize_kernel(source_token_stream, &kernel_name, &sizes)?;
     let source = render_source(specialized);
     let code = SourceCode::new(source.text.clone());
-    let unit = source::parse_descend_source(&code)?;
+    let unit = source::parse_descend_source(&code, &source)?;
     let kernel = Kernel::extract(&unit, &kernel_name, &source)?;
 
     // From here the stages are working from Descend's AST rather than from the tokens
@@ -171,12 +165,10 @@ fn instantiate(
     // kernel's declaration is the fallback span for the rest of the pipeline.
     let declared_at = kernel.name_span;
     let launch = check::check_kernel(&kernel)?;
-    let main_function = synthesize::synthesize_main_function(&kernel)
-        .map_err(|error| error.or_span(declared_at))?;
-    let program = format!("{}\n{}", main_function, source.text);
-    let cpp_source =
-        translate::translate(&program, &kernel_name).map_err(|error| error.or_span(declared_at))?;
-    let ptx = assemble::assemble(&cpp_source.device_code, &kernel_name)
+    let device_code =
+        translate::translate(&source.text, &kernel_name, |span| source.span_for(span))
+            .map_err(|error| error.or_span(declared_at))?;
+    let ptx = assemble::assemble(&device_code, &kernel_name)
         .map_err(|error| error.or_span(declared_at))?;
 
     emit::generate_launch_function(&kernel, &launch, &ptx)

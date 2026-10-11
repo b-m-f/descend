@@ -12,8 +12,8 @@ pub struct KernelParameter {
     pub is_shared_memory: bool,
     pub is_by_value: bool,
     /// The data this parameter names -- what a reference points at, or the value
-    /// itself. Both the Rust signature and the synthesized Descend `main` are spelled
-    /// from this, so the two cannot drift apart.
+    /// itself. The Rust signature is spelled from this, so the host and device
+    /// spellings cannot drift apart.
     pub host: HostTy,
 }
 
@@ -154,7 +154,7 @@ mod tests {
             TokenStream::from_str(source_text).expect("must tokenize"),
         );
         let code = descend::parser::SourceCode::new(source.text.clone());
-        let unit = crate::source::parse_descend_source(&code)
+        let unit = crate::source::parse_descend_source(&code, &source)
             .unwrap_or_else(|error| panic!("fixture did not parse: {error}\n{}", source.text));
         Kernel::extract(&unit, kernel_name, &source)
     }
