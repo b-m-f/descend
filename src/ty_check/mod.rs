@@ -14,7 +14,8 @@ use crate::ast::utils;
 use crate::ast::*;
 use crate::error::ErrorReported;
 use ctxs::{AccessCtx, GlobalCtx, KindCtx, TyCtx};
-use error::*;
+pub use error::TyError;
+use error::{CtxError, UnifyError};
 use std::collections::HashSet;
 
 pub type TyResult<T> = Result<T, TyError>;
@@ -824,7 +825,6 @@ fn ty_check_assign_non_place(
         deref_expr,
     )
     .map_err(|err| {
-        println!("Conflicting borrow!!!");
         TyError::ConflictingBorrow(Box::new(deref_expr.clone()), Ownership::Uniq, err)
     })?;
     ctx.access_ctx.insert(potential_accesses);
@@ -1962,5 +1962,38 @@ pub fn proj_elem_dty(dty: &DataTy, i: usize) -> TyResult<DataTy> {
         _ => Err(TyError::String(
             "Cannot project from non tuple type.".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_dereference_of_shared_parameter_reports_the_first_bad_place() {
+        let text = "\
+fn gpu_vec_add<r: prv>(
+    a_array: &r uniq gpu.global [i32; 16384],
+    b_array: &r shrd gpu.global [i32; 16384]
+) -[grid: gpu.grid<X<64>, X<256>>]-> () {
+    sched block in grid {
+        sched thread in block {
+            let a_ref = &uniq (*b_array).to_view.grp::<256>[[block]][[thread]];
+            *a_ref = *a_ref + (*b_array).to_view.grp::<256>[[block]][[thread]]
+        }
+    }
+}";
+        let source = crate::parser::SourceCode::new(text.to_string());
+        let mut unit = crate::parser::parse(&source).expect("the kernel must parse");
+        let error = ext_ty_check_kernel(&mut unit, "gpu_vec_add", &[])
+            .expect_err("a shared parameter cannot be accessed uniquely");
+        let span = error.span().expect("the error must have a source span");
+
+        assert!(matches!(
+            error,
+            TyError::CannotUniquelyDereferenceShared(Some(_))
+        ));
+        assert_eq!(span.begin as usize, text.find("*b_array").unwrap());
+        assert_eq!(&text[span.begin as usize..span.end as usize], "*b_array");
     }
 }

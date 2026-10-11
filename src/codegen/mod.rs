@@ -86,6 +86,39 @@ fn gen_ctx(mut codegen_ctx: CodegenCtx) -> String {
         debug_assert_eq!(codegen_ctx.view_ctx.map.len(), 0);
     }
 
+    for fun_def in &initial_fns_to_generate {
+        if !matches!(
+            &fun_def.exec.ty.as_ref().unwrap().ty,
+            desc::ExecTyKind::GpuGrid(_, _)
+        ) || codegen_ctx
+            .kernel_infos
+            .iter()
+            .any(|info| info.name == fun_def.ident.name.as_ref())
+        {
+            continue;
+        }
+        let shared_mem_dtys = fun_def
+            .param_decls
+            .iter()
+            .filter_map(|param| match &param.ty.as_ref().unwrap().ty {
+                desc::TyKind::Data(dty) => match &dty.dty {
+                    desc::DataTyKind::Ref(reference)
+                        if reference.mem == desc::Memory::GpuShared =>
+                    {
+                        Some(reference.dty.as_ref().clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        codegen_ctx.kernel_infos.push(KernelInfo {
+            name: fun_def.ident.name.to_string(),
+            num_shrd_mem_decls: shared_mem_dtys.len(),
+            unnamed_shrd_mem_decls: unnamed_shared_mem_decls(shared_mem_dtys),
+        });
+    }
+
     let cu_fn_defs = codegen_ctx
         .inst_fn_ctx
         .into_values()
@@ -2302,5 +2335,39 @@ fn is_view_dty(ty: &desc::Ty) -> bool {
             _ => false,
         },
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_kernel_without_main_is_global_and_declares_shared_memory() {
+        let source = crate::parser::SourceCode::new(
+            "fn other() -[grid: gpu.grid<X<1>, X<1>>]-> () { () } \
+             fn gpu_shared<r: prv>([grid.forall(X)] tmp: &r uniq gpu.shared [i32; 64]) \
+             -[grid: gpu.grid<X<1>, X<64>>]-> () { \
+             sched block in grid { sched thread in block { () } } }"
+                .to_string(),
+        );
+        let mut unit = crate::parser::parse(&source).expect("the kernels must parse");
+        crate::ty_check::ext_ty_check_kernel(&mut unit, "gpu_shared", &[])
+            .expect("the selected kernel must type check");
+
+        let generated = gen(&unit);
+        let signature = generated
+            .split("__global__ auto gpu_shared(")
+            .nth(1)
+            .expect("the checked kernel must be emitted")
+            .split(')')
+            .next()
+            .unwrap();
+
+        assert!(!signature.contains("tmp"), "{generated}");
+        assert!(generated.contains("extern __shared__"), "{generated}");
+        assert!(generated.contains("gen_buffer"), "{generated}");
+        assert!(!generated.contains("auto other("), "{generated}");
+        assert!(!generated.contains("__host__"), "{generated}");
     }
 }

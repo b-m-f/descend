@@ -1,0 +1,5 @@
+error: expected one of "(", "<", ['a'..='z'|'A'..='Z'|'0'..='9'|'_']
+ --> tests/macro_compiler_safety/parse_end_of_input.rs:4:8
+  |
+4 |     fn bad
+  |        ^^^

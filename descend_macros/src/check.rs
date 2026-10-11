@@ -166,9 +166,9 @@ fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
 
 /// The dynamic shared memory the kernel's launch needs, from the parameter types.
 ///
-/// This is the macro's own answer, not one read back out of the generated CUDA. The
-/// agreement between the two is pinned by
-/// `launch_scrape::tests::the_typed_count_agrees_with_the_generated_launch`.
+/// This is the macro's own answer. Descend's code generator computes the same count in
+/// `count_bytes`, but only at a launch site, and since no `main` is synthesized there is
+/// no launch site left to read it back from.
 pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroError> {
     let function = &kernel.function_name;
     let mut total: u64 = 0;
