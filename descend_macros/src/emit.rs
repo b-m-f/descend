@@ -76,9 +76,6 @@ pub fn generate_launch_function(
 
     let kernel_ident = format_ident!("{}", kernel_name);
     let entry = &compiled.entry;
-    // `Ptx::text` is a `String`, so it is already UTF-8 -- `nvrtc` decoded it from the
-    // bytes NVRTC returned. Emitting it as a string literal rather than as bytes the
-    // caller decodes again keeps an unreachable `unwrap` out of every generated function.
     let ptx_source = &compiled.text;
 
     let (grid_x, grid_y, grid_z) = (launch.grid.x, launch.grid.y, launch.grid.z);
@@ -108,12 +105,7 @@ pub fn generate_launch_function(
 }
 
 fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> {
-    // Neither can be made raw: `r#self` is not an identifier, and `_` is a pattern
-    // rather than a name at all.
     const UNRAWABLE: &[&str] = &["self", "Self", "crate", "super", "_"];
-    // Strict keywords, plus the reserved ones. `r#` makes any of these usable as a
-    // parameter name; the list is a slice rather than a fixed-size array so adding an
-    // entry does not also mean editing a count.
     const KEYWORDS: &[&str] = &[
         "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
         "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
@@ -133,21 +125,6 @@ fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> 
     Ok(name.to_string())
 }
 
-/// The Rust definition of a type a `descend!` block declares.
-///
-/// `#[repr(C)]` so the field order and offsets are specified rather than left to the
-/// compiler, and `DescendType` so the type can fill a `GpuBuffer`: the macro derived
-/// this definition from the declaration, so it is the only thing that can vouch for it.
-///
-/// Note that a kernel taking a declared type does not compile yet — Descend's code
-/// generator refers to a struct by name but never emits its definition, so the CUDA
-/// compiler fails on the undefined name. Modelling the type here is what makes that a
-/// one-sided gap: once the generator emits the C++ definition, the host side is
-/// already in place.
-///
-/// A field the host cannot represent is reported against that field, not against the
-/// `descend!` block as a whole: the block can run to twenty lines, and the field is
-/// what the reader has to change.
 pub fn format_rust_struct(
     struct_decl: &descend::ast::StructDecl,
     source: &DescendSource,
@@ -172,7 +149,6 @@ pub fn format_rust_struct(
                             "struct `{struct_name}`: field `{field_name}` {}",
                             reason.reason()
                         ),
-                        // The field if it can be located, the struct's name if not.
                         crate::kernel::span_of(field_ident, source).or(struct_span),
                     )
                 })?
@@ -187,15 +163,6 @@ pub fn format_rust_struct(
     Ok(output)
 }
 
-/// The name of the macro that carries a kernel's source from its `descend!` to an
-/// instantiation.
-///
-/// Deliberately *not* the kernel's own name. A macro named after the kernel would make
-/// `gpu_vec_add(&stream, ..)` — the call someone writes when they forget the
-/// instantiation — resolve in the macro namespace and report `expected function, found
-/// macro`, which describes the macro's own plumbing rather than the mistake. Under a
-/// name nobody writes, the kernel's name is simply not in scope, and the call fails as
-/// `cannot find function` like any other undefined call.
 fn carrier_name(kernel_name: &str) -> Ident {
     format_ident!("__descend_kernel_{}", kernel_name)
 }
@@ -204,8 +171,6 @@ pub fn carrier_macro(kernel_name: &str, source_token_stream: &TokenStream) -> To
     let carrier = carrier_name(kernel_name);
 
     quote! {
-        // A kernel may be declared and never instantiated; that is not a mistake, and
-        // the warning would name this macro.
         #[allow(unused_macros)]
         macro_rules! #carrier {
             (@fn $name:ident, $($args:tt)*) => {
@@ -232,8 +197,6 @@ pub fn carrier_invocation(
     Ok(invocation)
 }
 
-/// `{ <items> <name> }` — the items the instantiation generated, followed by the
-/// function's name, so the block evaluates to that function.
 pub fn block_yielding(items: TokenStream, name: &Ident) -> TokenStream {
     let mut block = items;
     block.extend([TokenTree::Ident(name.clone())]);
@@ -244,7 +207,6 @@ pub fn block_yielding(items: TokenStream, name: &Ident) -> TokenStream {
 mod tests {
     use super::*;
 
-    /// The Rust definition `descend!` emits for a type it declares.
     fn declared(source_text: &str) -> Result<String, MacroError> {
         use proc_macro2::TokenStream;
         use std::str::FromStr;
@@ -317,7 +279,6 @@ mod tests {
 
     #[test]
     fn a_nested_declared_type_is_referred_to_by_name() {
-        // `declared` reads the first struct, so the nesting one comes first.
         let rust =
             declared("struct Outer { inner: Inner, id: u32 } struct Inner { x: i32 }").unwrap();
         assert!(rust.contains("pub inner: Inner"), "{rust}");
@@ -334,8 +295,6 @@ mod tests {
         );
     }
 
-    /// The point of threading `DescendSource` through: a reader is sent to the field
-    /// that is wrong, not made to search the whole `descend!` block for it.
     #[test]
     fn a_rejected_field_is_pointed_at_rather_than_the_block_it_is_in() {
         let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();

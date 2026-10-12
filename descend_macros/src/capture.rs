@@ -1,28 +1,6 @@
-//! Capturing what the Descend compiler prints.
-//!
-//! Descend reports a parse or type error by printing a diagnostic and returning an
-//! `Err` that carries nothing, so the only way to turn one into a `compile_error!` the
-//! reader can act on is to capture what it printed. Capturing means redirecting file
-//! descriptors 1 and 2, which is process-wide state rather than thread-local.
-//!
-//! Hence [`CAPTURE_LOCK`]. `cargo test` runs tests on parallel threads, and two
-//! redirects at once interleave: each saves the descriptor it happens to see, so
-//! `restore` puts back another thread's capture file, and whatever was written to
-//! stdout in the meantime is lost. The symptom is easy to mistake for a hung test run --
-//! `cargo test -p descend_macros` exits successfully and prints no result summary at
-//! all, because the harness's own output went into a temporary file.
-//!
-//! `tests::concurrent_captures_do_not_swallow_each_other` is the regression test; it
-//! fails without the lock.
-
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Mutex, MutexGuard};
 
-/// Held for the whole of a redirect.
-///
-/// Recovered rather than propagated when poisoned. A panic inside the action does not
-/// leave the descriptors redirected: `capture` restores them before the unwind
-/// continues, so the next caller's state is clean whatever the last one did.
 static CAPTURE_LOCK: Mutex<()> = Mutex::new(());
 
 fn hold_capture_lock() -> MutexGuard<'static, ()> {
@@ -36,7 +14,6 @@ pub fn with_captured_output<T>(action: impl FnOnce() -> T) -> (T, String) {
     capture(action)
 }
 
-/// Redirecting a file descriptor is a POSIX facility, so this is the Unix path.
 #[cfg(unix)]
 fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
     use std::os::fd::AsRawFd;
@@ -45,9 +22,6 @@ fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
         return (action(), String::new());
     };
 
-    // Flush first, as well as after. `Stdout` is buffered, so anything already in it
-    // would otherwise be written into the capture file and reported as though the
-    // action had printed it.
     let _ = std::io::stdout().flush();
 
     let saved_stdout = unsafe { libc::dup(libc::STDOUT_FILENO) };
@@ -83,9 +57,6 @@ fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
     }
 }
 
-/// On a platform without POSIX descriptors the action still runs, and Descend's
-/// diagnostics simply reach the terminal uncaptured. `descend_message` then returns
-/// `None`, and every caller already has generic wording for that.
 #[cfg(not(unix))]
 fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
     (action(), String::new())
@@ -232,9 +203,6 @@ mod tests {
         assert!(descend_message("  \n\n \n").is_none());
     }
 
-    /// Written to the descriptor rather than through `println!`, because libtest
-    /// replaces `Stdout` with a per-test buffer and the point here is what reaches the
-    /// descriptor the redirect is aimed at.
     #[cfg(unix)]
     fn write_to_stdout_descriptor(text: &str) {
         unsafe {
@@ -246,9 +214,6 @@ mod tests {
         }
     }
 
-    /// The regression [`CAPTURE_LOCK`] exists for. Run without the lock and the threads
-    /// save each other's descriptors: some captures come back empty, some hold another
-    /// thread's marker, and whatever the harness printed in the meantime is gone.
     #[cfg(unix)]
     #[test]
     fn concurrent_captures_do_not_swallow_each_other() {
@@ -260,7 +225,6 @@ mod tests {
                     let marker = format!("marker for thread {index}");
                     let (_, captured) = with_captured_output(|| {
                         write_to_stdout_descriptor(&marker);
-                        // Something to interleave with, were a second redirect live.
                         for _ in 0..500 {
                             write_to_stdout_descriptor(".");
                         }
@@ -289,8 +253,6 @@ mod tests {
         }
     }
 
-    /// A panic inside the action must leave stdout usable, or every later diagnostic in
-    /// the process is written to a temporary file nobody reads.
     #[cfg(unix)]
     #[test]
     fn a_panicking_action_leaves_stdout_redirected_back() {
@@ -298,8 +260,6 @@ mod tests {
             std::panic::catch_unwind(|| with_captured_output(|| panic!("the action failed")));
         assert!(outcome.is_err(), "the panic must be resumed");
 
-        // Still pointing at the terminal: a second capture works, and reports only what
-        // its own action printed.
         let (_, captured) = with_captured_output(|| {
             write_to_stdout_descriptor("after the panic");
         });

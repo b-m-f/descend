@@ -95,9 +95,6 @@ mod tests {
     use super::*;
     use descend::ast::{BinOpNat, Dim, Dim1d, Dim2d, Dim3d};
 
-    /// The grid and block dimensions a kernel declares, as the macro derives them.
-    /// This is the path `emit::generate_launch_function` takes to build a launch
-    /// configuration, minus the code generation and the NVRTC compilation.
     fn dimensions_of(grid: Dim, block: Dim) -> (Dimensions, Dimensions) {
         (
             eval_dimensions(&grid).unwrap(),
@@ -138,7 +135,6 @@ mod tests {
 
     #[test]
     fn arithmetic_in_a_dimension_is_evaluated() {
-        // The shape a generic kernel takes once its size has been specialised.
         let grid = Dim::X(Box::new(Dim1d(Nat::BinOp(
             BinOpNat::Div,
             Box::new(Nat::Lit(4096)),

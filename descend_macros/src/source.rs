@@ -8,11 +8,6 @@ pub struct DescendSource {
 }
 
 impl DescendSource {
-    /// The span of the token covering `offset`, if a token does.
-    ///
-    /// Binary search over `spans`, which `write_spanned` appends to in the order it
-    /// writes text -- so the offsets are sorted and non-overlapping, which is what
-    /// `partition_point` requires.
     pub fn span_at(&self, offset: u32) -> Option<Span> {
         let next = self.spans.partition_point(|(begin, _, _)| *begin <= offset);
         let (begin, end, span) = self.spans.get(next.checked_sub(1)?)?;
@@ -62,8 +57,6 @@ impl DescendSource {
                         Delimiter::Bracket => ("[", "]"),
                         Delimiter::None => ("", ""),
                     };
-                    // A space here keeps `&uniq (*x)` from collapsing into a call, but after
-                    // punctuation it would detach an argument list from its turbofish.
                     if self.last_was_ident_or_literal {
                         self.text.push(' ');
                     }
@@ -95,10 +88,6 @@ impl DescendSource {
                     self.last_was_ident_or_literal = true;
                 }
                 TokenTree::Punct(punct) => {
-                    // The grammar's mandatory-whitespace rule `__` always follows a word, so
-                    // a word is separated from the punctuation after it. The one exception is
-                    // `.`: it glues the dotted keywords (`gpu.global`, `cpu.thread`, ..) that
-                    // `keyword()` matches as whole strings, and the view and field chains.
                     if self.last_was_ident_or_literal && punct.as_char() != '.' {
                         self.text.push(' ');
                     }
@@ -232,8 +221,6 @@ mod tests {
 
     #[test]
     fn turbofish_stays_glued() {
-        // Words are separated from punctuation, so the spelling is `grp ::<256 >`; what
-        // must hold is that `::<` is not broken up and the argument list stays attached.
         let rendered = rendered_source("(*a).to_view.grp::<256>[[block]][[thread]]");
         assert!(rendered.contains("::<256 >"), "{rendered}");
         assert!(
@@ -294,24 +281,11 @@ mod tests {
 
     #[test]
     fn a_keyword_is_separated_from_following_punctuation() {
-        // The grammar's `__` is mandatory whitespace, so these must not collapse.
         assert!(rendered_source("g(&shrd *x)").contains("&shrd *x"));
         assert!(rendered_source("g(&uniq *x)").contains("&uniq *x"));
         assert!(rendered_source("for c in &uniq *chunk { () }").contains("in &uniq"));
     }
 
-    /// Every place where the grammar demands whitespace, with the `src/parser/mod.rs`
-    /// line of the `__` it exercises. `__` (line 1063) is one-or-more whitespace, so a
-    /// rendering that glued these tokens together would make the source unparsable.
-    ///
-    /// The line numbers are citations rather than load-bearing references, and would
-    /// otherwise quietly go stale as the grammar moves. They are checked:
-    /// `every_cited_grammar_line_still_demands_whitespace` reads each one back out of
-    /// the parser and fails if it no longer holds a `__`.
-    ///
-    /// The two `__` in `lambda_parameter` (line 440) are left out: that rule is
-    /// unreachable, because the lambda expression that used it is commented out at
-    /// line 629.
     const MANDATORY_WHITESPACE_SITES: &[(u32, &str, &str)] = &[
         (373, "struct __ ident", "struct Point { x: i32, y: i32 }"),
         (386, "fun_decl: fn __ ident", "fn g() -[t: cpu.thread]-> i32;"),
@@ -360,10 +334,6 @@ mod tests {
         }
     }
 
-    /// The table above cites grammar lines it cannot otherwise be checked against. A
-    /// citation that has drifted still reads plausibly, so each one is read back out of
-    /// the parser: if the line no longer holds a `__`, the site it describes has moved
-    /// and the table is stale.
     #[test]
     fn every_cited_grammar_line_still_demands_whitespace() {
         let parser_source =
@@ -382,9 +352,6 @@ mod tests {
             );
         }
 
-        // The rule the whole table rests on. If this moves, every citation above moves
-        // with it, and the check would otherwise be against a line that merely happens
-        // to hold a `__`.
         let whitespace_rule = 1063;
         assert!(
             lines
@@ -394,8 +361,6 @@ mod tests {
         );
     }
 
-    /// The `.` exception to that rule: these must stay glued, because `keyword()`
-    /// matches them as whole strings (`src/parser/mod.rs:908` and `:965`).
     #[test]
     fn dotted_keywords_stay_glued() {
         for keyword in [
@@ -415,9 +380,6 @@ mod tests {
         }
     }
 
-    /// Every Descend source in the repository that the compiler accepts must still be
-    /// accepted after a round trip through the Rust lexer and
-    /// `DescendSource::from_token_stream`.
     #[test]
     fn every_descend_example_round_trips() {
         fn collect(directory: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
@@ -427,9 +389,6 @@ mod tests {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    // Build output and version control hold copies of these sources and
-                    // nothing that the round trip could say anything new about. `.git`
-                    // also holds files this process is not meant to read.
                     let skipped = path
                         .file_name()
                         .is_some_and(|name| name == "target" || name == ".git");
@@ -453,7 +412,6 @@ mod tests {
 
         for path in &files {
             let text = std::fs::read_to_string(path).unwrap();
-            // Sources the compiler already rejects say nothing about the round trip.
             if !parses(&text) {
                 continue;
             }
@@ -473,8 +431,6 @@ mod tests {
     #[test]
     fn the_execution_annotation_survives() {
         let rendered = rendered_source("-[grid: gpu.grid<X<64>, X<256>>]-> ()");
-        // The dotted keyword stays glued; the dimensions may be spaced, as the grammar
-        // allows optional whitespace around `<`.
         assert!(rendered.contains("gpu.grid"), "{rendered}");
         assert!(rendered.contains("X <64 >"), "{rendered}");
     }

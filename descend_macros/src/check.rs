@@ -33,15 +33,6 @@ pub fn check_kernel(kernel: &Kernel) -> Result<LaunchConfig, MacroError> {
     })
 }
 
-/// The launch dimensions a device will accept.
-///
-/// `cuLaunchKernel` refuses an oversized launch with `CUDA_ERROR_INVALID_VALUE`, which
-/// names neither the axis that was wrong nor the limit it exceeded -- and it refuses at
-/// run time, after the kernel has been compiled and embedded. Every one of these bounds
-/// is known while the macro is expanding, so all of them are checked here instead.
-///
-/// The limits are the portable ones from [`crate::limits`], not the build machine's;
-/// see that module for why.
 fn check_dimensions(
     kernel: &Kernel,
     grid: &Dimensions,
@@ -102,9 +93,6 @@ fn check_dimensions(
         ));
     }
 
-    // Checked after the axes, so this is reached only when every axis is legal on its
-    // own -- which is exactly the case worth explaining, since nothing in the kernel's
-    // spelling suggests the product is what a block is measured by.
     let threads = u64::from(block.x) * u64::from(block.y) * u64::from(block.z);
     if threads > u64::from(limits::MAX_THREADS_PER_BLOCK) {
         return Err(MacroError::at(
@@ -124,10 +112,6 @@ fn check_dimensions(
     Ok(())
 }
 
-/// The per-element byte width Descend's shared-memory sizing defines for a parameter.
-///
-/// `None` means Descend emits no byte count for that element type, so the macro cannot
-/// check the allocation rather than guess at it.
 fn shared_memory_element_bytes(parameter: &KernelParameter) -> Option<u32> {
     parameter
         .host
@@ -135,10 +119,6 @@ fn shared_memory_element_bytes(parameter: &KernelParameter) -> Option<u32> {
         .and_then(crate::host_ty::ScalarKind::shared_memory_bytes)
 }
 
-/// Shared-memory parameters must come last, because the compiler removes them from the
-/// end of the kernel signature and a parameter after one would be dropped with it.
-///
-/// Whether each one can be *sized* is [`shared_memory_bytes`]'s question, not this one's.
 fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
     let function = &kernel.function_name;
     let mut seen_shared = false;
@@ -164,11 +144,6 @@ fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
     Ok(())
 }
 
-/// The dynamic shared memory the kernel's launch needs, from the parameter types.
-///
-/// This is the macro's own answer. Descend's code generator computes the same count in
-/// `count_bytes`, but only at a launch site, and since no `main` is synthesized there is
-/// no launch site left to read it back from.
 pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroError> {
     let function = &kernel.function_name;
     let mut total: u64 = 0;
@@ -229,11 +204,6 @@ mod tests {
         Dim::X(Box::new(Dim1d(Nat::Lit(nat))))
     }
 
-    /// A kernel with the given parameters and a 1 x 1 launch.
-    ///
-    /// `check_dimensions` takes dimensions that have already been evaluated, so a test of
-    /// it supplies those directly and needs a kernel here only for the name the
-    /// diagnostic quotes.
     fn kernel_with(parameters: Vec<KernelParameter>) -> Kernel {
         Kernel {
             function_name: "gpu_k".to_string(),
@@ -260,8 +230,6 @@ mod tests {
         }
     }
 
-    /// The same parameter as a host buffer rather than as shared memory, so a test can
-    /// put one after a shared parameter and be refused for the order.
     fn global_parameter(name: &str) -> KernelParameter {
         KernelParameter {
             is_shared_memory: false,
@@ -313,8 +281,6 @@ mod tests {
         }
     }
 
-    /// The case a per-axis check misses: 32 x 32 x 2 is legal on every axis and is
-    /// still twice the threads a block may hold.
     #[test]
     fn a_block_whose_axes_are_legal_but_whose_product_is_not_is_refused() {
         let error = check(dimensions(1, 1, 1), dimensions(32, 32, 2)).unwrap_err();
@@ -333,7 +299,6 @@ mod tests {
 
     #[test]
     fn shared_memory_at_the_ceiling_is_accepted_and_above_it_is_not() {
-        // 12288 i32 is 49152 bytes, exactly the ceiling.
         let at_the_ceiling = kernel_with(vec![shared_parameter("tmp", ScalarKind::I32, 12288)]);
         assert!(check_kernel(&at_the_ceiling).is_ok());
 
@@ -352,7 +317,6 @@ mod tests {
             shared_parameter("left", ScalarKind::F64, 256),
             shared_parameter("right", ScalarKind::Bool, 256),
         ]);
-        // 256 f64 is 2048 bytes; 256 bool is 256.
         assert_eq!(shared_memory_bytes(&kernel).unwrap().value(), 2048 + 256);
     }
 
@@ -370,8 +334,6 @@ mod tests {
         assert!(error.message.contains("`vec`"), "{error}");
     }
 
-    /// Descend panics rather than sizing a shared `[u8; ..]`, so the macro has to refuse
-    /// it first. `U8` is an element type `host_ty` declines to give a width for.
     #[test]
     fn a_shared_parameter_of_an_element_descend_cannot_size_is_refused() {
         let kernel = kernel_with(vec![shared_parameter("tmp", ScalarKind::U8, 64)]);
@@ -389,8 +351,6 @@ mod tests {
         assert_eq!(shared_memory_bytes(&kernel).unwrap().value(), 0);
     }
 
-    /// The ceiling is a constant in `limits`, but the refusal is this function's: a count
-    /// above it never becomes a `SharedMemoryBytes`, so no launch can be emitted for it.
     #[test]
     fn a_shared_request_above_the_portable_ceiling_is_refused() {
         let kernel = kernel_with(vec![shared_parameter("big", ScalarKind::I32, 16384)]);
