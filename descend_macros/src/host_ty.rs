@@ -1,18 +1,5 @@
-//! How a Descend data type is represented on the host.
-//!
-//! This is the only place in the macro that reads `descend::ast::DataTyKind` for the
-//! host boundary, and it does so with an **exhaustive** match. That is the point: a new
-//! variant in Descend's AST becomes a compile error here, naming this one file, rather
-//! than falling into a wildcard arm and producing a plausible-looking wrong answer.
-//! `types::format_array_dty` shows what the wildcard costs — it answers `i32` for a
-//! tuple, so a tuple field silently became a four-byte integer on the host.
-//!
-//! Everything the boundary needs is derived from [`HostTy`], so adding a representable
-//! kind means extending the enum and this one match.
-
 use descend::ast::{AtomicTy, DataTy, DataTyKind, Memory, Ownership, ScalarTy, Ty, TyKind};
 
-/// A Descend scalar, with the spelling each side of the boundary uses for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarKind {
     U8,
@@ -28,8 +15,6 @@ pub enum ScalarKind {
 }
 
 impl ScalarKind {
-    /// How Rust spells it. An atomic is `u32`: the host only ever transfers its bytes,
-    /// and the atomic operations live in the kernel.
     pub fn rust(self) -> &'static str {
         match self {
             ScalarKind::U8 => "u8",
@@ -43,22 +28,6 @@ impl ScalarKind {
         }
     }
 
-    /// The width Descend's shared-memory sizing defines for this scalar, or `None`
-    /// where Descend defines none.
-    ///
-    /// This mirrors `size_of_dty` in `src/codegen/mod.rs`, whose fallback arm is
-    /// `panic!("unexpected data type")`. So `None` here is not a limitation the macro
-    /// invents: it is the set of element types that would abort the Descend compiler.
-    /// A shared `[u8; 64]` panics `descendc` outright, and a shared parameter of a
-    /// declared type panics it in `get_elem_ty_and_amount`. Reporting those as
-    /// diagnostics is the whole point of `check::check_shared_parameters`.
-    ///
-    /// `U8` and `AtomicI32` are therefore absent on purpose. `AtomicI32` is currently
-    /// unreachable from Descend source anyway -- the grammar spells only `AtomicU32`
-    /// (`src/parser/mod.rs:823`), so `AtomicI32` parses as a named type -- but if that
-    /// spelling is ever added, this keeps the macro's answer and Descend's in step.
-    ///
-    /// See `tests/macro_compiler_safety/shared_param_unsupported_elem.rs`.
     pub fn shared_memory_bytes(self) -> Option<u32> {
         match self {
             ScalarKind::Bool => Some(1),
@@ -69,11 +38,6 @@ impl ScalarKind {
     }
 }
 
-/// An array length, in the two forms the two languages need.
-///
-/// Rust needs the value, to spell `[i32; 8192]` and to count elements. Descend needs
-/// the expression the kernel wrote, because its type checker compares sizes
-/// syntactically and `8192` does not unify with `64 * 128`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrayLen {
     value: u32,
@@ -81,11 +45,6 @@ pub struct ArrayLen {
 }
 
 impl ArrayLen {
-    /// An array length from both of its spellings.
-    ///
-    /// The two are not derivable from one another -- `descend` keeps the expression the
-    /// kernel wrote, which `value` has already evaluated away -- so a caller that has
-    /// one but not the other has a bug, not a convenience to be offered.
     pub(crate) fn new(value: u32, descend: impl Into<String>) -> Self {
         Self {
             value,
@@ -94,17 +53,14 @@ impl ArrayLen {
     }
 }
 
-/// A Descend data type as the host can represent it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostTy {
     Scalar(ScalarKind),
     Array(Box<HostTy>, ArrayLen),
-    /// A type declared in the same `descend!` block, referred to by name.
     Declared(String),
 }
 
 impl HostTy {
-    /// The Rust spelling of this type.
     pub fn rust(&self) -> String {
         match self {
             HostTy::Scalar(kind) => kind.rust().to_string(),
@@ -115,7 +71,6 @@ impl HostTy {
         }
     }
 
-    /// The type of the innermost element, looking through any array nesting.
     pub fn base(&self) -> &HostTy {
         match self {
             HostTy::Array(element, _) => element.base(),
@@ -123,18 +78,14 @@ impl HostTy {
         }
     }
 
-    /// The scalar this type ultimately holds, if it holds one.
     pub fn scalar(&self) -> Option<ScalarKind> {
         match self.base() {
             HostTy::Scalar(kind) => Some(*kind),
             HostTy::Declared(_) => None,
-            // `base` never returns an array.
             HostTy::Array(_, _) => None,
         }
     }
 
-    /// How many elements of [`HostTy::base`] this type holds, or `None` if the count
-    /// does not fit in a `u64`.
     pub fn elements(&self) -> Option<u64> {
         match self {
             HostTy::Array(element, array_length) => {
@@ -145,26 +96,16 @@ impl HostTy {
     }
 }
 
-/// What a reference parameter points at.
-///
-/// The field names are spelled out in full even though `descend::ast::RefDty` abbreviates
-/// them to `own` and `mem`: this struct is this crate's, and `descend/src/` is not.
 pub struct Reference<'a> {
     pub ownership: Ownership,
     pub memory: Memory,
     pub dty: &'a DataTy,
 }
 
-/// The reference a parameter is, if it is one.
-///
-/// Parameters reach a kernel either as a reference to memory or as a value, and that
-/// distinction is read here so no caller has to match on `DataTyKind` to learn it.
 pub fn reference(ty: &Ty) -> Option<Reference<'_>> {
     let TyKind::Data(dty) = &ty.ty else {
         return None;
     };
-    // A wildcard is right here, unlike in `host_ty`: the question is only whether this
-    // is a reference, and a data type Descend adds later is simply not one.
     match &dty.dty {
         DataTyKind::Ref(reference_dty) => Some(Reference {
             ownership: reference_dty.own,
@@ -175,7 +116,6 @@ pub fn reference(ty: &Ty) -> Option<Reference<'_>> {
     }
 }
 
-/// The data type a parameter passes by value, if it passes one.
 pub fn value(ty: &Ty) -> Option<&DataTy> {
     let TyKind::Data(dty) = &ty.ty else {
         return None;
@@ -186,15 +126,10 @@ pub fn value(ty: &Ty) -> Option<&DataTy> {
     }
 }
 
-/// The data a parameter names: what a reference points at, or the value itself.
 pub fn parameter_dty(ty: &Ty) -> Option<&DataTy> {
     reference(ty).map(|r| r.dty).or_else(|| value(ty))
 }
 
-/// Why a Descend type has no host representation.
-///
-/// The text completes a sentence naming what was rejected, so one reason serves both
-/// `struct `P`: field `f` ..` and `kernel `k`: parameter `p` ..`.
 #[derive(Debug)]
 pub struct Unrepresentable(String);
 
@@ -204,7 +139,6 @@ impl Unrepresentable {
     }
 }
 
-/// The host representation of a Descend data type, or why it has none.
 pub fn host_ty(dty: &DataTy) -> Result<HostTy, Unrepresentable> {
     match &dty.dty {
         DataTyKind::Scalar(scalar) => scalar_host_ty(*scalar),
@@ -215,8 +149,6 @@ pub fn host_ty(dty: &DataTy) -> Result<HostTy, Unrepresentable> {
                 crate::spell::format_nat(length_expression)
                     .map_err(|error| Unrepresentable(format!("has an unresolved size: {error}")))?,
             );
-            // Carry the element's reason outward, so a rejection names the type the
-            // reader actually wrote rather than the element buried inside it.
             let element = host_ty(element).map_err(|reason| {
                 Unrepresentable(format!("is an array whose element {}", reason.reason()))
             })?;
@@ -224,7 +156,6 @@ pub fn host_ty(dty: &DataTy) -> Result<HostTy, Unrepresentable> {
         }
         DataTyKind::Struct(declared) => Ok(HostTy::Declared(declared.ident.name.to_string())),
         DataTyKind::Ident(name) => Ok(HostTy::Declared(name.name.to_string())),
-        // A memory annotation says where the value lives, not what it is.
         DataTyKind::At(inner, _) => host_ty(inner),
         DataTyKind::Tuple(_) => Err(Unrepresentable(
             "is a tuple. Neither Rust tuples nor `descend::tuple` guarantee a memory \
@@ -356,8 +287,6 @@ mod tests {
         ];
         for case in cases {
             let reason = case.expect_err("must be rejected").reason().to_string();
-            // A reason, not just a name: it has to tell the reader what to do instead or
-            // why the type has no host value at all.
             assert!(reason.ends_with('.'), "not a sentence: {reason}");
             assert!(reason.len() > 40, "too terse to act on: {reason}");
         }
@@ -381,10 +310,6 @@ mod tests {
         );
     }
 
-    /// Descend's `size_of_dty` panics on an element type it has no width for, so the
-    /// macro must answer `None` for exactly those and no others. Verified against
-    /// `descendc`: a shared `[u8; 64]` aborts it, a shared `[i32; 64]` yields
-    /// `(0 + (4 * (1 * 64)))` bytes.
     #[test]
     fn shared_memory_widths_mirror_what_descend_can_size() {
         for (kind, expected) in [
@@ -396,7 +321,6 @@ mod tests {
             (ScalarKind::U64, Some(8)),
             (ScalarKind::I64, Some(8)),
             (ScalarKind::F64, Some(8)),
-            // Descend panics on these rather than sizing them.
             (ScalarKind::U8, None),
             (ScalarKind::AtomicI32, None),
         ] {
@@ -406,8 +330,6 @@ mod tests {
 
     #[test]
     fn a_declared_type_has_no_shared_memory_width() {
-        // Descend panics on a shared parameter of a declared type, so the macro must
-        // not offer a width for one.
         assert_eq!(HostTy::Declared("Pair".to_string()).scalar(), None);
     }
 

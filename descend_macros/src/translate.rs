@@ -23,27 +23,14 @@ pub fn translate(
     Ok(device_code)
 }
 
-/// Turning Descend's generated CUDA into a translation unit NVRTC will accept as a
-/// device-only module.
-///
-/// Each replacement below undoes one thing `descend::codegen` emits that is right for
-/// a whole program and wrong for a PTX module. They are string replacements rather than
-/// changes to the code generator because `descend/src/` is not this crate's to edit; the
-/// site that produces each one is named so a change there is traceable to here.
 fn generate_device_code(
     compilation_unit: &mut descend::ast::CompilUnit,
     kernel_name: &str,
 ) -> String {
     let mut device_code = descend::codegen::gen(compilation_unit);
 
-    // Descend's printer spells every `SizeT` as `std::size_t`
-    // (`src/codegen/printer.rs:394`), which lands in `for` counters as often as in
-    // generic sizes. NVRTC has no C++ standard library on its include path at all, so
-    // only the unqualified spelling is declared there.
     device_code = device_code.replace("std::size_t", "size_t");
 
-    // The launcher looks the kernel up by name through `cuModuleGetFunction`, which
-    // needs an unmangled symbol. `assemble::find_entry_symbol` depends on this landing.
     device_code.replace(
         &format!("__global__ auto {}(", kernel_name),
         &format!("extern \"C\" __global__ auto {}(", kernel_name),
@@ -77,8 +64,6 @@ fn gpu_add<r: prv>(
     }
 }";
 
-    /// With no synthesized `main` there is no host function to remove, so the check is
-    /// that none was ever generated -- and that the kernel is still marked `extern "C"`.
     #[test]
     fn the_device_code_has_no_host_function_and_an_unmangled_entry() {
         let device_code = translate(KERNEL, "gpu_add", |_| None).expect("the kernel must compile");
@@ -93,8 +78,6 @@ fn gpu_add<r: prv>(
         );
     }
 
-    /// The kernel is checked on its own, so a program with no `main` is not an error --
-    /// which is the whole reason this stage no longer synthesizes one.
     #[test]
     fn a_kernel_is_type_checked_without_a_main_function() {
         assert!(translate(KERNEL, "gpu_add", |_| None).is_ok());

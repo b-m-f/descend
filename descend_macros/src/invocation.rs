@@ -128,12 +128,6 @@ pub fn parse_sizes(input: TokenStream) -> Result<HashMap<String, String>, MacroE
     Ok(sizes)
 }
 
-/// A literal's spelling, if it is a plain non-negative integer.
-///
-/// `proc_macro2` hands back `1.5`, `"x"` and `16384u32` as a `Literal` just as readily
-/// as `16384`. Substituted into the token stream they fail much later, inside Descend's
-/// parser, with a message that never mentions the binding -- so the check belongs here,
-/// where the span still points at what the user wrote.
 fn plain_integer(literal: &Literal) -> Option<String> {
     let spelled = literal.to_string();
     let is_plain_integer =
@@ -169,8 +163,6 @@ pub fn parse_function_invocation(input: TokenStream) -> Result<FunctionInvocatio
     };
     check_kernel_name(&kernel)?;
 
-    // `descend_fn!(gpu_vec_add)` for a kernel with no sizes; the comma only separates
-    // the kernel from a size list that is actually there.
     let bindings = if cursor.eat_punct(',') {
         cursor.rest()
     } else {
@@ -273,9 +265,6 @@ mod tests {
         assert!(sizes("<N: 16384").unwrap_err().contains("not terminated"));
     }
 
-    /// A size reaches the token stream by textual substitution, so anything that is a
-    /// `Literal` to Rust but not a `nat` to Descend has to be refused here rather than
-    /// left to fail inside Descend's parser, which would not mention the binding.
     #[test]
     fn a_size_that_is_not_a_plain_integer_is_refused_at_the_binding() {
         for (source, spelled) in [
@@ -295,8 +284,6 @@ mod tests {
 
     #[test]
     fn a_negative_size_is_refused() {
-        // `-4` is a punctuation token followed by a literal, so it never reaches the
-        // integer check; the message is still about the binding, not about `-`.
         assert!(sizes("<N: -4>")
             .unwrap_err()
             .contains("needs an integer literal"));

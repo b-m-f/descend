@@ -11,9 +11,6 @@ pub struct KernelParameter {
     pub is_uniq: bool,
     pub is_shared_memory: bool,
     pub is_by_value: bool,
-    /// The data this parameter names -- what a reference points at, or the value
-    /// itself. The Rust signature is spelled from this, so the host and device
-    /// spellings cannot drift apart.
     pub host: HostTy,
 }
 
@@ -31,10 +28,6 @@ pub struct Kernel {
     pub parameters: Vec<KernelParameter>,
 }
 
-/// The span a Descend identifier occupies in the source the macro rendered.
-///
-/// Shared by every stage that reports against something the user wrote, so they all
-/// resolve a span the same way.
 pub(crate) fn span_of(ident: &Ident, source: &DescendSource) -> Option<Span> {
     source.span_at(ident.span?.begin)
 }
@@ -43,11 +36,6 @@ pub fn is_launchable(fun_def: &FunDef) -> bool {
     matches!(fun_def.exec.exec.base, BaseExec::GpuGrid(_, _))
 }
 
-/// The diagnostic for a kernel name the source does not define.
-///
-/// Two stages can be the first to notice -- `specialize` walks the tokens, `extract`
-/// walks the parsed AST -- and the reader should get the same sentence from whichever
-/// one it is. Hence one copy here rather than one in each.
 pub(crate) fn not_defined(kernel_name: &str) -> MacroError {
     MacroError::from(format!(
         "kernel `{kernel_name}` is not defined in this `descend!` block"
@@ -90,8 +78,6 @@ impl Kernel {
                     let parameter_span = span_of(&parameter.ident, source);
                     let ty = parameter.ty.as_ref().unwrap();
 
-                    // A parameter is either a reference to memory or a value, and that
-                    // decides both how it reaches the kernel and how the host holds it.
                     let (is_uniq, is_shared_memory, is_by_value) = match host_ty::reference(ty) {
                         Some(reference) => (
                             matches!(reference.ownership, Ownership::Uniq),

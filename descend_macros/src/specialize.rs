@@ -34,10 +34,6 @@ pub fn specialize_kernel(
             let opened_at = left_angle.span();
             let (inner_tokens, right_angle) = extract_generic_block(&mut iter);
 
-            // Reported here rather than left to be invented: a closing `>` supplied by
-            // the macro produces a token stream that looks well formed, and the failure
-            // resurfaces as a parse error in Descend pointing at source the reader never
-            // wrote.
             let Some(right_angle) = right_angle else {
                 return Err(MacroError::at(
                     format!(
@@ -266,8 +262,6 @@ fn filter_generics(tokens: Vec<TokenTree>, keys: &[&str]) -> TokenStream {
     output
 }
 
-/// The tokens between a generic parameter list's `<` and its matching `>`, and the `>`
-/// itself -- or `None` for the `>` if the stream ends before one.
 fn extract_generic_block(
     iter: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>,
 ) -> (Vec<TokenTree>, Option<TokenTree>) {
@@ -402,8 +396,6 @@ mod tests {
         );
     }
 
-    /// The `>` used to be invented here, which produced a token stream that looked well
-    /// formed and then failed inside Descend's parser, pointing at source nobody wrote.
     #[test]
     fn a_generic_parameter_list_that_is_never_closed_is_reported() {
         let error = specialize(

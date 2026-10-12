@@ -1,8 +1,3 @@
-//! Compiling device code to PTX through NVRTC.
-//!
-//! NVRTC compiles from memory: the source and `descend.cuh` are handed to it as strings,
-//! so nothing is written to disk and no subprocess is spawned.
-
 use crate::diag::MacroError;
 use libloading::{Library, Symbol};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -14,10 +9,6 @@ const FLAGS_ENVIRONMENT_VARIABLE: &str = "DESCEND_NVRTC_FLAGS";
 const HEADER_NAME: &str = "descend.cuh";
 const PROGRAM_NAME: &str = "descend_kernel.cu";
 
-/// The toolkit root.
-///
-/// The same variable the `cuda-bindings` build script requires, so one build resolves
-/// one toolkit: the driver bindings and NVRTC cannot come from different places.
 const TOOLKIT_ENVIRONMENT_VARIABLE: &str = "CUDA_TOOLKIT_PATH";
 
 const LIBRARY_DIRECTORIES: &[&str] = &["lib", "lib64"];
@@ -42,7 +33,6 @@ type GetLogFn = unsafe extern "C" fn(Program, *mut c_char) -> ResultCode;
 type DestroyProgramFn = unsafe extern "C" fn(*mut Program) -> ResultCode;
 type GetErrorStringFn = unsafe extern "C" fn(ResultCode) -> *const c_char;
 
-/// Everything a compilation needs, resolved once per expansion.
 pub struct Toolchain {
     library_path: PathBuf,
     options: Vec<String>,
@@ -55,11 +45,6 @@ impl Toolchain {
     }
 }
 
-/// The toolchain, resolved at most once successfully per process.
-///
-/// Only a success is stored, so a transient `nvidia-smi` failure is not cached for the
-/// rest of the expansion. Two threads resolving at once compute the same answer and
-/// whichever `set` wins is the one both then read.
 pub fn toolchain() -> Result<&'static Toolchain, MacroError> {
     static TOOLCHAIN: OnceLock<Toolchain> = OnceLock::new();
     if let Some(resolved) = TOOLCHAIN.get() {
@@ -95,10 +80,6 @@ fn discover() -> Result<Toolchain, MacroError> {
     })
 }
 
-/// The toolkit root the environment names.
-///
-/// The lookup is a parameter so the refusal can be tested without touching the process
-/// environment, which the rest of the test run reads.
 fn toolkit_root(
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<PathBuf, MacroError> {
@@ -147,8 +128,6 @@ fn resolve_options(include_path: &Path) -> Result<Vec<String>, MacroError> {
         .map(|option| option.to_string())
         .collect();
 
-    // `descend.cuh` declares its host-side helpers without an execution-space annotation,
-    // and NVRTC refuses an unannotated function outright in JIT mode.
     options.push("-default-device".to_string());
 
     options.push(format!(
@@ -171,7 +150,6 @@ fn resolve_options(include_path: &Path) -> Result<Vec<String>, MacroError> {
     Ok(options)
 }
 
-/// The compute capability of the first GPU, as an NVRTC `-arch=` option.
 fn probe_architecture() -> Result<String, MacroError> {
     const OVERRIDE_HINT: &str = "set DESCEND_NVRTC_FLAGS=-arch=compute_<capability>";
 
@@ -224,7 +202,6 @@ struct Nvrtc {
     get_log: GetLogFn,
     destroy_program: DestroyProgramFn,
     get_error_string: GetErrorStringFn,
-    // Held for its `Drop` alone, and declared last so it outlives every pointer above.
     _library: Library,
 }
 
@@ -380,7 +357,6 @@ impl Nvrtc {
     }
 }
 
-/// A program handle that is destroyed whichever way this function returns.
 struct OwnedProgram {
     handle: Program,
     destroy: DestroyProgramFn,
@@ -398,10 +374,6 @@ fn c_string(what: &str, text: &str) -> Result<CString, MacroError> {
     CString::new(text).map_err(|_| format!("{what} contains an interior NUL byte").into())
 }
 
-/// One symbol out of the loaded library.
-///
-/// `libloading` wants the name NUL-terminated, and the terminator is added here so no
-/// call site has to spell it.
 fn bind<Signature: Copy>(
     library: &Library,
     path: &Path,
@@ -472,8 +444,6 @@ mod tests {
         assert!(find_library(root.path()).is_err());
     }
 
-    /// A missing toolkit is the failure a reader hits first, so the message has to say
-    /// what was looked for rather than only that nothing was found.
     #[test]
     fn a_toolkit_without_a_library_names_every_path_it_tried() {
         let root = empty_toolkit_root();
@@ -493,8 +463,6 @@ mod tests {
         );
     }
 
-    /// A stand-in for the process environment, so the refusal can be tested without
-    /// setting variables the rest of the test run reads.
     fn environment(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
         let owned: Vec<(String, OsString)> = entries
             .iter()
@@ -525,7 +493,6 @@ mod tests {
         assert!(toolkit_root(environment(&[(TOOLKIT_ENVIRONMENT_VARIABLE, "")])).is_err());
     }
 
-    /// The first failure a reader hits, so it has to name the variable to set.
     #[test]
     fn a_missing_toolkit_names_the_variable_to_set() {
         let error = toolkit_root(environment(&[])).unwrap_err();

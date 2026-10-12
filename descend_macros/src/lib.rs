@@ -1,48 +1,3 @@
-//! The procedural macros that compile Descend into a callable Rust function.
-//!
-//! Two macros are meant to be written. [`descend!`] declares kernels and types; it
-//! compiles nothing. [`descend_fn!`] instantiates one declared kernel at one set of
-//! sizes, and that is where NVRTC runs. A third, [`__descend_fn_internal`], is plumbing:
-//! the carrier macro a `descend!` emits calls it, and nobody writes it by hand.
-//!
-//! Everything else in this crate is private, so the stages below are named as code
-//! rather than linked: rustdoc for a proc-macro crate shows only its macros.
-//!
-//! # The instantiation pipeline
-//!
-//! `instantiate` is the whole of it, and reads as an ordered list of stages:
-//!
-//! 1. `invocation::parse_sizes` — read the `<N: 16384>` bindings.
-//! 2. `specialize::specialize_kernel` — substitute them into the kernel's tokens.
-//! 3. `source::DescendSource` — render the token stream back to Descend source, keeping
-//!    a map from each byte offset to the span it came from.
-//! 4. `source::parse_descend_source` — parse that into Descend's AST.
-//! 5. `kernel::Kernel::extract` — pull the named kernel out, with its parameters as
-//!    `host_ty::HostTy` so the host and device spellings cannot drift apart.
-//! 6. `check::check_kernel` — refuse what cannot be launched, before anything is
-//!    compiled. The bounds are in `limits`.
-//! 7. `translate::translate` — type-check the kernel on its own, then generate CUDA for
-//!    a device-only translation unit.
-//! 8. `assemble::assemble` — compile through NVRTC, and find the kernel's entry symbol in the PTX.
-//! 9. `emit::generate_launch_function` — the Rust function the caller binds.
-//!
-//! # Errors
-//!
-//! A *stage* returns `diag::MacroError`, which carries the span to point the compiler
-//! at. The sub-computations a stage calls — `nat`, `spell`, `host_ty::Unrepresentable` —
-//! return a *reason fragment* instead: a clause that completes a sentence the stage
-//! writes around it, as in ``kernel `k`: parameter `p` is a tuple. …``. Fragments
-//! deliberately do not know about spans, because only the stage knows which token the
-//! reader has to change.
-//!
-//! # Environment
-//!
-//! | Variable | Effect |
-//! |---|---|
-//! | `CUDA_TOOLKIT_PATH` | Required. The CUDA toolkit root, holding both `lib/libnvrtc.so` and `include/`. NVRTC is loaded from it, and its `include/` is what lets the CUDA headers `descend.cuh` needs resolve. It is also what the `cuda-bindings` build script requires, so one build resolves one toolkit. |
-//! | `DESCEND_DEBUG` | Print the rendered Descend source and the generated CUDA to stderr. |
-//! | `DESCEND_NVRTC_FLAGS` | Extra options for NVRTC. Without an `-arch=`, one is detected through `nvidia-smi`. |
-
 extern crate proc_macro;
 
 #[macro_use]
@@ -74,49 +29,21 @@ use descend::ast::CompilUnit;
 use descend::parser::SourceCode;
 use proc_macro2::{Ident, TokenStream};
 
-/// Declare Descend kernels and types.
-///
-/// Each kernel becomes a carrier macro holding its source; nothing is compiled here.
-/// Each `struct` becomes its `#[repr(C)]` Rust counterpart immediately, because a kernel
-/// taking it needs that type in scope to be callable at all.
-///
-/// A kernel is declared by an execution annotation `-[grid: gpu.grid<.., ..>]->`. Use
-/// [`descend_fn!`] to instantiate one.
 #[proc_macro]
 pub fn descend(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, declare_kernels)
 }
 
-/// Instantiate a kernel declared by [`descend!`], evaluating to the function.
-///
-/// ```ignore
-/// let gpu_vec_add = descend_fn!(gpu_vec_add, <N: 16384>);
-/// ```
-///
-/// This is an expression, so the caller names the result with an ordinary `let`. A
-/// procedural macro cannot tell item position from expression position, so this is the
-/// only position the macro supports; an instantiation that has to be reachable elsewhere
-/// goes in a hand-written wrapper function.
-///
-/// Instantiating is what compiles: this runs Descend's type checker and NVRTC, and embeds
-/// the resulting PTX in the generated function.
 #[proc_macro]
 pub fn descend_fn(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, route_to_carrier)
 }
 
-/// Internal: invoked only by the carrier a `descend!` emits, never written by hand.
-///
-/// The carrier exists so that a kernel's name is *not* what carries its source. Under a
-/// name nobody writes, calling a declared-but-uninstantiated kernel fails as `cannot
-/// find function` rather than as `expected function, found macro`. See `emit::carrier_name`.
 #[proc_macro]
 pub fn __descend_fn_internal(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_or_error(input, instantiate_kernel)
 }
 
-// `descend!` declares; it does not compile. Whatever a kernel's sizes are, it becomes a
-// function only where a `descend_fn!` instantiates it.
 fn declare_kernels(input: TokenStream) -> Result<TokenStream, MacroError> {
     let source_token_stream = input.clone();
     let source = render_source(input);
@@ -139,9 +66,6 @@ fn instantiate_kernel(input: TokenStream) -> Result<TokenStream, MacroError> {
     let asked_at = kernel.span();
 
     instantiate(source_token_stream, &kernel, bindings)
-        // The generated function keeps the kernel's name. It lives in this block, so it
-        // cannot collide with the binding the caller writes, nor with another
-        // instantiation of the same kernel in the same scope.
         .map(|items| emit::block_yielding(items, &kernel))
         .map_err(|error| error.or_span(Some(asked_at)))
 }
@@ -160,9 +84,6 @@ fn instantiate(
     let unit = source::parse_descend_source(&code, &source)?;
     let kernel = Kernel::extract(&unit, &kernel_name, &source)?;
 
-    // From here the stages are working from Descend's AST rather than from the tokens
-    // the reader wrote, so not all of them can name the token that offended them. The
-    // kernel's declaration is the fallback span for the rest of the pipeline.
     let declared_at = kernel.name_span;
     let launch = check::check_kernel(&kernel)?;
     let device_code =
@@ -191,8 +112,6 @@ fn declare(
 
     for item in &unit.items {
         match item {
-            // The carrier that carries this source to an instantiation is all that is
-            // emitted for a kernel here.
             descend::ast::Item::FunDef(fun_def) if kernel::is_launchable(fun_def) => {
                 let kernel_name = fun_def.ident.name.to_string();
                 if declared_names.contains(&kernel_name) {
@@ -211,9 +130,6 @@ fn declare(
                 declared_names.push(kernel_name.clone());
                 output.extend(emit::carrier_macro(&kernel_name, source_token_stream));
             }
-            // A declared type becomes its Rust counterpart here. Unlike a kernel this
-            // costs nothing to emit -- no compilation, just the type -- and a kernel that uses
-            // it needs the Rust type in scope to be callable at all.
             descend::ast::Item::StructDecl(struct_decl) => {
                 let struct_code = emit::format_rust_struct(struct_decl, source)?;
                 output.extend(struct_code.parse::<TokenStream>().map_err(|error| {

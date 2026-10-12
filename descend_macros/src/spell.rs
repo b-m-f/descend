@@ -1,19 +1,5 @@
-//! Spelling Descend's nat expressions back out as source text.
-//!
-//! Data types are not handled here: they go through [`crate::host_ty`], which is the
-//! single place that reads `DataTyKind`.
-
 use descend::ast::*;
 
-/// A nat expression as Descend source.
-///
-/// Descend's type checker compares sizes syntactically: `[i32; 8192]` does not unify
-/// with `[i32; 64 * 128]`. So a size the macro passes back to Descend has to keep the
-/// expression the kernel wrote, which is why this is spelled rather than evaluated.
-///
-/// Exhaustive on purpose: the kinds that depend on a running thread have no spelling in
-/// a size, and a new `Nat` variant should be a compile error here rather than silently
-/// becoming `?` in generated source.
 pub(crate) fn format_nat(nat: &Nat) -> Result<String, String> {
     Ok(match nat {
         Nat::Lit(value) => value.to_string(),
