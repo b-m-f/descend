@@ -1,5 +1,9 @@
 error: expected one of "!", "&", "(", "()", "*", "-", "0", "<", "[", "_", "false", "for", "if", "indep", "let", "sched", "sync", "true", "unsafe", "while", "{", ['1'..='9'], ['_'], ['a'..='z'|'A'..='Z']
- --> tests/macro_compiler_safety/parse_unexpected_punctuation.rs:4:51
+ --> tests/macro_compiler_safety/parse_unexpected_punctuation.rs:3:1
   |
-4 |     fn bad() -[grid: gpu.grid<X<1>, X<1>>]-> () { @ }
-  |                                                   ^
+3 | / descend! {
+4 | |     fn bad() -[grid: gpu.grid<X<1>, X<1>>]-> () { @ }
+5 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

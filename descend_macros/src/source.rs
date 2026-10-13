@@ -3,7 +3,6 @@ use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 pub struct DescendSource {
     pub text: String,
     spans: Vec<(u32, u32, Span)>,
-    syntax_spans: Vec<(u32, u32, Span)>,
     last_was_ident_or_literal: bool,
 }
 
@@ -14,33 +13,10 @@ impl DescendSource {
         (offset >= *begin && offset < *end).then_some(*span)
     }
 
-    pub fn span_for(&self, source_span: descend::ast::Span) -> Option<Span> {
-        let next = self
-            .spans
-            .partition_point(|(_, end, _)| *end <= source_span.begin);
-        self.spans.get(next).and_then(|(begin, _, span)| {
-            (*begin < source_span.end || *begin == source_span.begin).then_some(*span)
-        })
-    }
-
-    pub fn span_for_parse_error(&self, source_span: descend::ast::Span) -> Option<Span> {
-        self.syntax_token_for(source_span).map(|(_, _, span)| *span)
-    }
-
-    fn syntax_token_for(&self, source_span: descend::ast::Span) -> Option<&(u32, u32, Span)> {
-        let next = self
-            .syntax_spans
-            .partition_point(|(_, end, _)| *end <= source_span.begin);
-        self.syntax_spans
-            .get(next)
-            .or_else(|| self.syntax_spans.last())
-    }
-
     pub fn from_token_stream(token_stream: TokenStream) -> DescendSource {
         let mut source = DescendSource {
             text: String::new(),
             spans: Vec::new(),
-            syntax_spans: Vec::new(),
             last_was_ident_or_literal: false,
         };
         source.push_token_stream(token_stream);
@@ -61,14 +37,14 @@ impl DescendSource {
                         self.text.push(' ');
                     }
                     if !open.is_empty() {
-                        self.write_syntax_spanned(open, group.span_open());
+                        self.text.push_str(open);
                     }
                     self.last_was_ident_or_literal = false;
 
                     self.push_token_stream(group.stream());
 
                     if !close.is_empty() {
-                        self.write_syntax_spanned(close, group.span_close());
+                        self.text.push_str(close);
                     }
                     self.text.push(' ');
                     self.last_was_ident_or_literal = false;
@@ -91,7 +67,7 @@ impl DescendSource {
                     if self.last_was_ident_or_literal && punct.as_char() != '.' {
                         self.text.push(' ');
                     }
-                    self.write_syntax_spanned(&punct.as_char().to_string(), punct.span());
+                    self.text.push(punct.as_char());
                     self.last_was_ident_or_literal = false;
                 }
             }
@@ -102,24 +78,22 @@ impl DescendSource {
         let begin = self.text.len() as u32;
         self.text.push_str(text);
         self.spans.push((begin, self.text.len() as u32, span));
-        self.syntax_spans
-            .push((begin, self.text.len() as u32, span));
-    }
-
-    fn write_syntax_spanned(&mut self, text: &str, span: Span) {
-        let begin = self.text.len() as u32;
-        self.text.push_str(text);
-        self.syntax_spans
-            .push((begin, self.text.len() as u32, span));
     }
 }
 
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
-    rendered: &DescendSource,
 ) -> Result<descend::ast::CompilUnit<'a>, crate::diag::MacroError> {
-    descend::parser::parse_with_diagnostics(source).map_err(|error| {
-        crate::diag::MacroError::at(error.message(), rendered.span_for_parse_error(error.span()))
+    let (parsed, captured) =
+        crate::capture::with_captured_output(|| descend::parser::parse(source));
+
+    parsed.map_err(|_| {
+        crate::capture::descend_message(&captured)
+            .unwrap_or_else(|| {
+                "the Descend source did not parse; the Descend compiler reported the reason above"
+                    .to_string()
+            })
+            .into()
     })
 }
 
@@ -148,75 +122,35 @@ mod tests {
     }
 
     #[test]
-    fn a_dereference_span_maps_to_the_identifier_after_its_operator() {
+    fn only_identifiers_and_literals_carry_a_span() {
         let source = DescendSource::from_token_stream(
             TokenStream::from_str("(*b_array)").expect("the expression must tokenize"),
         );
-        let begin = source.text.find("*b_array").unwrap() as u32;
-        let dereference =
-            descend::ast::Span::new(begin as usize, begin as usize + "*b_array".len());
+        let dereference = source.text.find("*b_array").unwrap() as u32;
+        let identifier = source.text.find("b_array").unwrap() as u32;
 
-        assert!(source.span_at(begin).is_none());
-        assert!(source.span_for(dereference).is_some());
-    }
-
-    #[test]
-    fn parse_errors_map_to_punctuation_and_group_delimiters() {
-        let source = DescendSource::from_token_stream(
-            TokenStream::from_str("fn bad() { @ }").expect("the source must tokenize"),
+        assert!(
+            source.span_at(dereference).is_none(),
+            "punctuation has no span to point a diagnostic at"
         );
-        for token in ['(', ')', '{', '@', '}'] {
-            let offset = source.text.find(token).unwrap();
-            let point = descend::ast::Span::new(offset, offset);
-            let (begin, end, _) = source.syntax_token_for(point).expect("token has a span");
-            assert_eq!(
-                &source.text[*begin as usize..*end as usize],
-                token.to_string()
-            );
-        }
+        assert!(source.span_at(identifier).is_some());
     }
 
     #[test]
-    fn parse_error_at_end_of_input_maps_to_last_token() {
-        let source = DescendSource::from_token_stream(
-            TokenStream::from_str("fn bad()").expect("the source must tokenize"),
-        );
-        let offset = source.text.len();
-        let (begin, end, _) = source
-            .syntax_token_for(descend::ast::Span::new(offset, offset))
-            .expect("end of input has a nearby token");
-        assert_eq!(&source.text[*begin as usize..*end as usize], ")");
-    }
-
-    #[test]
-    fn parse_error_on_whitespace_maps_to_following_token() {
-        let source = DescendSource::from_token_stream(
-            TokenStream::from_str("fn bad").expect("the source must tokenize"),
-        );
-        let offset = source.text.find(' ').unwrap();
-        let (begin, end, _) = source
-            .syntax_token_for(descend::ast::Span::new(offset, offset))
-            .expect("whitespace has a following token");
-        assert_eq!(&source.text[*begin as usize..*end as usize], "bad");
-    }
-
-    #[test]
-    fn macro_parse_error_keeps_the_parser_message_and_rust_span() {
+    fn a_parse_failure_carries_the_compilers_message() {
         let rendered = DescendSource::from_token_stream(
             TokenStream::from_str("fn bad() -[grid: gpu.grid<X<1>, X<1>>]-> () { @ }")
                 .expect("the source must tokenize"),
         );
         let source = descend::parser::SourceCode::new(rendered.text.clone());
-        let error = parse_descend_source(&source, &rendered).expect_err("@ must be rejected");
-        let parse_error =
-            descend::parser::parse_with_diagnostics(&source).expect_err("@ must be rejected");
-        let (begin, end, _) = rendered
-            .syntax_token_for(parse_error.span())
-            .expect("the failure must map to a token");
 
-        assert!(error.message.starts_with("expected "));
-        assert!(error.span.is_some());
-        assert_eq!(&rendered.text[*begin as usize..*end as usize], "@");
+        let error = parse_descend_source(&source).expect_err("@ must be rejected");
+
+        assert!(!error.message.is_empty(), "{error:?}");
+        assert!(
+            error.span.is_none(),
+            "the Descend compiler reports the position itself, so the macro adds none: {error:?}"
+        );
     }
 
     #[test]
@@ -287,28 +221,28 @@ mod tests {
     }
 
     const MANDATORY_WHITESPACE_SITES: &[(u32, &str, &str)] = &[
-        (373, "struct __ ident", "struct Point { x: i32, y: i32 }"),
-        (386, "fun_decl: fn __ ident", "fn g() -[t: cpu.thread]-> i32;"),
-        (404, "global_fun_def: fn __ ident", "fn f() -[t: cpu.thread]-> () { () }"),
-        (434, "param_decl: mutability __", "fn f(mut x: i32) -[t: cpu.thread]-> () { () }"),
-        (434, "param_decl: `]` __ ident", "fn f([grid.forall(X)] tmp: &r uniq gpu.shared [i32; 8]) -[grid: gpu.grid<X<1>, X<8>>]-> () { () }"),
-        (453, "pattern: mutability __ ident", "fn f() -[t: cpu.thread]-> () { let mut x = 1; () }"),
-        (465, "let __ pattern", "fn f() -[t: cpu.thread]-> () { let x = 1; () }"),
-        (474, "for __ ident __ in __ expression", "fn f() -[t: cpu.thread]-> () { for c in &uniq *chunk { () } }"),
-        (479, "while __ cond __ block", "fn f() -[t: cpu.thread]-> () { while x { () } }"),
-        (517, "expr __ as __ dty", "fn f() -[t: cpu.thread]-> () { let y = x as i32; () }"),
-        (517, "expr __ as __ reference dty", "fn f() -[t: cpu.thread]-> () { let y = x as &r shrd gpu.global i32; () }"),
-        (590, "& provenance __ ownership __ place", "fn f() -[t: cpu.thread]-> () { let a = &'a uniq *x; () }"),
-        (590, "& ownership __ place", "fn f() -[t: cpu.thread]-> () { let a = &uniq *x; () }"),
-        (603, "if __ cond", "fn f() -[t: cpu.thread]-> () { if x { () } else { () } }"),
-        (610, "for __ ident __ in __ nat_range", "fn f() -[t: cpu.thread]-> () { for i in 0..4 { () } }"),
-        (613, "indep `)` __ nat __ exec_expr", "fn f() -[grid: gpu.grid<X<1>, X<8>>]-> () { indep(X) 4 grid { a => { () }, b => { () } } }"),
-        (622, "sched __ ident __ in __ exec_expr", "fn f() -[grid: gpu.grid<X<1>, X<8>>]-> () { sched block in grid { () } }"),
-        (622, "sched `)` __ ident", "fn f() -[grid: gpu.grid<XY<2,2>, XY<4,4>>]-> () { sched(Y) r in grid { () } }"),
-        (671, "let_uninit: let __ mut __ ident", "fn f() -[t: cpu.thread]-> () { let mut x: i32; () }"),
-        (671, "let_uninit: let `]` __ mut", "fn f() -[grid: gpu.grid<X<1>, X<8>>]-> () { let [grid.forall(X)] mut x: i32; () }"),
-        (844, "& provenance __ ownership __ memory_kind __ dty", "fn f(x: &'a uniq gpu.global [i32; 8]) -[t: cpu.thread]-> () { () }"),
-        (844, "memory_kind __ reference dty", "fn f(x: &'a uniq gpu.global &'b shrd gpu.global i32) -[t: cpu.thread]-> () { () }"),
+        (363, "struct __ ident", "struct Point { x: i32, y: i32 }"),
+        (376, "fun_decl: fn __ ident", "fn g() -[t: cpu.thread]-> i32;"),
+        (394, "global_fun_def: fn __ ident", "fn f() -[t: cpu.thread]-> () { () }"),
+        (424, "param_decl: mutability __", "fn f(mut x: i32) -[t: cpu.thread]-> () { () }"),
+        (424, "param_decl: `]` __ ident", "fn f([grid.forall(X)] tmp: &r uniq gpu.shared [i32; 8]) -[grid: gpu.grid<X<1>, X<8>>]-> () { () }"),
+        (443, "pattern: mutability __ ident", "fn f() -[t: cpu.thread]-> () { let mut x = 1; () }"),
+        (455, "let __ pattern", "fn f() -[t: cpu.thread]-> () { let x = 1; () }"),
+        (464, "for __ ident __ in __ expression", "fn f() -[t: cpu.thread]-> () { for c in &uniq *chunk { () } }"),
+        (469, "while __ cond __ block", "fn f() -[t: cpu.thread]-> () { while x { () } }"),
+        (507, "expr __ as __ dty", "fn f() -[t: cpu.thread]-> () { let y = x as i32; () }"),
+        (507, "expr __ as __ reference dty", "fn f() -[t: cpu.thread]-> () { let y = x as &r shrd gpu.global i32; () }"),
+        (580, "& provenance __ ownership __ place", "fn f() -[t: cpu.thread]-> () { let a = &'a uniq *x; () }"),
+        (580, "& ownership __ place", "fn f() -[t: cpu.thread]-> () { let a = &uniq *x; () }"),
+        (593, "if __ cond", "fn f() -[t: cpu.thread]-> () { if x { () } else { () } }"),
+        (600, "for __ ident __ in __ nat_range", "fn f() -[t: cpu.thread]-> () { for i in 0..4 { () } }"),
+        (603, "indep `)` __ nat __ exec_expr", "fn f() -[grid: gpu.grid<X<1>, X<8>>]-> () { indep(X) 4 grid { a => { () }, b => { () } } }"),
+        (612, "sched __ ident __ in __ exec_expr", "fn f() -[grid: gpu.grid<X<1>, X<8>>]-> () { sched block in grid { () } }"),
+        (612, "sched `)` __ ident", "fn f() -[grid: gpu.grid<XY<2,2>, XY<4,4>>]-> () { sched(Y) r in grid { () } }"),
+        (661, "let_uninit: let __ mut __ ident", "fn f() -[t: cpu.thread]-> () { let mut x: i32; () }"),
+        (661, "let_uninit: let `]` __ mut", "fn f() -[grid: gpu.grid<X<1>, X<8>>]-> () { let [grid.forall(X)] mut x: i32; () }"),
+        (830, "& provenance __ ownership __ memory_kind __ dty", "fn f(x: &'a uniq gpu.global [i32; 8]) -[t: cpu.thread]-> () { () }"),
+        (830, "memory_kind __ reference dty", "fn f(x: &'a uniq gpu.global &'b shrd gpu.global i32) -[t: cpu.thread]-> () { () }"),
     ];
 
     fn parses(text: &str) -> bool {
@@ -352,7 +286,7 @@ mod tests {
             );
         }
 
-        let whitespace_rule = 1063;
+        let whitespace_rule = 1049;
         assert!(
             lines
                 .get(whitespace_rule - 1)

@@ -12,6 +12,7 @@ pub struct KernelParameter {
     pub is_shared_memory: bool,
     pub is_by_value: bool,
     pub host: HostTy,
+    pub shared_memory_dty: Option<DataTy>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +114,7 @@ impl Kernel {
                         is_shared_memory,
                         is_by_value,
                         host,
+                        shared_memory_dty: is_shared_memory.then(|| dty.clone()),
                     });
                 }
 
@@ -127,6 +129,13 @@ impl Kernel {
 
         Err(not_defined(kernel_name))
     }
+
+    pub fn shared_memory_dtys(&self) -> Vec<DataTy> {
+        self.parameters
+            .iter()
+            .filter_map(|parameter| parameter.shared_memory_dty.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -140,9 +149,33 @@ mod tests {
             TokenStream::from_str(source_text).expect("must tokenize"),
         );
         let code = descend::parser::SourceCode::new(source.text.clone());
-        let unit = crate::source::parse_descend_source(&code, &source)
+        let unit = crate::source::parse_descend_source(&code)
             .unwrap_or_else(|error| panic!("fixture did not parse: {error}\n{}", source.text));
         Kernel::extract(&unit, kernel_name, &source)
+    }
+
+    #[test]
+    fn only_shared_parameters_contribute_a_shared_memory_type() {
+        let kernel = extract(
+            "fn gpu_k<r1: prv, r2: prv>(
+                 global_array: &r1 uniq gpu.global [i32; 256],
+                 [grid.forall(X)] scratch: &r2 uniq gpu.shared [i32; 64]
+             ) -[grid: gpu.grid<X<4>, X<64>>]-> () {
+                 sched block in grid { sched thread in block { () } }
+             }",
+            "gpu_k",
+        )
+        .expect("a gpu.grid kernel must extract");
+
+        let shared_memory_dtys = kernel.shared_memory_dtys();
+        assert_eq!(shared_memory_dtys.len(), 1, "{shared_memory_dtys:?}");
+        assert!(
+            matches!(
+                shared_memory_dtys[0].dty,
+                DataTyKind::Array(_, Nat::Lit(64))
+            ),
+            "{shared_memory_dtys:?}"
+        );
     }
 
     #[test]
