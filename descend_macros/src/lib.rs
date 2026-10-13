@@ -5,7 +5,6 @@ mod diag;
 
 mod artifact;
 mod assemble;
-#[cfg(test)]
 mod capture;
 mod check;
 mod emit;
@@ -48,7 +47,7 @@ fn declare_kernels(input: TokenStream) -> Result<TokenStream, MacroError> {
     let source_token_stream = input.clone();
     let source = render_source(input);
     let code = SourceCode::new(source.text.clone());
-    let unit = source::parse_descend_source(&code, &source)?;
+    let unit = source::parse_descend_source(&code)?;
     declare(&unit, &source, &source_token_stream)
 }
 
@@ -81,14 +80,13 @@ fn instantiate(
     let specialized = specialize::specialize_kernel(source_token_stream, &kernel_name, &sizes)?;
     let source = render_source(specialized);
     let code = SourceCode::new(source.text.clone());
-    let unit = source::parse_descend_source(&code, &source)?;
+    let unit = source::parse_descend_source(&code)?;
     let kernel = Kernel::extract(&unit, &kernel_name, &source)?;
 
     let declared_at = kernel.name_span;
     let launch = check::check_kernel(&kernel)?;
-    let device_code =
-        translate::translate(&source.text, &kernel_name, |span| source.span_for(span))
-            .map_err(|error| error.or_span(declared_at))?;
+    let device_code = translate::translate(&source.text, &kernel_name, kernel.shared_memory_dtys())
+        .map_err(|error| error.or_span(declared_at))?;
     let ptx = assemble::assemble(&device_code, &kernel_name)
         .map_err(|error| error.or_span(declared_at))?;
 

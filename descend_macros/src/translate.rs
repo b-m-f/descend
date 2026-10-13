@@ -3,31 +3,47 @@ use crate::diag::MacroError;
 pub fn translate(
     kernel_source: &str,
     kernel_name: &str,
-    span_at: impl Fn(descend::ast::Span) -> Option<proc_macro2::Span>,
+    shared_memory_dtys: Vec<descend::ast::DataTy>,
 ) -> Result<String, MacroError> {
     debug!("FULL DESCEND:\n{}\nEND FULL DESCEND", kernel_source);
     let full_source = descend::parser::SourceCode::new(kernel_source.to_string());
-    let mut compilation_unit = descend::parser::parse_with_diagnostics(&full_source)
-        .map_err(|error| MacroError::at(error.message(), span_at(error.span())))?;
+    let mut compilation_unit = crate::source::parse_descend_source(&full_source)?;
 
-    let checked = descend::ty_check::ext_ty_check_kernel(&mut compilation_unit, kernel_name, &[]);
-    if let Err(error) = checked {
-        let rust_span = error.span().and_then(span_at);
-        return Err(MacroError::at(error.message(), rust_span));
+    let (checked, captured) = crate::capture::with_captured_output(|| {
+        descend::ty_check::ext_ty_check_kernel(&mut compilation_unit, kernel_name, &[])
+            .map_err(|type_error| type_error.emit(&full_source))
+    });
+    if checked.is_err() {
+        return Err(crate::capture::descend_message(&captured)
+            .unwrap_or_else(|| {
+                "Descend type checking failed; the Descend compiler reported the reason above"
+                    .to_string()
+            })
+            .into());
     }
 
-    let device_code = generate_device_code(&mut compilation_unit, kernel_name);
+    keep_only_type_checked_functions(&mut compilation_unit);
+    let device_code = generate_device_code(&compilation_unit, kernel_name, shared_memory_dtys);
 
     debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", kernel_name, device_code);
 
     Ok(device_code)
 }
 
+fn keep_only_type_checked_functions(compilation_unit: &mut descend::ast::CompilUnit) {
+    compilation_unit.items.retain(|item| match item {
+        descend::ast::Item::FunDef(function_definition) => function_definition.exec.ty.is_some(),
+        _ => true,
+    });
+}
+
 fn generate_device_code(
-    compilation_unit: &mut descend::ast::CompilUnit,
+    compilation_unit: &descend::ast::CompilUnit,
     kernel_name: &str,
+    shared_memory_dtys: Vec<descend::ast::DataTy>,
 ) -> String {
-    let mut device_code = descend::codegen::gen(compilation_unit);
+    let mut device_code =
+        descend::codegen::ext_gen_kernel(compilation_unit, kernel_name, shared_memory_dtys);
 
     device_code = device_code.replace("std::size_t", "size_t");
 
@@ -40,16 +56,25 @@ fn generate_device_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use descend::ast::{DataTy, DataTyKind, Nat, ScalarTy};
+
+    fn array_of_i32(elements: usize) -> DataTy {
+        DataTy::new(DataTyKind::Array(
+            Box::new(DataTy::new(DataTyKind::Scalar(ScalarTy::I32))),
+            Nat::Lit(elements),
+        ))
+    }
 
     #[test]
-    fn parse_failure_keeps_its_message_and_mapped_span() {
-        let error = translate("fn gpu_bad(", "gpu_bad", |_| {
-            Some(proc_macro2::Span::call_site())
-        })
-        .expect_err("the source is incomplete");
+    fn a_parse_failure_keeps_the_compilers_message() {
+        let error =
+            translate("fn gpu_bad(", "gpu_bad", Vec::new()).expect_err("the source is incomplete");
 
-        assert!(error.message.starts_with("expected "));
-        assert!(error.span.is_some());
+        assert!(!error.message.is_empty(), "{error:?}");
+        assert!(
+            error.span.is_none(),
+            "the Descend compiler reports the position itself: {error:?}"
+        );
     }
 
     const KERNEL: &str = "\
@@ -66,7 +91,8 @@ fn gpu_add<r: prv>(
 
     #[test]
     fn the_device_code_has_no_host_function_and_an_unmangled_entry() {
-        let device_code = translate(KERNEL, "gpu_add", |_| None).expect("the kernel must compile");
+        let device_code =
+            translate(KERNEL, "gpu_add", Vec::new()).expect("the kernel must compile");
 
         assert!(
             !device_code.contains("__host__"),
@@ -80,7 +106,7 @@ fn gpu_add<r: prv>(
 
     #[test]
     fn a_kernel_is_type_checked_without_a_main_function() {
-        assert!(translate(KERNEL, "gpu_add", |_| None).is_ok());
+        assert!(translate(KERNEL, "gpu_add", Vec::new()).is_ok());
     }
 
     #[test]
@@ -98,51 +124,11 @@ fn gpu_bad<r: prv>(
     }
 }",
             "gpu_bad",
-            |_| None,
+            Vec::new(),
         )
         .unwrap_err();
 
         assert!(!error.message.is_empty(), "{error:?}");
-    }
-
-    #[test]
-    fn a_type_error_uses_the_span_supplied_by_the_caller() {
-        let source = "fn gpu_bad() -[grid: gpu.grid<X<1>, X<1>>]-> () { missing_value }";
-        let error = translate(source, "gpu_bad", |span| {
-            assert_eq!(
-                &source[span.begin as usize..span.end as usize],
-                "missing_value"
-            );
-            Some(proc_macro2::Span::call_site())
-        })
-        .unwrap_err();
-
-        assert!(error.span.is_some());
-        assert!(error.message.contains("missing_value"), "{error:?}");
-    }
-
-    #[test]
-    fn a_unique_borrow_through_a_shared_reference_points_to_the_dereference() {
-        let source = "\
-fn gpu_vec_add<r: prv>(
-    a_array: &r uniq gpu.global [i32; 16384],
-    b_array: &r shrd gpu.global [i32; 16384]
-) -[grid: gpu.grid<X<64>, X<256>>]-> () {
-    sched block in grid {
-        sched thread in block {
-            let a_ref = &uniq (*b_array).to_view.grp::<256>[[block]][[thread]];
-            *a_ref = *a_ref + (*b_array).to_view.grp::<256>[[block]][[thread]]
-        }
-    }
-}";
-        let error = translate(source, "gpu_vec_add", |span| {
-            assert_eq!(&source[span.begin as usize..span.end as usize], "*b_array");
-            Some(proc_macro2::Span::call_site())
-        })
-        .unwrap_err();
-
-        assert!(error.span.is_some());
-        assert!(error.message.contains("shared reference"), "{error:?}");
     }
 
     #[test]
@@ -152,7 +138,7 @@ fn gpu_vec_add<r: prv>(
              -[grid: gpu.grid<X<1>, X<64>>]-> () { sched block in grid { \
              sched thread in block { () } } }",
             "gpu_shared",
-            |_| None,
+            vec![array_of_i32(64)],
         )
         .expect("the kernel must compile");
 
@@ -170,7 +156,7 @@ fn gpu_vec_add<r: prv>(
             "fn first() -[grid: gpu.grid<X<1>, X<1>>]-> () { () } \
              fn second() -[grid: gpu.grid<X<1>, X<1>>]-> () { () }",
             "second",
-            |_| None,
+            Vec::new(),
         )
         .expect("the selected kernel must compile");
 

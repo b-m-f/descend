@@ -13,14 +13,8 @@ pub use source::*;
 use crate::ast::visit_mut::VisitMut;
 
 pub fn parse<'a>(source: &'a SourceCode<'a>) -> Result<CompilUnit<'a>, ErrorReported> {
-    parse_with_diagnostics(source).map_err(|err| err.emit(source))
-}
-
-pub fn parse_with_diagnostics<'a>(
-    source: &'a SourceCode<'a>,
-) -> Result<CompilUnit<'a>, ParseError> {
     let parser = Parser::new(source);
-    let mut items = parser.parse()?;
+    let mut items = parser.parse().map_err(|err| err.emit())?;
     // TODO refactor to not require unnecessary copying out of items
     let struct_copies = items
         .iter()
@@ -59,8 +53,8 @@ impl<'a> Parser<'a> {
         Parser { source }
     }
 
-    fn parse(&self) -> Result<Vec<Item>, ParseError> {
-        descend::compil_unit(self.source.str()).map_err(ParseError::new)
+    fn parse(&self) -> Result<Vec<Item>, ParseError<'_>> {
+        descend::compil_unit(self.source.str()).map_err(|peg_err| ParseError::new(self, peg_err))
     }
 }
 
@@ -296,9 +290,8 @@ fn replace_struct_idents_with_specific_struct_dtys(struct_dtys: &[StructDecl], i
 }
 
 pub mod error {
-    use crate::ast::Span;
     use crate::error::ErrorReported;
-    use crate::parser::SourceCode;
+    use crate::parser::{Parser, SourceCode};
     use annotate_snippets::display_list::DisplayList;
     use annotate_snippets::snippet::Snippet;
     use peg::error::ParseError as PegError;
@@ -306,31 +299,29 @@ pub mod error {
 
     #[must_use]
     #[derive(Debug)]
-    pub struct ParseError {
+    pub struct ParseError<'a> {
+        parser: &'a Parser<'a>,
         err: PegError<LineCol>,
     }
 
-    impl ParseError {
-        pub(super) fn new(err: PegError<LineCol>) -> Self {
-            ParseError { err }
+    impl<'a> ParseError<'a> {
+        pub(super) fn new(parser: &'a Parser, err: PegError<LineCol>) -> Self {
+            ParseError { parser, err }
         }
 
-        pub fn span(&self) -> Span {
-            Span::new(self.err.location.offset, self.err.location.offset)
-        }
-
-        pub fn message(&self) -> String {
-            format!("expected {}", self.err.expected)
-        }
-
-        pub fn emit(&self, source: &SourceCode) -> ErrorReported {
-            let label = self.message();
+        pub fn emit(&self) -> ErrorReported {
+            let label = format!("expected {}", self.err.expected);
             let line_num =
                 u32::try_from(self.err.location.line).expect("Source file is unexpectedly large");
             let column_num =
                 u32::try_from(self.err.location.column).expect("Source file is unexpectedly large");
-            let snippet =
-                single_line_parse_snippet(source, &label, line_num, column_num, column_num + 1);
+            let snippet = single_line_parse_snippet(
+                self.parser.source,
+                &label,
+                line_num,
+                column_num,
+                column_num + 1,
+            );
             println!("{}", DisplayList::from(snippet));
             ErrorReported
         }
@@ -357,7 +348,6 @@ pub mod error {
 
 peg::parser! {
     pub(crate) grammar descend() for str {
-        inject span(_input, begin, end) -> Span { Span::new(begin, end) }
 
         pub(crate) rule compil_unit() -> Vec<Item>
             = _ items:(item:item() { item }) ** _ _ {
@@ -695,11 +685,8 @@ peg::parser! {
         /// Place expression
         pub(crate) rule place_expression() -> PlaceExpr
             = precedence!{
-                begin:position!() "*" _ deref:@ {
-                    PlaceExpr::with_span(
-                        PlaceExprKind::Deref(Box::new(deref)),
-                        Span::new(begin, span.end as usize),
-                    )
+                "*" _ deref:@ {
+                    PlaceExpr::new(PlaceExprKind::Deref(Box::new(deref)))
                 }
                 --
                 pl_expr:@ _ "[" _ lower:nat() _ ".." _ upper:nat() "]" {
@@ -720,9 +707,8 @@ peg::parser! {
                 fproj:@ _ "." _ i:ident() { PlaceExpr::new(PlaceExprKind::FieldProj(Box::new(fproj), Box::new(i))) }
                 --
                 begin:position!() pl_expr:@ end:position!() {
-                    let pl_expr: PlaceExpr = pl_expr;
                     PlaceExpr {
-                        span: pl_expr.span.or(Some(Span::new(begin, end))),
+                        span: Some(Span::new(begin, end)),
                         ..pl_expr
                     }
                 }
@@ -2492,46 +2478,5 @@ mod tests {
             parse(&source).is_err(),
             "Expected a parsing error and specifically not a panic!"
         );
-    }
-
-    #[test]
-    fn dereference_span_covers_the_operator_and_identifier() {
-        let source = "*b_array";
-        let place = descend::place_expression(source).expect("the dereference must parse");
-        let span = place.span.expect("the dereference must have a span");
-
-        assert!(matches!(place.pl_expr, PlaceExprKind::Deref(_)));
-        assert_eq!(&source[span.begin as usize..span.end as usize], source);
-    }
-
-    #[test]
-    fn parenthesized_dereference_keeps_the_operator_span() {
-        let source = "(*b_array)";
-        let place = descend::place_expression(source).expect("the dereference must parse");
-        let span = place.span.expect("the dereference must have a span");
-
-        assert!(matches!(place.pl_expr, PlaceExprKind::Deref(_)));
-        assert_eq!(&source[span.begin as usize..span.end as usize], "*b_array");
-    }
-
-    #[test]
-    fn structured_parse_error_points_at_unexpected_token() {
-        let text = "fn gpu_bad() -[t: cpu.thread]-> () { @ }";
-        let source = SourceCode::new(text.to_string());
-        let error = parse_with_diagnostics(&source).expect_err("the token must be rejected");
-
-        assert_eq!(error.span().begin as usize, text.find('@').unwrap());
-        assert_eq!(error.span().begin, error.span().end);
-        assert!(error.message().starts_with("expected "));
-    }
-
-    #[test]
-    fn structured_parse_error_preserves_end_of_input() {
-        let text = "fn gpu_bad(";
-        let source = SourceCode::new(text.to_string());
-        let error = parse_with_diagnostics(&source).expect_err("the function is incomplete");
-
-        assert_eq!(error.span().begin as usize, text.len());
-        assert_eq!(error.span().begin, error.span().end);
     }
 }

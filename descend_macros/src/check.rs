@@ -193,8 +193,7 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_ty::{ArrayLen, HostTy, ScalarKind};
-    use descend::ast::{Dim, Dim1d, Nat};
+    use descend::ast::{DataTy, DataTyKind, Dim, Dim1d, Nat, ScalarTy};
 
     fn dimensions(x: u32, y: u32, z: u32) -> Dimensions {
         Dimensions { x, y, z }
@@ -216,24 +215,29 @@ mod tests {
         }
     }
 
-    fn shared_parameter(name: &str, element: ScalarKind, elements: u32) -> KernelParameter {
+    fn shared_parameter(name: &str, element: ScalarTy, elements: usize) -> KernelParameter {
+        let shared_memory_dty = DataTy::new(DataTyKind::Array(
+            Box::new(DataTy::new(DataTyKind::Scalar(element))),
+            Nat::Lit(elements),
+        ));
+        let host = crate::host_ty::host_ty(&shared_memory_dty)
+            .expect("an array of scalars crosses to the host");
         KernelParameter {
             name: name.to_string(),
             span: None,
             is_uniq: true,
             is_shared_memory: true,
             is_by_value: false,
-            host: HostTy::Array(
-                Box::new(HostTy::Scalar(element)),
-                ArrayLen::new(elements, elements.to_string()),
-            ),
+            host,
+            shared_memory_dty: Some(shared_memory_dty),
         }
     }
 
     fn global_parameter(name: &str) -> KernelParameter {
         KernelParameter {
             is_shared_memory: false,
-            ..shared_parameter(name, ScalarKind::I32, 64)
+            shared_memory_dty: None,
+            ..shared_parameter(name, ScalarTy::I32, 64)
         }
     }
 
@@ -299,10 +303,10 @@ mod tests {
 
     #[test]
     fn shared_memory_at_the_ceiling_is_accepted_and_above_it_is_not() {
-        let at_the_ceiling = kernel_with(vec![shared_parameter("tmp", ScalarKind::I32, 12288)]);
+        let at_the_ceiling = kernel_with(vec![shared_parameter("tmp", ScalarTy::I32, 12288)]);
         assert!(check_kernel(&at_the_ceiling).is_ok());
 
-        let over_the_ceiling = kernel_with(vec![shared_parameter("tmp", ScalarKind::I32, 12289)]);
+        let over_the_ceiling = kernel_with(vec![shared_parameter("tmp", ScalarTy::I32, 12289)]);
         let error = check_kernel(&over_the_ceiling).unwrap_err();
         assert!(error.message.contains("49156 bytes"), "{error}");
         assert!(
@@ -314,8 +318,8 @@ mod tests {
     #[test]
     fn several_shared_parameters_add_up() {
         let kernel = kernel_with(vec![
-            shared_parameter("left", ScalarKind::F64, 256),
-            shared_parameter("right", ScalarKind::Bool, 256),
+            shared_parameter("left", ScalarTy::F64, 256),
+            shared_parameter("right", ScalarTy::Bool, 256),
         ]);
         assert_eq!(shared_memory_bytes(&kernel).unwrap().value(), 2048 + 256);
     }
@@ -323,7 +327,7 @@ mod tests {
     #[test]
     fn a_shared_parameter_before_an_ordinary_one_is_refused() {
         let kernel = kernel_with(vec![
-            shared_parameter("tmp", ScalarKind::I32, 64),
+            shared_parameter("tmp", ScalarTy::I32, 64),
             global_parameter("vec"),
         ]);
         let error = check_shared_parameter_order(&kernel).unwrap_err();
@@ -336,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_shared_parameter_of_an_element_descend_cannot_size_is_refused() {
-        let kernel = kernel_with(vec![shared_parameter("tmp", ScalarKind::U8, 64)]);
+        let kernel = kernel_with(vec![shared_parameter("tmp", ScalarTy::U8, 64)]);
         let error = shared_memory_bytes(&kernel).unwrap_err();
         assert!(
             error.message.contains("element type whose byte size"),
@@ -353,7 +357,7 @@ mod tests {
 
     #[test]
     fn a_shared_request_above_the_portable_ceiling_is_refused() {
-        let kernel = kernel_with(vec![shared_parameter("big", ScalarKind::I32, 16384)]);
+        let kernel = kernel_with(vec![shared_parameter("big", ScalarTy::I32, 16384)]);
         let error = shared_memory_bytes(&kernel).unwrap_err();
 
         assert!(error.message.contains("65536 bytes"), "{error}");

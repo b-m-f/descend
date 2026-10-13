@@ -1,5 +1,9 @@
 error: expected one of "(", "<", ['a'..='z'|'A'..='Z'|'0'..='9'|'_']
- --> tests/macro_compiler_safety/parse_end_of_input.rs:4:8
+ --> tests/macro_compiler_safety/parse_end_of_input.rs:3:1
   |
-4 |     fn bad
-  |        ^^^
+3 | / descend! {
+4 | |     fn bad
+5 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -75,7 +75,6 @@ fn ty_check_and_passed_mems_prvs(
     ctx: &PlExprTyCtx,
     pl_expr: &mut PlaceExpr,
 ) -> TyResult<(Vec<Memory>, Vec<Provenance>)> {
-    let deref_span = pl_expr.span;
     let (ty, mem, prvs) = match &mut pl_expr.pl_expr {
         // TC-Var
         PlaceExprKind::Ident(ident) => ty_check_ident(ctx, ident)?,
@@ -86,7 +85,7 @@ fn ty_check_and_passed_mems_prvs(
             ty_check_field_proj(ctx, struct_expr, ident)?
         }
         // TC-Deref
-        PlaceExprKind::Deref(borr_expr) => ty_check_deref(ctx, borr_expr, deref_span)?,
+        PlaceExprKind::Deref(borr_expr) => ty_check_deref(ctx, borr_expr)?,
         // TC-Select
         PlaceExprKind::Select(p, select_exec) => ty_check_select(ctx, p, select_exec)?,
         PlaceExprKind::View(pl_expr, view) => ty_check_view_pl_expr(ctx, pl_expr, view)?,
@@ -307,7 +306,6 @@ fn ty_check_field_proj(
 fn ty_check_deref(
     ctx: &PlExprTyCtx,
     borr_expr: &mut PlaceExpr,
-    deref_span: Option<crate::ast::Span>,
 ) -> TyResult<(Ty, Vec<Memory>, Vec<Provenance>)> {
     let (mut inner_mem, mut passed_prvs) = ty_check_and_passed_mems_prvs(ctx, borr_expr)?;
     let borr_dty = if let TyKind::Data(dty) = &borr_expr.ty.as_ref().unwrap().ty {
@@ -320,7 +318,9 @@ fn ty_check_deref(
     match &borr_dty.dty {
         DataTyKind::Ref(reff) => {
             if reff.own < ctx.own {
-                return Err(TyError::CannotUniquelyDereferenceShared(deref_span));
+                return Err(TyError::String(
+                    "Trying to dereference and mutably use a shrd reference.".to_string(),
+                ));
             }
             passed_prvs.push(reff.rgn.clone());
             inner_mem.push(reff.mem.clone());
