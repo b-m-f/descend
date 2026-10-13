@@ -9,10 +9,10 @@ const FLAGS_ENVIRONMENT_VARIABLE: &str = "DESCEND_NVRTC_FLAGS";
 const HEADER_NAME: &str = "descend.cuh";
 const PROGRAM_NAME: &str = "descend_kernel.cu";
 
-const TOOLKIT_ENVIRONMENT_VARIABLE: &str = "CUDA_TOOLKIT_PATH";
+const TOOLKIT_ENVIRONMENT_VARIABLES: [&str; 2] = ["CUDA_TOOLKIT_PATH", "CUDA_HOME"];
+const MINIMUM_CUDA_VERSION: u32 = 13000;
 
 const LIBRARY_DIRECTORIES: &[&str] = &["lib", "lib64"];
-const LIBRARY_NAMES: &[&str] = &["libnvrtc.so", "libnvrtc.so.13", "libnvrtc.so.12"];
 
 type ResultCode = c_int;
 type Program = *mut c_void;
@@ -34,14 +34,14 @@ type DestroyProgramFn = unsafe extern "C" fn(*mut Program) -> ResultCode;
 type GetErrorStringFn = unsafe extern "C" fn(ResultCode) -> *const c_char;
 
 pub struct Toolchain {
-    library_path: PathBuf,
+    nvrtc: Nvrtc,
     options: Vec<String>,
 }
 
 impl Toolchain {
     pub fn compile(&self, device_code: &str, header: &str) -> Result<String, MacroError> {
-        let nvrtc = Nvrtc::load(&self.library_path)?;
-        nvrtc.compile(device_code, HEADER_NAME, header, &self.options)
+        self.nvrtc
+            .compile(device_code, HEADER_NAME, header, &self.options)
     }
 }
 
@@ -61,46 +61,108 @@ pub fn toolchain() -> Result<&'static Toolchain, MacroError> {
 fn discover() -> Result<Toolchain, MacroError> {
     let root = toolkit_root(|name| std::env::var_os(name))?;
 
-    let library_path = find_library(&root)?;
     let include_path = root.join("include");
-    if !include_path.is_dir() {
-        return Err(format!(
-            "{TOOLKIT_ENVIRONMENT_VARIABLE} points at {}, which has no include/ directory, so \
-             NVRTC could not resolve the CUDA headers descend.cuh includes",
-            root.display()
-        )
-        .into());
-    }
+    let cuda_version = require_supported_cuda_version(&include_path)?;
 
-    let options = resolve_options(&include_path)?;
+    let options = resolve_options(|name| std::env::var_os(name), &include_path)?;
+    let library_path = find_library(&root, &library_names(cuda_version))?;
+    let nvrtc = Nvrtc::load(&library_path)?;
 
-    Ok(Toolchain {
-        library_path,
-        options,
-    })
+    Ok(Toolchain { nvrtc, options })
 }
 
 fn toolkit_root(
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<PathBuf, MacroError> {
-    lookup(TOOLKIT_ENVIRONMENT_VARIABLE)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    for name in TOOLKIT_ENVIRONMENT_VARIABLES {
+        let Some(value) = lookup(name) else {
+            continue;
+        };
+        if value.is_empty() {
+            return Err(format!(
+                "{name} is set but empty. Set it to a CUDA {}+ toolkit directory",
+                format_cuda_version(MINIMUM_CUDA_VERSION)
+            )
+            .into());
+        }
+
+        return Ok(PathBuf::from(value));
+    }
+
+    Err(format!(
+        "the CUDA toolkit cannot be located: {} is not set. Set one of them to the toolkit \
+         root -- the directory holding both lib/libnvrtc.so and include/ -- as in \
+         CUDA_TOOLKIT_PATH=/usr/local/cuda",
+        toolkit_variable_names()
+    )
+    .into())
+}
+
+fn toolkit_variable_names() -> String {
+    TOOLKIT_ENVIRONMENT_VARIABLES.join(" or ")
+}
+
+fn require_supported_cuda_version(include_path: &Path) -> Result<u32, MacroError> {
+    let cuda_version = cuda_version(include_path)?;
+    if cuda_version >= MINIMUM_CUDA_VERSION {
+        return Ok(cuda_version);
+    }
+
+    Err(format!(
+        "{} reports CUDA {}, but compiling with NVRTC needs at least CUDA {}. Point {} at a \
+         newer toolkit",
+        include_path.join("cuda.h").display(),
+        format_cuda_version(cuda_version),
+        format_cuda_version(MINIMUM_CUDA_VERSION),
+        toolkit_variable_names()
+    )
+    .into())
+}
+
+fn cuda_version(include_path: &Path) -> Result<u32, MacroError> {
+    let header = include_path.join("cuda.h");
+    let source = std::fs::read_to_string(&header).map_err(|error| {
+        format!(
+            "{} could not be read ({error}), so the CUDA version is unknown. {} has to name a \
+             toolkit root whose include/ holds the CUDA headers descend.cuh includes",
+            header.display(),
+            toolkit_variable_names()
+        )
+    })?;
+
+    source
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.split_whitespace();
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some("#define"), Some("CUDA_VERSION"), Some(version)) => version.parse().ok(),
+                _ => None,
+            }
+        })
         .ok_or_else(|| {
             format!(
-                "{TOOLKIT_ENVIRONMENT_VARIABLE} is not set, so the CUDA toolkit cannot be \
-                 located. Set it to the toolkit root -- the directory holding both \
-                 lib/libnvrtc.so and include/ -- as in \
-                 {TOOLKIT_ENVIRONMENT_VARIABLE}=/usr/local/cuda"
+                "{} has no `#define CUDA_VERSION`, so the CUDA version is unknown",
+                header.display()
             )
             .into()
         })
 }
 
-fn find_library(root: &Path) -> Result<PathBuf, MacroError> {
+fn format_cuda_version(version: u32) -> String {
+    format!("{}.{}", version / 1000, (version % 1000) / 10)
+}
+
+fn library_names(cuda_version: u32) -> Vec<String> {
+    vec![
+        "libnvrtc.so".to_string(),
+        format!("libnvrtc.so.{}", cuda_version / 1000),
+    ]
+}
+
+fn find_library(root: &Path, library_names: &[String]) -> Result<PathBuf, MacroError> {
     let mut tried = Vec::new();
     for directory in LIBRARY_DIRECTORIES {
-        for name in LIBRARY_NAMES {
+        for name in library_names {
             let candidate = root.join(directory).join(name);
             if candidate.is_file() {
                 return Ok(candidate);
@@ -121,12 +183,11 @@ fn find_library(root: &Path) -> Result<PathBuf, MacroError> {
     .into())
 }
 
-fn resolve_options(include_path: &Path) -> Result<Vec<String>, MacroError> {
-    let flags_from_environment = std::env::var(FLAGS_ENVIRONMENT_VARIABLE).unwrap_or_default();
-    let mut options: Vec<String> = flags_from_environment
-        .split_whitespace()
-        .map(|option| option.to_string())
-        .collect();
+fn resolve_options(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+    include_path: &Path,
+) -> Result<Vec<String>, MacroError> {
+    let mut options = mandatory_flags(lookup)?;
 
     options.push("-default-device".to_string());
 
@@ -144,53 +205,35 @@ fn resolve_options(include_path: &Path) -> Result<Vec<String>, MacroError> {
             .replace('\\', "\\\\")
     ));
 
-    if !options.iter().any(|option| option.starts_with("-arch=")) {
-        options.push(probe_architecture()?);
-    }
     Ok(options)
 }
 
-fn probe_architecture() -> Result<String, MacroError> {
-    const OVERRIDE_HINT: &str = "set DESCEND_NVRTC_FLAGS=-arch=compute_<capability>";
+fn mandatory_flags(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Vec<String>, MacroError> {
+    let Some(value) = lookup(FLAGS_ENVIRONMENT_VARIABLE) else {
+        return Err(flags_error("is not set"));
+    };
 
-    let output = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
-        .output()
-        .map_err(|error| {
-            format!("could not detect a CUDA architecture with nvidia-smi ({error}), so {OVERRIDE_HINT}")
-        })?;
-    if !output.status.success() {
-        return Err(format!(
-            "nvidia-smi could not detect a CUDA architecture, so {OVERRIDE_HINT}; nvidia-smi \
-             said: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
+    let options = value
+        .to_string_lossy()
+        .split_whitespace()
+        .map(|option| option.to_string())
+        .collect::<Vec<_>>();
+    if options.is_empty() {
+        return Err(flags_error("is set but empty"));
     }
 
-    let capability = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_owned();
-    let mut components = capability.split('.');
-    let major = components.next().unwrap_or("");
-    let minor = components.next().unwrap_or("");
-    if components.next().is_some()
-        || major.is_empty()
-        || minor.is_empty()
-        || !major.chars().all(|character| character.is_ascii_digit())
-        || !minor.chars().all(|character| character.is_ascii_digit())
-    {
-        return Err(format!(
-            "nvidia-smi returned an invalid compute capability {capability:?}, so \
-             {OVERRIDE_HINT}"
-        )
-        .into());
-    }
+    Ok(options)
+}
 
-    Ok(format!("-arch=compute_{major}{minor}"))
+fn flags_error(state: &str) -> MacroError {
+    format!(
+        "{FLAGS_ENVIRONMENT_VARIABLE} {state}, so NVRTC would be given no compilation flags. \
+         Set it to every flag NVRTC needs for this toolkit and GPU, including the \
+         architecture, as in {FLAGS_ENVIRONMENT_VARIABLE}=-arch=compute_86"
+    )
+    .into()
 }
 
 struct Nvrtc {
@@ -400,21 +443,35 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
-    fn empty_toolkit_root() -> tempfile::TempDir {
+    fn temporary_directory() -> tempfile::TempDir {
         tempfile::tempdir().expect("a temporary directory must be creatable")
+    }
+
+    fn toolkit_reporting(cuda_version: u32) -> tempfile::TempDir {
+        let root = temporary_directory();
+        let include_directory = root.path().join("include");
+        std::fs::create_dir_all(&include_directory).expect("the directory must be creatable");
+        std::fs::write(
+            include_directory.join("cuda.h"),
+            format!("#define CUDA_VERSION {cuda_version}\n"),
+        )
+        .expect("the header must be writable");
+
+        root
     }
 
     #[test]
     fn the_library_is_found_in_either_library_directory() {
         for directory in LIBRARY_DIRECTORIES {
-            let root = empty_toolkit_root();
+            let root = temporary_directory();
             let library_directory = root.path().join(directory);
             std::fs::create_dir_all(&library_directory).expect("the directory must be creatable");
             let library = library_directory.join("libnvrtc.so");
             std::fs::write(&library, []).expect("the file must be writable");
 
             assert_eq!(
-                find_library(root.path()).expect("the library must be found"),
+                find_library(root.path(), &library_names(13020))
+                    .expect("the library must be found"),
                 library,
                 "{directory}/ was not searched"
             );
@@ -423,31 +480,31 @@ mod tests {
 
     #[test]
     fn a_versioned_library_is_found_when_there_is_no_unversioned_one() {
-        let root = empty_toolkit_root();
+        let root = temporary_directory();
         let library_directory = root.path().join("lib");
         std::fs::create_dir_all(&library_directory).expect("the directory must be creatable");
         let library = library_directory.join("libnvrtc.so.13");
         std::fs::write(&library, []).expect("the file must be writable");
 
         assert_eq!(
-            find_library(root.path()).expect("the library must be found"),
+            find_library(root.path(), &library_names(13020)).expect("the library must be found"),
             library
         );
     }
 
     #[test]
     fn a_directory_shaped_like_the_library_is_not_one() {
-        let root = empty_toolkit_root();
+        let root = temporary_directory();
         std::fs::create_dir_all(root.path().join("lib").join("libnvrtc.so"))
             .expect("the directory must be creatable");
 
-        assert!(find_library(root.path()).is_err());
+        assert!(find_library(root.path(), &library_names(13020)).is_err());
     }
 
     #[test]
     fn a_toolkit_without_a_library_names_every_path_it_tried() {
-        let root = empty_toolkit_root();
-        let error = find_library(root.path()).unwrap_err();
+        let root = temporary_directory();
+        let error = find_library(root.path(), &library_names(13020)).unwrap_err();
 
         for directory in LIBRARY_DIRECTORIES {
             assert!(
@@ -479,28 +536,149 @@ mod tests {
 
     #[test]
     fn the_toolkit_root_is_the_one_the_environment_names() {
-        let root = toolkit_root(environment(&[(
-            TOOLKIT_ENVIRONMENT_VARIABLE,
-            "/usr/local/cuda",
-        )]))
+        let root = toolkit_root(environment(&[("CUDA_TOOLKIT_PATH", "/usr/local/cuda")]))
+            .expect("a toolkit must be found");
+
+        assert_eq!(root, PathBuf::from("/usr/local/cuda"));
+    }
+
+    #[test]
+    fn cuda_home_names_the_toolkit_when_the_toolkit_path_is_absent() {
+        let root = toolkit_root(environment(&[("CUDA_HOME", "/opt/cuda")]))
+            .expect("a toolkit must be found");
+
+        assert_eq!(root, PathBuf::from("/opt/cuda"));
+    }
+
+    #[test]
+    fn the_toolkit_path_wins_over_cuda_home() {
+        let root = toolkit_root(environment(&[
+            ("CUDA_TOOLKIT_PATH", "/usr/local/cuda"),
+            ("CUDA_HOME", "/opt/cuda"),
+        ]))
         .expect("a toolkit must be found");
 
         assert_eq!(root, PathBuf::from("/usr/local/cuda"));
     }
 
     #[test]
-    fn an_empty_value_counts_as_absent() {
-        assert!(toolkit_root(environment(&[(TOOLKIT_ENVIRONMENT_VARIABLE, "")])).is_err());
+    fn an_empty_value_is_an_error_naming_that_variable() {
+        let error = toolkit_root(environment(&[("CUDA_HOME", "")])).unwrap_err();
+
+        assert!(error.message.contains("CUDA_HOME"), "{}", error.message);
     }
 
     #[test]
-    fn a_missing_toolkit_names_the_variable_to_set() {
+    fn a_missing_toolkit_names_both_variables_to_set() {
         let error = toolkit_root(environment(&[])).unwrap_err();
 
+        for name in TOOLKIT_ENVIRONMENT_VARIABLES {
+            assert!(error.message.contains(name), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn the_cuda_version_is_read_from_the_toolkit_header() {
+        let root = toolkit_reporting(13020);
+
+        assert_eq!(
+            require_supported_cuda_version(&root.path().join("include"))
+                .expect("CUDA 13.2 is supported"),
+            13020
+        );
+    }
+
+    #[test]
+    fn a_toolkit_below_the_floor_is_refused_with_both_versions_named() {
+        let root = toolkit_reporting(12080);
+
+        let error = require_supported_cuda_version(&root.path().join("include")).unwrap_err();
+
+        assert!(error.message.contains("12.8"), "{}", error.message);
+        assert!(error.message.contains("13.0"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_toolkit_without_a_header_is_refused() {
+        let root = temporary_directory();
+
+        assert!(require_supported_cuda_version(&root.path().join("include")).is_err());
+    }
+
+    #[test]
+    fn a_header_without_a_version_define_is_refused() {
+        let root = temporary_directory();
+        let include_directory = root.path().join("include");
+        std::fs::create_dir_all(&include_directory).expect("the directory must be creatable");
+        std::fs::write(include_directory.join("cuda.h"), "#define CUDA_API\n")
+            .expect("the header must be writable");
+
+        let error = require_supported_cuda_version(&include_directory).unwrap_err();
+
+        assert!(error.message.contains("CUDA_VERSION"), "{}", error.message);
+    }
+
+    #[test]
+    fn the_library_names_follow_the_toolkit_major_version() {
+        assert_eq!(
+            library_names(13020),
+            ["libnvrtc.so".to_string(), "libnvrtc.so.13".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_readers_flags_come_first_and_the_macro_adds_its_own_after() {
+        let root = temporary_directory();
+        let include_path = root.path().join("include");
+
+        let options = resolve_options(
+            environment(&[(FLAGS_ENVIRONMENT_VARIABLE, "-arch=compute_86 --ftz=true")]),
+            &include_path,
+        )
+        .expect("the flags are set");
+
+        assert_eq!(
+            options,
+            [
+                "-arch=compute_86".to_string(),
+                "--ftz=true".to_string(),
+                "-default-device".to_string(),
+                format!("-I{}", include_path.display()),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_flags_are_an_error_naming_the_variable_and_an_architecture() {
+        let error =
+            resolve_options(environment(&[]), Path::new("/usr/local/cuda/include")).unwrap_err();
+
         assert!(
-            error.message.contains(TOOLKIT_ENVIRONMENT_VARIABLE),
+            error.message.contains(FLAGS_ENVIRONMENT_VARIABLE),
             "{}",
             error.message
         );
+        assert!(
+            error.message.contains("-arch=compute_86"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn flags_that_carry_no_option_are_an_error() {
+        for flags in ["", "   "] {
+            let error = resolve_options(
+                environment(&[(FLAGS_ENVIRONMENT_VARIABLE, flags)]),
+                Path::new("/usr/local/cuda/include"),
+            )
+            .unwrap_err();
+
+            assert!(
+                error.message.contains("empty"),
+                "{flags:?}: {}",
+                error.message
+            );
+        }
     }
 }
