@@ -164,3 +164,83 @@ fn expand_or_error(
     }
     .into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    const KERNEL_A: &str = "fn gpu_a<r: prv>(a: &r uniq gpu.global [i32; 256]) \
+                            -[grid: gpu.grid<X<1>, X<256>>]-> () { \
+                            sched block in grid { sched thread in block { () } } }";
+    const KERNEL_B: &str = "fn gpu_b<r: prv>(b: &r uniq gpu.global [i32; 256]) \
+                            -[grid: gpu.grid<X<1>, X<256>>]-> () { \
+                            sched block in grid { sched thread in block { () } } }";
+
+    fn declared(source_text: &str) -> Result<String, MacroError> {
+        let source_token_stream =
+            TokenStream::from_str(source_text).expect("the fixture must tokenize");
+        let source = render_source(source_token_stream.clone());
+        let code = SourceCode::new(source.text.clone());
+        let unit = source::parse_descend_source(&code)?;
+        declare(&unit, &source, &source_token_stream).map(|output| output.to_string())
+    }
+
+    #[test]
+    fn every_kernel_of_a_block_gets_a_carrier_named_after_it() {
+        let output = declared(&format!("{KERNEL_A} {KERNEL_B}")).expect("both kernels declare");
+
+        assert!(output.contains("__descend_kernel_gpu_a"), "{output}");
+        assert!(output.contains("__descend_kernel_gpu_b"), "{output}");
+    }
+
+    #[test]
+    fn every_carrier_carries_the_whole_block() {
+        let output = declared(&format!("{KERNEL_A} {KERNEL_B}")).expect("both kernels declare");
+
+        assert_eq!(
+            output.matches("fn gpu_a").count(),
+            2,
+            "one copy per carrier, since a carrier carries its block: {output}"
+        );
+        assert_eq!(output.matches("fn gpu_b").count(), 2, "{output}");
+    }
+
+    #[test]
+    fn a_declared_type_is_generated_once_and_carried_by_every_kernel() {
+        let output = declared(&format!(
+            "struct Point {{ x: i32, y: i32 }} {KERNEL_A} {KERNEL_B}"
+        ))
+        .expect("the block declares");
+
+        assert_eq!(
+            output.matches("struct Point").count(),
+            3,
+            "the Rust definition plus one carried copy per kernel: {output}"
+        );
+    }
+
+    #[test]
+    fn a_block_with_one_kernel_carries_its_helpers_and_declared_types() {
+        let output = declared(&format!(
+            "struct Point {{ x: i32, y: i32 }} \
+             fn helper() -[t: cpu.thread]-> () {{ () }} {KERNEL_A}"
+        ))
+        .expect("the block declares");
+
+        assert!(output.contains("__descend_kernel_gpu_a"), "{output}");
+        assert!(output.contains("fn helper"), "{output}");
+        assert_eq!(
+            output.matches("struct Point").count(),
+            2,
+            "the Rust definition plus the copy the single kernel carries: {output}"
+        );
+    }
+
+    #[test]
+    fn a_kernel_declared_twice_in_one_block_is_refused() {
+        let error = declared(&format!("{KERNEL_A} {KERNEL_A}")).unwrap_err();
+
+        assert!(error.message.contains("declared twice"), "{error}");
+    }
+}
