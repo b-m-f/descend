@@ -1,4 +1,4 @@
-error: kernel `gpu_tuple_param`: parameter `values` is an array whose element is a tuple. Neither Rust tuples nor `descend::tuple` guarantee a memory layout, so a tuple cannot cross to the host; group the values in a Descend struct instead. Tuples inside a kernel are unaffected.
+error: kernel `gpu_tuple_param`: parameter `values` has a type that cannot cross to the host; only the basic Descend types, arrays of them, and structs of them can
   --> tests/macro_compiler_safety/tuple_parameter_cannot_cross_to_the_host.rs:6:13
    |
  6 |             values: &r uniq gpu.global [(i32, f32); 64]

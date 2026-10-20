@@ -1,5 +1,5 @@
 use crate::diag::MacroError;
-use crate::host_ty::{self, HostTy};
+use crate::host_ty::{from_dty, HostTy};
 use crate::source::DescendSource;
 use descend::ast::*;
 use proc_macro2::Span;
@@ -43,6 +43,29 @@ pub(crate) fn not_defined(kernel_name: &str) -> MacroError {
     ))
 }
 
+enum ParameterType<'a> {
+    Reference {
+        ownership: Ownership,
+        memory: Memory,
+        dty: &'a DataTy,
+    },
+    Value(&'a DataTy),
+}
+
+fn parameter_type(ty: &Ty) -> Option<ParameterType<'_>> {
+    let TyKind::Data(dty) = &ty.ty else {
+        return None;
+    };
+    match &dty.dty {
+        DataTyKind::Ref(reference_dty) => Some(ParameterType::Reference {
+            ownership: reference_dty.own,
+            memory: reference_dty.mem.clone(),
+            dty: &reference_dty.dty,
+        }),
+        _ => Some(ParameterType::Value(dty.as_ref())),
+    }
+}
+
 impl Kernel {
     pub fn extract(
         compilation_unit: &CompilUnit,
@@ -79,29 +102,32 @@ impl Kernel {
                     let parameter_span = span_of(&parameter.ident, source);
                     let ty = parameter.ty.as_ref().unwrap();
 
-                    let (is_uniq, is_shared_memory, is_by_value) = match host_ty::reference(ty) {
-                        Some(reference) => (
-                            matches!(reference.ownership, Ownership::Uniq),
-                            matches!(reference.memory, Memory::GpuShared),
+                    let (is_uniq, is_shared_memory, is_by_value, dty) = match parameter_type(ty) {
+                        Some(ParameterType::Reference {
+                            ownership,
+                            memory,
+                            dty,
+                        }) => (
+                            matches!(ownership, Ownership::Uniq),
+                            matches!(memory, Memory::GpuShared),
                             false,
+                            dty,
                         ),
-                        None => (false, false, true),
+                        Some(ParameterType::Value(dty)) => (false, false, true, dty),
+                        None => {
+                            return Err(MacroError::at(
+                                format!(
+                                    "kernel `{function_name}`: parameter `{parameter_name}` has \
+                                     no data type"
+                                ),
+                                parameter_span,
+                            ))
+                        }
                     };
-
-                    let dty = host_ty::parameter_dty(ty).ok_or_else(|| {
+                    let host = from_dty(dty).map_err(|reason| {
                         MacroError::at(
                             format!(
-                                "kernel `{function_name}`: parameter `{parameter_name}` has no \
-                                 data type"
-                            ),
-                            parameter_span,
-                        )
-                    })?;
-                    let host = host_ty::host_ty(dty).map_err(|reason| {
-                        MacroError::at(
-                            format!(
-                                "kernel `{function_name}`: parameter `{parameter_name}` {}",
-                                reason.reason()
+                                "kernel `{function_name}`: parameter `{parameter_name}` {reason}"
                             ),
                             parameter_span,
                         )

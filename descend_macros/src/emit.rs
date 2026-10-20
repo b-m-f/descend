@@ -40,29 +40,11 @@ pub fn generate_launch_function(
             continue;
         }
 
-        let element_count = parameter.host.elements().ok_or_else(|| {
-            MacroError::at(
-                format!(
-                    "kernel `{kernel_name}`: parameter `{}` has more elements than can be counted",
-                    parameter.name
-                ),
-                parameter.span,
-            )
-        })?;
+        let element_count = parameter.host.total_elements();
 
         let parameter_ident = format_ident!("{}", rust_name);
         let element = format_ident!("{}", parameter.host.base().rust());
-        let element_count_literal =
-            Literal::usize_unsuffixed(usize::try_from(element_count).map_err(|_| {
-                MacroError::at(
-                    format!(
-                        "kernel `{kernel_name}`: parameter `{}` has {element_count} elements, \
-                         more than this machine can index an array by",
-                        parameter.name
-                    ),
-                    parameter.span,
-                )
-            })?);
+        let element_count_literal = Literal::usize_unsuffixed(element_count);
         let buffer_type = quote! { ::descend_host::GpuBuffer<[#element; #element_count_literal]> };
 
         if parameter.is_uniq {
@@ -142,13 +124,10 @@ pub fn format_rust_struct(
         output.push_str(field_name);
         output.push_str(": ");
         output.push_str(
-            &crate::host_ty::host_ty(field_dty)
+            &crate::host_ty::from_dty(field_dty)
                 .map_err(|reason| {
                     MacroError::at(
-                        format!(
-                            "struct `{struct_name}`: field `{field_name}` {}",
-                            reason.reason()
-                        ),
+                        format!("struct `{struct_name}`: field `{field_name}` {reason}"),
                         crate::kernel::span_of(field_ident, source).or(struct_span),
                     )
                 })?
@@ -285,13 +264,12 @@ mod tests {
     }
 
     #[test]
-    fn a_tuple_field_is_rejected_rather_than_silently_narrowed() {
+    fn an_unsupported_field_type_is_refused_with_the_generic_sentence() {
         let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();
         assert!(error.message.contains("field `pos`"), "{error}");
-        assert!(error.message.contains("tuple"), "{error}");
         assert!(
-            error.message.contains("memory layout"),
-            "the reason must be the layout, not just a refusal: {error}"
+            error.message.contains(crate::host_ty::UNSUPPORTED_TYPE),
+            "{error}"
         );
     }
 

@@ -84,14 +84,14 @@ fn instantiate(
     let kernel = Kernel::extract(&unit, &kernel_name, &source)?;
 
     let declared_at = kernel.name_span;
-    let launch = check::check_kernel(&kernel)?;
+    let launch_config = check::check_kernel(&kernel)?;
     let device_code =
         translate::translate(&code, &mut unit, &kernel_name, kernel.shared_memory_dtys())
             .map_err(|error| error.or_span(declared_at))?;
     let ptx = assemble::assemble(&device_code, &kernel_name)
         .map_err(|error| error.or_span(declared_at))?;
 
-    emit::generate_launch_function(&kernel, &launch, &ptx)
+    emit::generate_launch_function(&kernel, &launch_config, &ptx)
         .map_err(|error| error.or_span(declared_at))
 }
 

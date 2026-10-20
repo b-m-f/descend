@@ -112,7 +112,7 @@ fn check_dimensions(
     Ok(())
 }
 
-fn shared_memory_element_bytes(parameter: &KernelParameter) -> Option<u32> {
+fn shared_memory_element_bytes(parameter: &KernelParameter) -> Option<usize> {
     parameter
         .host
         .scalar()
@@ -146,7 +146,7 @@ fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
 
 pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroError> {
     let function = &kernel.function_name;
-    let mut total: u64 = 0;
+    let mut total: usize = 0;
 
     for parameter in &kernel.parameters {
         if !parameter.is_shared_memory {
@@ -165,20 +165,24 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroEr
             )
         })?;
 
-        let elements = parameter.host.elements().ok_or_else(|| {
-            MacroError::at(
+        let elements = parameter.host.total_elements();
+        let parameter_bytes = element_bytes.checked_mul(elements);
+        let Some(total_with_parameter) =
+            parameter_bytes.and_then(|bytes| total.checked_add(bytes))
+        else {
+            return Err(MacroError::at(
                 format!(
-                    "kernel `{function}`: shared parameter `{}` has more elements than can be \
-                     counted",
+                    "kernel `{function}`: shared parameter `{}` requests more shared memory than \
+                     can be counted",
                     parameter.name
                 ),
                 parameter.span,
-            )
-        })?;
-        total += u64::from(element_bytes) * elements;
+            ));
+        };
+        total = total_with_parameter;
     }
 
-    SharedMemoryBytes::new(total).ok_or_else(|| {
+    SharedMemoryBytes::new(total as u64).ok_or_else(|| {
         MacroError::at(
             format!(
                 "kernel `{function}` requests {total} bytes of dynamic shared memory, above the \
@@ -220,7 +224,7 @@ mod tests {
             Box::new(DataTy::new(DataTyKind::Scalar(element))),
             Nat::Lit(elements),
         ));
-        let host = crate::host_ty::host_ty(&shared_memory_dty)
+        let host = crate::host_ty::from_dty(&shared_memory_dty)
             .expect("an array of scalars crosses to the host");
         KernelParameter {
             name: name.to_string(),
