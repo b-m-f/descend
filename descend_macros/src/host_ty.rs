@@ -1,7 +1,7 @@
 use descend::ast::{AtomicTy, DataTy, DataTyKind, ScalarTy};
 
 pub const UNSUPPORTED_TYPE: &str = "has a type that cannot cross to the host; only the basic \
-    Descend types, arrays of them, and structs of them can";
+    Descend types and arrays of them can";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarKind {

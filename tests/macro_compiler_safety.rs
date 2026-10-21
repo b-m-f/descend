@@ -12,8 +12,9 @@ fn compile_safety_tests() {
     t.compile_fail("tests/macro_compiler_safety/size_shadowed_by_binding.rs");
     t.compile_fail("tests/macro_compiler_safety/shared_param_not_last.rs");
     t.compile_fail("tests/macro_compiler_safety/shared_param_unsupported_elem.rs");
-    t.compile_fail("tests/macro_compiler_safety/tuple_field_cannot_cross_to_the_host.rs");
     t.compile_fail("tests/macro_compiler_safety/tuple_parameter_cannot_cross_to_the_host.rs");
+    t.compile_fail("tests/macro_compiler_safety/struct_parameter_is_not_supported.rs");
+    t.compile_fail("tests/macro_compiler_safety/struct_declaration_emits_nothing.rs");
 
     t.compile_fail("tests/macro_compiler_safety/descend_declares_no_kernel.rs");
     t.compile_fail("tests/macro_compiler_safety/instantiating_an_undeclared_kernel.rs");

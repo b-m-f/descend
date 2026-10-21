@@ -130,13 +130,10 @@ fn declare(
                 output.extend(emit::carrier_macro(&kernel_name, source_token_stream));
             }
             descend::ast::Item::StructDecl(struct_decl) => {
-                let struct_code = emit::format_rust_struct(struct_decl, source)?;
-                output.extend(struct_code.parse::<TokenStream>().map_err(|error| {
-                    MacroError::from(format!(
-                        "the definition generated for struct `{}` is malformed: {error}",
-                        struct_decl.ident.name
-                    ))
-                })?);
+                debug!(
+                    "custom types are not supported yet: struct `{}` is not generated",
+                    struct_decl.ident.name
+                );
             }
             _ => {}
         }
@@ -145,8 +142,8 @@ fn declare(
     if output.is_empty() {
         return Err(
             "this `descend!` block declares nothing. A kernel is declared by an \
-                    execution annotation `-[grid: gpu.grid<.., ..>]->`, and a type by a \
-                    `struct`; without either, the macro emits no items at all"
+                    execution annotation `-[grid: gpu.grid<.., ..>]->`; a `struct` emits \
+                    nothing, because custom types are not supported yet"
                 .into(),
         );
     }
@@ -207,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_type_is_generated_once_and_carried_by_every_kernel() {
+    fn a_declared_type_is_carried_by_every_kernel_but_not_generated() {
         let output = declared(&format!(
             "struct Point {{ x: i32, y: i32 }} {KERNEL_A} {KERNEL_B}"
         ))
@@ -215,8 +212,8 @@ mod tests {
 
         assert_eq!(
             output.matches("struct Point").count(),
-            3,
-            "the Rust definition plus one carried copy per kernel: {output}"
+            2,
+            "one carried copy per kernel, and no Rust definition: {output}"
         );
     }
 
@@ -232,8 +229,8 @@ mod tests {
         assert!(output.contains("fn helper"), "{output}");
         assert_eq!(
             output.matches("struct Point").count(),
-            2,
-            "the Rust definition plus the copy the single kernel carries: {output}"
+            1,
+            "the copy the single kernel carries, and no Rust definition: {output}"
         );
     }
 

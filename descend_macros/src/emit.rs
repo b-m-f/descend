@@ -1,7 +1,6 @@
 use crate::artifact::{LaunchConfig, Ptx};
 use crate::diag::MacroError;
 use crate::kernel::{Kernel, ParameterType};
-use crate::source::DescendSource;
 use descend::ast::{Memory, Ownership};
 use proc_macro2::{Delimiter, Group, Ident, Literal, TokenStream, TokenTree};
 use quote::{format_ident, quote};
@@ -108,50 +107,29 @@ fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> 
         "priv", "try", "typeof", "unsized", "virtual", "yield", "gen",
     ];
 
+    const GENERATED_BINDINGS: &[&str] = &[
+        "stream",
+        "kernel",
+        "launcher",
+        "launch_result",
+        "PTX_SOURCE",
+    ];
+
     if UNRAWABLE.contains(&name) {
         return Err(format!(
             "kernel `{kernel_name}`: parameter `{name}` cannot name a Rust function parameter"
+        ));
+    }
+    if GENERATED_BINDINGS.contains(&name) {
+        return Err(format!(
+            "kernel `{kernel_name}`: parameter `{name}` collides with a binding the generated \
+             launch function makes itself, so rename the parameter"
         ));
     }
     if KEYWORDS.contains(&name) {
         return Ok(format!("r#{name}"));
     }
     Ok(name.to_string())
-}
-
-pub fn format_rust_struct(
-    struct_decl: &descend::ast::StructDecl,
-    source: &DescendSource,
-) -> Result<String, MacroError> {
-    let struct_name = &struct_decl.ident.name;
-    let struct_span = crate::kernel::span_of(&struct_decl.ident, source);
-
-    let mut output = String::new();
-    output.push_str("#[repr(C)]\n#[derive(Clone, Copy, Debug, PartialEq)]\npub struct ");
-    output.push_str(struct_name);
-    output.push_str(" {\n");
-    for (field_ident, field_dty) in &struct_decl.fields {
-        let field_name = &field_ident.name;
-        output.push_str("    pub ");
-        output.push_str(field_name);
-        output.push_str(": ");
-        output.push_str(
-            &crate::host_ty::from_dty(field_dty)
-                .map_err(|reason| {
-                    MacroError::at(
-                        format!("struct `{struct_name}`: field `{field_name}` {reason}"),
-                        crate::kernel::span_of(field_ident, source).or(struct_span),
-                    )
-                })?
-                .rust(),
-        );
-        output.push_str(",\n");
-    }
-    output.push_str("}\n");
-    output.push_str(&format!(
-        "unsafe impl ::descend_host::traits::DescendType for {struct_name} {{}}\n",
-    ));
-    Ok(output)
 }
 
 fn carrier_name(kernel_name: &str) -> Ident {
@@ -198,115 +176,6 @@ pub fn block_yielding(items: TokenStream, name: &Ident) -> TokenStream {
 mod tests {
     use super::*;
 
-    fn declared(source_text: &str) -> Result<String, MacroError> {
-        use proc_macro2::TokenStream;
-        use std::str::FromStr;
-
-        let source = crate::source::DescendSource::from_token_stream(
-            TokenStream::from_str(source_text).expect("must tokenize"),
-        );
-        let code = descend::parser::SourceCode::new(source.text.clone());
-        let unit = crate::capture::with_captured_output(|| descend::parser::parse(&code))
-            .0
-            .unwrap_or_else(|_| panic!("fixture did not parse:\n{}", source.text));
-
-        let struct_decl = unit
-            .items
-            .iter()
-            .find_map(|item| match item {
-                descend::ast::Item::StructDecl(struct_decl) => Some(struct_decl),
-                _ => None,
-            })
-            .expect("fixture declares a struct");
-
-        format_rust_struct(struct_decl, &source)
-    }
-
-    #[test]
-    fn every_scalar_width_maps_to_its_rust_counterpart() {
-        let rust =
-            declared("struct Scalars { a: i32, b: u8, c: u32, d: u64, e: f32, f: f64, g: bool }")
-                .unwrap();
-        for field in [
-            "pub a: i32",
-            "pub b: u8",
-            "pub c: u32",
-            "pub d: u64",
-            "pub e: f32",
-            "pub f: f64",
-            "pub g: bool",
-        ] {
-            assert!(rust.contains(field), "{field} missing from:\n{rust}");
-        }
-    }
-
-    #[test]
-    fn the_declared_type_is_repr_c_and_transferable() {
-        let rust = declared("struct Pair { a: i32, b: i32 }").unwrap();
-        assert!(rust.contains("#[repr(C)]"), "{rust}");
-        assert!(
-            rust.contains("unsafe impl ::descend_host::traits::DescendType for Pair"),
-            "a declared type must be usable in a GpuBuffer:\n{rust}"
-        );
-    }
-
-    #[test]
-    fn an_array_field_keeps_its_length() {
-        let rust = declared("struct Window { history: [i32; 4] }").unwrap();
-        assert!(rust.contains("pub history: [i32; 4]"), "{rust}");
-    }
-
-    #[test]
-    fn a_nested_array_field_keeps_both_lengths() {
-        let rust = declared("struct Tile { rows: [[f32; 2]; 3] }").unwrap();
-        assert!(rust.contains("pub rows: [[f32; 2]; 3]"), "{rust}");
-    }
-
-    #[test]
-    fn an_array_length_may_be_an_expression() {
-        let rust = declared("struct Block { cells: [i32; 4*8] }").unwrap();
-        assert!(rust.contains("pub cells: [i32; 32]"), "{rust}");
-    }
-
-    #[test]
-    fn a_nested_declared_type_is_referred_to_by_name() {
-        let rust =
-            declared("struct Outer { inner: Inner, id: u32 } struct Inner { x: i32 }").unwrap();
-        assert!(rust.contains("pub inner: Inner"), "{rust}");
-    }
-
-    #[test]
-    fn an_unsupported_field_type_is_refused_with_the_generic_sentence() {
-        let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();
-        assert!(error.message.contains("field `pos`"), "{error}");
-        assert!(
-            error.message.contains(crate::host_ty::UNSUPPORTED_TYPE),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_rejected_field_is_pointed_at_rather_than_the_block_it_is_in() {
-        let error = declared("struct Particle { pos: (f32, f32), id: i32 }").unwrap_err();
-        assert!(
-            error.span.is_some(),
-            "the refusal should point at `pos`: {error}"
-        );
-    }
-
-    #[test]
-    fn a_unit_field_is_rejected() {
-        let error = declared("struct Empty { nothing: () }").unwrap_err();
-        assert!(error.message.contains("field `nothing`"), "{error}");
-    }
-
-    #[test]
-    fn an_unresolved_size_in_a_field_is_reported() {
-        let error = declared("struct Open { cells: [i32; N] }").unwrap_err();
-        assert!(error.message.contains("unresolved size"), "{error}");
-        assert!(error.message.contains("field `cells`"), "{error}");
-    }
-
     #[test]
     fn an_ordinary_parameter_name_is_kept() {
         assert_eq!(rust_parameter_name("a_array", "k").unwrap(), "a_array");
@@ -327,6 +196,24 @@ mod tests {
                 error.contains(name) && error.contains("gpu_k"),
                 "unhelpful error for `{name}`: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn a_parameter_named_after_a_binding_the_generator_makes_is_refused() {
+        for name in [
+            "stream",
+            "kernel",
+            "launcher",
+            "launch_result",
+            "PTX_SOURCE",
+        ] {
+            let error = rust_parameter_name(name, "gpu_k").unwrap_err();
+            assert!(
+                error.contains(name) && error.contains("gpu_k"),
+                "unhelpful error for `{name}`: {error}"
+            );
+            assert!(error.contains("collides"), "{error}");
         }
     }
 }

@@ -1,4 +1,4 @@
-error: kernel `gpu_tuple_param`: parameter `values` has a type that cannot cross to the host; only the basic Descend types, arrays of them, and structs of them can
+error: kernel `gpu_tuple_param`: parameter `values` has a type that cannot cross to the host; only the basic Descend types and arrays of them can
   --> tests/macro_compiler_safety/tuple_parameter_cannot_cross_to_the_host.rs:6:13
    |
  6 |             values: &r uniq gpu.global [(i32, f32); 64]

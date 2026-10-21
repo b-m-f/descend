@@ -1,5 +1,0 @@
-error: struct `Particle`: field `pos` has a type that cannot cross to the host; only the basic Descend types, arrays of them, and structs of them can
- --> tests/macro_compiler_safety/tuple_field_cannot_cross_to_the_host.rs:6:13
-  |
-6 |             pos: (f32, f32),
-  |             ^^^

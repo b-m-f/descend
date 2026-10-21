@@ -1,17 +1,6 @@
 use descend_host::{Context, GpuBuffer};
 use descend_macros::{descend, descend_fn};
 
-// Two kernels that exchange data through `gpu.shared` parameters. Until the
-// launch configuration carried a real byte count, the macro rejected these
-// kernels outright, so this file is the evidence that they can be launched at
-// all.
-//
-// Note what these tests do *not* establish: the hardware does not bounds-check
-// shared memory, so a launch that requests too few bytes still reads and writes
-// within the block's shared window and can produce correct results anyway. The
-// byte count itself is pinned at compile time — the macro cross-checks the
-// count the Descend compiler emitted against the one the parameter types give,
-// and refuses to generate a launch when they disagree.
 descend! {
     fn gpu_reduce<gs: nat, bs: nat, r1: prv, r2: prv, r3: prv>(
         vec: &r1 shrd gpu.global [i32; gs*bs],
@@ -60,9 +49,6 @@ descend! {
     }
 }
 
-// Two shared arrays of different element sizes, which the code generator packs
-// into one dynamic buffer: 64 * 8 bytes for the `f64` tile plus 64 * 4 for the
-// `i32` tile. Reaching the GPU at all means the two byte counts agreed.
 descend! {
     fn gpu_two_tiles<bs: nat, r1: prv, r2: prv, r3: prv, r4: prv>(
         values: &r1 uniq gpu.global [i32; bs],
@@ -138,10 +124,6 @@ fn test_two_shared_tiles_of_different_element_sizes() {
     assert_eq!(*scales_gpu.to_host(&stream).unwrap(), [1.5f64; BLOCK]);
 }
 
-// Sizes fixed where the kernel is defined change nothing about how it is launched:
-// it is instantiated like any other kernel. The 64 `i32` elements it asks for in
-// shared memory are derived by the macro; `shared_mem_bytes` in
-// `shared_mem` covers that derivation directly.
 descend! {
     fn gpu_shared_copy<r1: prv, r2: prv>(
         vec: &r1 uniq gpu.global [i32; 64],

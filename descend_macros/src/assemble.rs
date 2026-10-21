@@ -41,7 +41,7 @@ fn find_entry_symbol(ptx_text: &str, kernel_name: &str) -> Result<String, MacroE
     Err(MacroError::from(format!(
         "the PTX NVRTC produced has no entry symbol named `{kernel_name}`: {what_nvrtc_produced}. \
          A kernel is compiled `extern \"C\"`, so its entry symbol is its own name; a missing one \
-         means the rename in `translate::generate_cpp_source` did not match what Descend's code \
+         means the rename in `translate::generate_device_code` did not match what Descend's code \
          generator emitted"
     )))
 }

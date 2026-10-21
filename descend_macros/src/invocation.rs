@@ -75,11 +75,29 @@ pub fn parse_sizes(input: TokenStream) -> Result<HashMap<String, String>, MacroE
         }
     }
 
+    let mut awaiting_separator = false;
+
     loop {
         match cursor.next() {
             Some(TokenTree::Punct(punct)) if punct.as_char() == '>' => break,
-            Some(TokenTree::Punct(punct)) if punct.as_char() == ',' => continue,
+            Some(TokenTree::Punct(punct)) if punct.as_char() == ',' => {
+                if !awaiting_separator {
+                    return Err(MacroError::at(
+                        "unexpected `,` in the generic bindings: a `,` separates two bindings, \
+                         and no binding precedes this one"
+                            .to_string(),
+                        Some(punct.span()),
+                    ));
+                }
+                awaiting_separator = false;
+            }
             Some(TokenTree::Ident(name)) => {
+                if awaiting_separator {
+                    return Err(MacroError::at(
+                        format!("expected `,` between the generic bindings, found `{name}`"),
+                        Some(name.span()),
+                    ));
+                }
                 if !cursor.eat_punct(':') {
                     return Err(MacroError::at(
                         format!("expected `:` after generic `{name}`"),
@@ -114,6 +132,7 @@ pub fn parse_sizes(input: TokenStream) -> Result<HashMap<String, String>, MacroE
                         Some(name.span()),
                     ));
                 }
+                awaiting_separator = true;
             }
             Some(other) => {
                 return Err(MacroError::at(
@@ -123,6 +142,13 @@ pub fn parse_sizes(input: TokenStream) -> Result<HashMap<String, String>, MacroE
             }
             None => return Err("the generic bindings are not terminated by `>`".into()),
         }
+    }
+
+    if let Some(trailing) = cursor.next() {
+        return Err(MacroError::at(
+            format!("unexpected `{trailing}` after the generic bindings"),
+            Some(trailing.span()),
+        ));
     }
 
     Ok(sizes)
@@ -263,6 +289,35 @@ mod tests {
     #[test]
     fn an_unterminated_list_is_rejected() {
         assert!(sizes("<N: 16384").unwrap_err().contains("not terminated"));
+    }
+
+    #[test]
+    fn a_missing_comma_between_bindings_is_refused_rather_than_guessed_at() {
+        let error = sizes("<N: 256 M: 64>").unwrap_err();
+        assert!(
+            error.contains("expected `,` between the generic bindings") && error.contains("`M`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_comma_with_no_binding_before_it_is_refused() {
+        for source in ["<, N: 256>", "<N: 256,, M: 64>"] {
+            let error = sizes(source).unwrap_err();
+            assert!(
+                error.contains("unexpected `,` in the generic bindings"),
+                "unhelpful error for {source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn tokens_after_the_closing_angle_bracket_are_refused_rather_than_ignored() {
+        let error = sizes("<N: 256> leftover").unwrap_err();
+        assert!(
+            error.contains("after the generic bindings") && error.contains("leftover"),
+            "{error}"
+        );
     }
 
     #[test]

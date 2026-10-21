@@ -41,57 +41,34 @@ fn check_dimensions(
 ) -> Result<(), MacroError> {
     let function = &kernel.function_name;
 
-    let over_limit = |axis: &str, declared: u32, allowed: u32| {
+    let refused = |axis: &str, declared: u32, bound: &str| {
         MacroError::at(
             format!(
-                "kernel `{function}` declares a {axis} of {declared}, above the {allowed} a \
-                 device accepts, so its launch would be refused"
+                "kernel `{function}` declares a {axis} of {declared}, {bound}, so its launch \
+                 would be refused"
             ),
             kernel.name_span,
         )
     };
 
-    if block.x > limits::MAX_BLOCK_DIM_X {
-        return Err(over_limit(
-            "block x dimension",
-            block.x,
-            limits::MAX_BLOCK_DIM_X,
-        ));
-    }
-    if block.y > limits::MAX_BLOCK_DIM_Y {
-        return Err(over_limit(
-            "block y dimension",
-            block.y,
-            limits::MAX_BLOCK_DIM_Y,
-        ));
-    }
-    if block.z > limits::MAX_BLOCK_DIM_Z {
-        return Err(over_limit(
-            "block z dimension",
-            block.z,
-            limits::MAX_BLOCK_DIM_Z,
-        ));
-    }
-    if grid.x > limits::MAX_GRID_DIM_X {
-        return Err(over_limit(
-            "grid x dimension",
-            grid.x,
-            limits::MAX_GRID_DIM_X,
-        ));
-    }
-    if grid.y > limits::MAX_GRID_DIM_Y {
-        return Err(over_limit(
-            "grid y dimension",
-            grid.y,
-            limits::MAX_GRID_DIM_Y,
-        ));
-    }
-    if grid.z > limits::MAX_GRID_DIM_Z {
-        return Err(over_limit(
-            "grid z dimension",
-            grid.z,
-            limits::MAX_GRID_DIM_Z,
-        ));
+    for (axis, declared, allowed) in [
+        ("block x dimension", block.x, limits::MAX_BLOCK_DIM_X),
+        ("block y dimension", block.y, limits::MAX_BLOCK_DIM_Y),
+        ("block z dimension", block.z, limits::MAX_BLOCK_DIM_Z),
+        ("grid x dimension", grid.x, limits::MAX_GRID_DIM_X),
+        ("grid y dimension", grid.y, limits::MAX_GRID_DIM_Y),
+        ("grid z dimension", grid.z, limits::MAX_GRID_DIM_Z),
+    ] {
+        if declared == 0 {
+            return Err(refused(axis, declared, "below the 1 a device accepts"));
+        }
+        if declared > allowed {
+            return Err(refused(
+                axis,
+                declared,
+                &format!("above the {allowed} a device accepts"),
+            ));
+        }
     }
 
     let threads = u64::from(block.x) * u64::from(block.y) * u64::from(block.z);
@@ -180,8 +157,7 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroEr
 
         let elements = parameter.host.total_elements();
         let parameter_bytes = element_bytes.checked_mul(elements);
-        let Some(total_with_parameter) =
-            parameter_bytes.and_then(|bytes| total.checked_add(bytes))
+        let Some(total_with_parameter) = parameter_bytes.and_then(|bytes| total.checked_add(bytes))
         else {
             return Err(MacroError::at(
                 format!(
@@ -277,6 +253,36 @@ mod tests {
             dimensions(32, 32, 1)
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_zero_axis_is_refused_before_the_device_is_asked() {
+        for (grid, block, axis) in [
+            (dimensions(0, 1, 1), dimensions(1, 1, 1), "grid x dimension"),
+            (dimensions(1, 0, 1), dimensions(1, 1, 1), "grid y dimension"),
+            (
+                dimensions(1, 1, 1),
+                dimensions(0, 1, 1),
+                "block x dimension",
+            ),
+            (
+                dimensions(1, 1, 1),
+                dimensions(1, 0, 1),
+                "block y dimension",
+            ),
+            (
+                dimensions(1, 1, 1),
+                dimensions(1, 1, 0),
+                "block z dimension",
+            ),
+        ] {
+            let error = check(grid, block).unwrap_err();
+            assert!(error.message.contains(axis), "{error}");
+            assert!(
+                error.message.contains("below the 1 a device accepts"),
+                "the message should state the bound it derived: {error}"
+            );
+        }
     }
 
     #[test]

@@ -126,6 +126,17 @@ impl Kernel {
                             parameter_span,
                         )
                     })?;
+                    if let HostTy::Declared(type_name) = host.base() {
+                        return Err(MacroError::at(
+                            format!(
+                                "kernel `{function_name}`: parameter `{parameter_name}` has the \
+                                 custom type `{type_name}`, which cannot cross to the device: \
+                                 Descend's code generator spells a struct by name and emits no \
+                                 definition for it"
+                            ),
+                            parameter_span,
+                        ));
+                    }
 
                     parameters.push(KernelParameter {
                         name: parameter_name.to_string(),
@@ -265,6 +276,25 @@ mod tests {
         assert_eq!(
             crate::nat::eval_dimensions(&kernel.dimensions.block).unwrap(),
             crate::nat::Dimensions { x: 64, y: 1, z: 1 }
+        );
+    }
+
+    #[test]
+    fn a_parameter_of_a_custom_type_is_refused_at_its_own_span() {
+        let error = extract(
+            "struct Point { x: i32, y: i32 }
+             fn gpu_k<r: prv>(points: &r uniq gpu.global [Point; 64])
+                 -[grid: gpu.grid<X<1>, X<64>>]-> () {
+                 sched block in grid { sched thread in block { () } }
+             }",
+            "gpu_k",
+        )
+        .expect_err("Descend's code generator emits no definition for a struct");
+
+        assert!(error.message.contains("custom type `Point`"), "{error}");
+        assert!(
+            error.span.is_some(),
+            "the refusal should point at the parameter, not at the kernel: {error}"
         );
     }
 
