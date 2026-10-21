@@ -8,11 +8,8 @@ use proc_macro2::Span;
 pub struct KernelParameter {
     pub name: String,
     pub span: Option<Span>,
-    pub is_uniq: bool,
-    pub is_shared_memory: bool,
-    pub is_by_value: bool,
+    pub kind: ParameterType,
     pub host: HostTy,
-    pub shared_memory_dty: Option<DataTy>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,16 +40,26 @@ pub(crate) fn not_defined(kernel_name: &str) -> MacroError {
     ))
 }
 
-enum ParameterType<'a> {
+#[derive(Debug, Clone)]
+pub enum ParameterType {
+    Value(DataTy),
     Reference {
         ownership: Ownership,
         memory: Memory,
-        dty: &'a DataTy,
+        dty: DataTy,
     },
-    Value(&'a DataTy),
 }
 
-fn parameter_type(ty: &Ty) -> Option<ParameterType<'_>> {
+impl ParameterType {
+    pub(crate) fn dty(&self) -> &DataTy {
+        match self {
+            ParameterType::Value(dty) => dty,
+            ParameterType::Reference { dty, .. } => dty,
+        }
+    }
+}
+
+fn parameter_type(ty: &Ty) -> Option<ParameterType> {
     let TyKind::Data(dty) = &ty.ty else {
         return None;
     };
@@ -60,9 +67,9 @@ fn parameter_type(ty: &Ty) -> Option<ParameterType<'_>> {
         DataTyKind::Ref(reference_dty) => Some(ParameterType::Reference {
             ownership: reference_dty.own,
             memory: reference_dty.mem.clone(),
-            dty: &reference_dty.dty,
+            dty: reference_dty.dty.as_ref().clone(),
         }),
-        _ => Some(ParameterType::Value(dty.as_ref())),
+        _ => Some(ParameterType::Value(dty.as_ref().clone())),
     }
 }
 
@@ -102,29 +109,16 @@ impl Kernel {
                     let parameter_span = span_of(&parameter.ident, source);
                     let ty = parameter.ty.as_ref().unwrap();
 
-                    let (is_uniq, is_shared_memory, is_by_value, dty) = match parameter_type(ty) {
-                        Some(ParameterType::Reference {
-                            ownership,
-                            memory,
-                            dty,
-                        }) => (
-                            matches!(ownership, Ownership::Uniq),
-                            matches!(memory, Memory::GpuShared),
-                            false,
-                            dty,
-                        ),
-                        Some(ParameterType::Value(dty)) => (false, false, true, dty),
-                        None => {
-                            return Err(MacroError::at(
-                                format!(
-                                    "kernel `{function_name}`: parameter `{parameter_name}` has \
-                                     no data type"
-                                ),
-                                parameter_span,
-                            ))
-                        }
+                    let Some(kind) = parameter_type(ty) else {
+                        return Err(MacroError::at(
+                            format!(
+                                "kernel `{function_name}`: parameter `{parameter_name}` has \
+                                 no data type"
+                            ),
+                            parameter_span,
+                        ));
                     };
-                    let host = from_dty(dty).map_err(|reason| {
+                    let host = from_dty(kind.dty()).map_err(|reason| {
                         MacroError::at(
                             format!(
                                 "kernel `{function_name}`: parameter `{parameter_name}` {reason}"
@@ -136,11 +130,8 @@ impl Kernel {
                     parameters.push(KernelParameter {
                         name: parameter_name.to_string(),
                         span: parameter_span,
-                        is_uniq,
-                        is_shared_memory,
-                        is_by_value,
+                        kind,
                         host,
-                        shared_memory_dty: is_shared_memory.then(|| dty.clone()),
                     });
                 }
 
@@ -159,7 +150,14 @@ impl Kernel {
     pub fn shared_memory_dtys(&self) -> Vec<DataTy> {
         self.parameters
             .iter()
-            .filter_map(|parameter| parameter.shared_memory_dty.clone())
+            .filter_map(|parameter| match &parameter.kind {
+                ParameterType::Reference {
+                    memory: Memory::GpuShared,
+                    dty,
+                    ..
+                } => Some(dty.clone()),
+                _ => None,
+            })
             .collect()
     }
 }
@@ -201,6 +199,51 @@ mod tests {
                 DataTyKind::Array(_, Nat::Lit(64))
             ),
             "{shared_memory_dtys:?}"
+        );
+    }
+
+    #[test]
+    fn a_value_between_two_references_keeps_its_own_form() {
+        let kernel = extract(
+            "fn gpu_k<r1: prv, r2: prv>(
+                 read_only: &r1 shrd gpu.global [i32; 256],
+                 factor: i32,
+                 [grid.forall(X)] scratch: &r2 uniq gpu.shared [i32; 64]
+             ) -[grid: gpu.grid<X<4>, X<64>>]-> () {
+                 sched block in grid { sched thread in block { () } }
+             }",
+            "gpu_k",
+        )
+        .expect("a gpu.grid kernel must extract");
+
+        assert!(
+            matches!(
+                &kernel.parameters[0].kind,
+                ParameterType::Reference {
+                    ownership: Ownership::Shrd,
+                    memory: Memory::GpuGlobal,
+                    ..
+                }
+            ),
+            "{:?}",
+            kernel.parameters[0]
+        );
+        assert!(
+            matches!(&kernel.parameters[1].kind, ParameterType::Value(_)),
+            "{:?}",
+            kernel.parameters[1]
+        );
+        assert!(
+            matches!(
+                &kernel.parameters[2].kind,
+                ParameterType::Reference {
+                    ownership: Ownership::Uniq,
+                    memory: Memory::GpuShared,
+                    ..
+                }
+            ),
+            "{:?}",
+            kernel.parameters[2]
         );
     }
 

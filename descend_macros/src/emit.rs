@@ -1,7 +1,8 @@
 use crate::artifact::{LaunchConfig, Ptx};
 use crate::diag::MacroError;
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, ParameterType};
 use crate::source::DescendSource;
+use descend::ast::{Memory, Ownership};
 use proc_macro2::{Delimiter, Group, Ident, Literal, TokenStream, TokenTree};
 use quote::{format_ident, quote};
 use std::str::FromStr;
@@ -15,44 +16,55 @@ pub fn generate_launch_function(
 
     let mut parameters: Vec<TokenStream> = vec![quote! { stream: &::descend_host::Stream }];
     let mut argument_pushes: Vec<TokenStream> = Vec::new();
-    for parameter in kernel
-        .parameters
-        .iter()
-        .filter(|parameter| !parameter.is_shared_memory)
-    {
-        let rust_name = rust_parameter_name(&parameter.name, kernel_name)
-            .map_err(|message| MacroError::at(message, parameter.span))?;
-
-        if parameter.is_by_value {
-            let parameter_ident = format_ident!("{}", rust_name);
-            let value_type = TokenStream::from_str(&parameter.host.rust()).map_err(|error| {
-                MacroError::at(
-                    format!(
-                        "kernel `{kernel_name}`: parameter `{}` has a type the generator cannot \
-                             spell in Rust: {error}",
-                        parameter.name
-                    ),
-                    parameter.span,
-                )
-            })?;
-            parameters.push(quote! { #parameter_ident: #value_type });
-            argument_pushes.push(quote! { kernel.push_arg_val(&#parameter_ident)?; });
+    for parameter in &kernel.parameters {
+        if matches!(
+            &parameter.kind,
+            ParameterType::Reference {
+                memory: Memory::GpuShared,
+                ..
+            }
+        ) {
             continue;
         }
 
-        let element_count = parameter.host.total_elements();
-
+        let rust_name = rust_parameter_name(&parameter.name, kernel_name)
+            .map_err(|message| MacroError::at(message, parameter.span))?;
         let parameter_ident = format_ident!("{}", rust_name);
-        let element = format_ident!("{}", parameter.host.base().rust());
-        let element_count_literal = Literal::usize_unsuffixed(element_count);
-        let buffer_type = quote! { ::descend_host::GpuBuffer<[#element; #element_count_literal]> };
 
-        if parameter.is_uniq {
-            parameters.push(quote! { #parameter_ident: &mut #buffer_type });
-            argument_pushes.push(quote! { kernel.push_arg_uniq(#parameter_ident)?; });
-        } else {
-            parameters.push(quote! { #parameter_ident: &#buffer_type });
-            argument_pushes.push(quote! { kernel.push_arg_shrd(#parameter_ident)?; });
+        match &parameter.kind {
+            ParameterType::Value(_) => {
+                let value_type =
+                    TokenStream::from_str(&parameter.host.rust()).map_err(|error| {
+                        MacroError::at(
+                            format!(
+                                "kernel `{kernel_name}`: parameter `{}` has a type the generator \
+                         cannot spell in Rust: {error}",
+                                parameter.name
+                            ),
+                            parameter.span,
+                        )
+                    })?;
+                parameters.push(quote! { #parameter_ident: #value_type });
+                argument_pushes.push(quote! { kernel.push_arg_val(&#parameter_ident)?; });
+            }
+            ParameterType::Reference { ownership, .. } => {
+                let element_count = parameter.host.total_elements();
+                let element = format_ident!("{}", parameter.host.base().rust());
+                let element_count_literal = Literal::usize_unsuffixed(element_count);
+                let buffer_type =
+                    quote! { ::descend_host::GpuBuffer<[#element; #element_count_literal]> };
+
+                match ownership {
+                    Ownership::Uniq => {
+                        parameters.push(quote! { #parameter_ident: &mut #buffer_type });
+                        argument_pushes.push(quote! { kernel.push_arg_uniq(#parameter_ident)?; });
+                    }
+                    Ownership::Shrd => {
+                        parameters.push(quote! { #parameter_ident: &#buffer_type });
+                        argument_pushes.push(quote! { kernel.push_arg_shrd(#parameter_ident)?; });
+                    }
+                }
+            }
         }
     }
 

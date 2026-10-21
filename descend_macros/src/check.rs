@@ -1,9 +1,10 @@
 use crate::artifact::LaunchConfig;
 use crate::diag::MacroError;
-use crate::kernel::{Kernel, KernelParameter};
+use crate::kernel::{Kernel, KernelParameter, ParameterType};
 use crate::limits;
 use crate::nat::{eval_dimensions, Dimensions};
 use crate::shared_memory::SharedMemoryBytes;
+use descend::ast::Memory;
 
 pub fn check_kernel(kernel: &Kernel) -> Result<LaunchConfig, MacroError> {
     check_shared_parameter_order(kernel)?;
@@ -124,7 +125,13 @@ fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
     let mut seen_shared = false;
 
     for parameter in &kernel.parameters {
-        if !parameter.is_shared_memory {
+        if !matches!(
+            &parameter.kind,
+            ParameterType::Reference {
+                memory: Memory::GpuShared,
+                ..
+            }
+        ) {
             if seen_shared {
                 return Err(MacroError::at(
                     format!(
@@ -149,7 +156,13 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroEr
     let mut total: usize = 0;
 
     for parameter in &kernel.parameters {
-        if !parameter.is_shared_memory {
+        if !matches!(
+            &parameter.kind,
+            ParameterType::Reference {
+                memory: Memory::GpuShared,
+                ..
+            }
+        ) {
             continue;
         }
 
@@ -197,7 +210,7 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use descend::ast::{DataTy, DataTyKind, Dim, Dim1d, Nat, ScalarTy};
+    use descend::ast::{DataTy, DataTyKind, Dim, Dim1d, Nat, Ownership, ScalarTy};
 
     fn dimensions(x: u32, y: u32, z: u32) -> Dimensions {
         Dimensions { x, y, z }
@@ -220,28 +233,33 @@ mod tests {
     }
 
     fn shared_parameter(name: &str, element: ScalarTy, elements: usize) -> KernelParameter {
-        let shared_memory_dty = DataTy::new(DataTyKind::Array(
-            Box::new(DataTy::new(DataTyKind::Scalar(element))),
-            Nat::Lit(elements),
-        ));
-        let host = crate::host_ty::from_dty(&shared_memory_dty)
-            .expect("an array of scalars crosses to the host");
-        KernelParameter {
-            name: name.to_string(),
-            span: None,
-            is_uniq: true,
-            is_shared_memory: true,
-            is_by_value: false,
-            host,
-            shared_memory_dty: Some(shared_memory_dty),
-        }
+        reference(name, Memory::GpuShared, element, elements)
     }
 
     fn global_parameter(name: &str) -> KernelParameter {
+        reference(name, Memory::GpuGlobal, ScalarTy::I32, 64)
+    }
+
+    fn reference(
+        name: &str,
+        memory: Memory,
+        element: ScalarTy,
+        elements: usize,
+    ) -> KernelParameter {
+        let dty = DataTy::new(DataTyKind::Array(
+            Box::new(DataTy::new(DataTyKind::Scalar(element))),
+            Nat::Lit(elements),
+        ));
+        let host = crate::host_ty::from_dty(&dty).expect("an array of scalars crosses to the host");
         KernelParameter {
-            is_shared_memory: false,
-            shared_memory_dty: None,
-            ..shared_parameter(name, ScalarTy::I32, 64)
+            name: name.to_string(),
+            span: None,
+            kind: ParameterType::Reference {
+                ownership: Ownership::Uniq,
+                memory,
+                dty,
+            },
+            host,
         }
     }
 
