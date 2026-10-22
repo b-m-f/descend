@@ -3,43 +3,23 @@ use descend::ast::{AtomicTy, DataTy, DataTyKind, ScalarTy};
 pub const UNSUPPORTED_TYPE: &str = "has a type that cannot cross to the host; only the basic \
     Descend types and arrays of them can";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalarKind {
-    U8,
-    U32,
-    U64,
-    I32,
-    I64,
-    F32,
-    F64,
-    Bool,
-    AtomicU32,
-    AtomicI32,
+fn describe(scalar: ScalarTy) -> (&'static str, Option<usize>) {
+    match scalar {
+        ScalarTy::Bool => ("bool", Some(1)),
+        ScalarTy::U32 => ("u32", Some(4)),
+        ScalarTy::U64 => ("u64", Some(8)),
+        ScalarTy::I32 => ("i32", Some(4)),
+        ScalarTy::I64 => ("i64", Some(8)),
+        ScalarTy::F32 => ("f32", Some(4)),
+        ScalarTy::F64 => ("f64", Some(8)),
+        ScalarTy::U8 => ("u8", None),
+        ScalarTy::Unit => ("()", None),
+        ScalarTy::Gpu => ("Gpu", None),
+    }
 }
 
-impl ScalarKind {
-    fn describe(self) -> (&'static str, Option<usize>) {
-        match self {
-            ScalarKind::Bool => ("bool", Some(1)),
-            ScalarKind::U8 => ("u8", None),
-            ScalarKind::U32 => ("u32", Some(4)),
-            ScalarKind::U64 => ("u64", Some(8)),
-            ScalarKind::I32 => ("i32", Some(4)),
-            ScalarKind::I64 => ("i64", Some(8)),
-            ScalarKind::F32 => ("f32", Some(4)),
-            ScalarKind::F64 => ("f64", Some(8)),
-            ScalarKind::AtomicU32 => ("u32", Some(4)),
-            ScalarKind::AtomicI32 => ("i32", None),
-        }
-    }
-
-    pub fn rust(self) -> &'static str {
-        self.describe().0
-    }
-
-    pub fn shared_memory_bytes(self) -> Option<usize> {
-        self.describe().1
-    }
+pub fn shared_memory_bytes(scalar: ScalarTy) -> Option<usize> {
+    describe(scalar).1
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +30,7 @@ pub struct ArraySize {
 
 #[derive(Debug, Clone)]
 pub enum HostTy {
-    Scalar(ScalarKind),
+    Scalar(ScalarTy),
     Array(Box<HostTy>, ArraySize),
     Declared(String),
 }
@@ -58,7 +38,7 @@ pub enum HostTy {
 impl HostTy {
     pub fn rust(&self) -> String {
         match self {
-            HostTy::Scalar(kind) => kind.rust().to_string(),
+            HostTy::Scalar(scalar) => describe(*scalar).0.to_string(),
             HostTy::Array(element, array_size) => {
                 format!("[{}; {}]", element.rust(), array_size.elements)
             }
@@ -73,9 +53,9 @@ impl HostTy {
         }
     }
 
-    pub fn scalar(&self) -> Option<ScalarKind> {
+    pub fn scalar(&self) -> Option<ScalarTy> {
         match self.base() {
-            HostTy::Scalar(kind) => Some(*kind),
+            HostTy::Scalar(scalar) => Some(*scalar),
             _ => None,
         }
     }
@@ -107,8 +87,8 @@ pub fn from_dty(dty: &DataTy) -> Result<HostTy, String> {
         DataTyKind::Struct(declared) => Ok(HostTy::Declared(declared.ident.name.to_string())),
         DataTyKind::Ident(name) => Ok(HostTy::Declared(name.name.to_string())),
         DataTyKind::At(inner, _) => from_dty(inner),
-        DataTyKind::Atomic(AtomicTy::AtomicU32) => Ok(HostTy::Scalar(ScalarKind::AtomicU32)),
-        DataTyKind::Atomic(AtomicTy::AtomicI32) => Ok(HostTy::Scalar(ScalarKind::AtomicI32)),
+        DataTyKind::Atomic(AtomicTy::AtomicU32) => Ok(HostTy::Scalar(ScalarTy::U32)),
+        DataTyKind::Atomic(AtomicTy::AtomicI32) => Ok(HostTy::Scalar(ScalarTy::I32)),
         DataTyKind::Tuple(_) => Err(UNSUPPORTED_TYPE.to_string()),
         DataTyKind::ArrayShape(_, _) => Err(UNSUPPORTED_TYPE.to_string()),
         DataTyKind::Ref(_) => Err(UNSUPPORTED_TYPE.to_string()),
@@ -119,14 +99,14 @@ pub fn from_dty(dty: &DataTy) -> Result<HostTy, String> {
 
 fn scalar_host_ty(scalar: ScalarTy) -> Result<HostTy, String> {
     match scalar {
-        ScalarTy::U8 => Ok(HostTy::Scalar(ScalarKind::U8)),
-        ScalarTy::U32 => Ok(HostTy::Scalar(ScalarKind::U32)),
-        ScalarTy::U64 => Ok(HostTy::Scalar(ScalarKind::U64)),
-        ScalarTy::I32 => Ok(HostTy::Scalar(ScalarKind::I32)),
-        ScalarTy::I64 => Ok(HostTy::Scalar(ScalarKind::I64)),
-        ScalarTy::F32 => Ok(HostTy::Scalar(ScalarKind::F32)),
-        ScalarTy::F64 => Ok(HostTy::Scalar(ScalarKind::F64)),
-        ScalarTy::Bool => Ok(HostTy::Scalar(ScalarKind::Bool)),
+        ScalarTy::U8
+        | ScalarTy::U32
+        | ScalarTy::U64
+        | ScalarTy::I32
+        | ScalarTy::I64
+        | ScalarTy::F32
+        | ScalarTy::F64
+        | ScalarTy::Bool => Ok(HostTy::Scalar(scalar)),
         ScalarTy::Unit | ScalarTy::Gpu => Err(UNSUPPORTED_TYPE.to_string()),
     }
 }
@@ -144,22 +124,51 @@ mod tests {
         DataTy::new(DataTyKind::Array(Box::new(element), Nat::Lit(elements)))
     }
 
+    fn atomic(atomic_ty: AtomicTy) -> DataTy {
+        DataTy::new(DataTyKind::Atomic(atomic_ty))
+    }
+
     #[test]
-    fn every_scalar_kind_states_its_rust_name_and_its_shared_memory_width_together() {
-        for (kind, rust, shared_memory_bytes) in [
-            (ScalarKind::Bool, "bool", Some(1)),
-            (ScalarKind::U8, "u8", None),
-            (ScalarKind::U32, "u32", Some(4)),
-            (ScalarKind::U64, "u64", Some(8)),
-            (ScalarKind::I32, "i32", Some(4)),
-            (ScalarKind::I64, "i64", Some(8)),
-            (ScalarKind::F32, "f32", Some(4)),
-            (ScalarKind::F64, "f64", Some(8)),
-            (ScalarKind::AtomicU32, "u32", Some(4)),
-            (ScalarKind::AtomicI32, "i32", None),
+    fn every_scalar_type_states_its_rust_name_and_its_shared_memory_width_together() {
+        for (scalar_ty, rust, shared_memory_bytes) in [
+            (ScalarTy::Bool, "bool", Some(1)),
+            (ScalarTy::U8, "u8", None),
+            (ScalarTy::U32, "u32", Some(4)),
+            (ScalarTy::U64, "u64", Some(8)),
+            (ScalarTy::I32, "i32", Some(4)),
+            (ScalarTy::I64, "i64", Some(8)),
+            (ScalarTy::F32, "f32", Some(4)),
+            (ScalarTy::F64, "f64", Some(8)),
+            (ScalarTy::Unit, "()", None),
+            (ScalarTy::Gpu, "Gpu", None),
         ] {
-            assert_eq!(kind.describe(), (rust, shared_memory_bytes), "{kind:?}");
+            assert_eq!(
+                describe(scalar_ty),
+                (rust, shared_memory_bytes),
+                "{scalar_ty:?}"
+            );
         }
+    }
+
+    #[test]
+    fn an_atomic_crosses_to_the_host_as_its_base_scalar() {
+        for (atomic_ty, scalar_ty, rust) in [
+            (AtomicTy::AtomicU32, ScalarTy::U32, "u32"),
+            (AtomicTy::AtomicI32, ScalarTy::I32, "i32"),
+        ] {
+            let host = from_dty(&atomic(atomic_ty)).unwrap();
+            assert_eq!(host.rust(), rust, "{atomic_ty:?}");
+            assert_eq!(host.scalar(), Some(scalar_ty), "{atomic_ty:?}");
+            assert_eq!(shared_memory_bytes(scalar_ty), Some(4), "{atomic_ty:?}");
+        }
+    }
+
+    #[test]
+    fn an_array_of_atomics_crosses_as_an_array_of_its_base_scalar() {
+        let host = from_dty(&array(atomic(AtomicTy::AtomicU32), 8)).unwrap();
+        assert_eq!(host.rust(), "[u32; 8]");
+        assert_eq!(host.total_elements(), 8);
+        assert_eq!(shared_memory_bytes(host.scalar().unwrap()), Some(4));
     }
 
     #[test]

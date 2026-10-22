@@ -94,7 +94,7 @@ fn shared_memory_element_bytes(parameter: &KernelParameter) -> Option<usize> {
     parameter
         .host
         .scalar()
-        .and_then(crate::host_ty::ScalarKind::shared_memory_bytes)
+        .and_then(crate::host_ty::shared_memory_bytes)
 }
 
 fn check_shared_parameter_order(kernel: &Kernel) -> Result<(), MacroError> {
