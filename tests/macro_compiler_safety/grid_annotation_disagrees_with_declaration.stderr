@@ -1,0 +1,7 @@
+error: kernel `gpu_small_grid` is launched with a grid x dimension of 8, but its declaration evaluates to 4. The launch reads grid (8, 1, 1) and block (256, 1, 1); the declaration reads grid (4, 1, 1) and block (256, 1, 1). The kernel was checked against the declaration, so the launch site cannot change it: correct the `<<<grid, block>>>` annotation or drop it
+  --> tests/macro_compiler_safety/grid_annotation_disagrees_with_declaration.rs:19:26
+   |
+19 |     let gpu_small_grid = descend_fn!(gpu_small_grid<<<8, 256>>>);
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

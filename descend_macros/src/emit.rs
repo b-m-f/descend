@@ -1,8 +1,9 @@
 use crate::artifact::{LaunchConfig, Ptx};
 use crate::diag::MacroError;
+use crate::invocation::DimensionAnnotation;
 use crate::kernel::{Kernel, ParameterType};
 use descend::ast::{Memory, Ownership};
-use proc_macro2::{Delimiter, Group, Ident, Literal, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, TokenStream, TokenTree};
 use quote::{format_ident, quote};
 use std::str::FromStr;
 
@@ -153,10 +154,17 @@ pub fn carrier_macro(kernel_name: &str, source_token_stream: &TokenStream) -> To
 
 pub fn carrier_invocation(
     kernel: &Ident,
+    dimension_annotation: Option<&DimensionAnnotation>,
     bindings: TokenStream,
 ) -> Result<TokenStream, MacroError> {
-    let mut carrier_args = TokenStream::from_str(&format!("@fn {kernel},"))
+    let mut carrier_args = TokenStream::from_str("@fn ")
         .map_err(|error| format!("malformed instantiation: {error}"))?;
+    carrier_args.extend([TokenTree::Ident(kernel.clone())]);
+    carrier_args.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
+    if let Some(dimension_annotation) = dimension_annotation {
+        carrier_args.extend([dimension_annotation.to_token_tree()]);
+        carrier_args.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
+    }
     carrier_args.extend(bindings);
 
     let mut invocation = format!("{}!", carrier_name(&kernel.to_string()))

@@ -1,5 +1,6 @@
 use crate::artifact::LaunchConfig;
 use crate::diag::MacroError;
+use crate::invocation::DimensionAnnotation;
 use crate::kernel::{Kernel, KernelParameter, ParameterType};
 use crate::limits;
 use crate::nat::{eval_dimensions, Dimensions};
@@ -88,6 +89,60 @@ fn check_dimensions(
     }
 
     Ok(())
+}
+
+pub fn confirm_dimensions(
+    kernel: &Kernel,
+    declared: &LaunchConfig,
+    annotated: &DimensionAnnotation,
+) -> Result<(), MacroError> {
+    let function = &kernel.function_name;
+
+    let axes = [
+        ("grid", "x", declared.grid.x, annotated.grid.x),
+        ("grid", "y", declared.grid.y, annotated.grid.y),
+        ("grid", "z", declared.grid.z, annotated.grid.z),
+        ("block", "x", declared.block.x, annotated.block.x),
+        ("block", "y", declared.block.y, annotated.block.y),
+        ("block", "z", declared.block.z, annotated.block.z),
+    ];
+
+    let declared_grid = format!(
+        "({}, {}, {})",
+        declared.grid.x, declared.grid.y, declared.grid.z
+    );
+    let declared_block = format!(
+        "({}, {}, {})",
+        declared.block.x, declared.block.y, declared.block.z
+    );
+    let annotated_grid = format!(
+        "({}, {}, {})",
+        annotated.grid.x, annotated.grid.y, annotated.grid.z
+    );
+    let annotated_block = format!(
+        "({}, {}, {})",
+        annotated.block.x, annotated.block.y, annotated.block.z
+    );
+
+    let differing = axes
+        .into_iter()
+        .find(|(_, _, declared_value, annotated_value)| declared_value != annotated_value);
+
+    let Some((which, axis, declared_value, annotated_value)) = differing else {
+        return Ok(());
+    };
+
+    Err(MacroError::at(
+        format!(
+            "kernel `{function}` is launched with a {which} {axis} dimension of {annotated_value}, \
+             but its declaration evaluates to {declared_value}. The launch reads grid \
+             {annotated_grid} and block {annotated_block}; the declaration reads grid \
+             {declared_grid} and block {declared_block}. The kernel was checked against the \
+             declaration, so the launch site cannot change it: correct the `<<<grid, block>>>` \
+             annotation or drop it"
+        ),
+        annotated.span.or(kernel.name_span),
+    ))
 }
 
 fn shared_memory_element_bytes(parameter: &KernelParameter) -> Option<usize> {
@@ -186,7 +241,7 @@ pub fn shared_memory_bytes(kernel: &Kernel) -> Result<SharedMemoryBytes, MacroEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use descend::ast::{DataTy, DataTyKind, Dim, Dim1d, Nat, Ownership, ScalarTy};
+    use descend::ast::{DataTy, DataTyKind, Dim, Dim1d, Dim2d, Nat, Ownership, ScalarTy};
 
     fn dimensions(x: u32, y: u32, z: u32) -> Dimensions {
         Dimensions { x, y, z }
@@ -391,5 +446,116 @@ mod tests {
         assert!(error.message.contains("65536 bytes"), "{error}");
         assert!(error.message.contains("48 KiB"), "{error}");
         assert!(error.message.contains("`gpu_k`"), "{error}");
+    }
+
+    fn launch_of(grid: Dim, block: Dim) -> (Kernel, LaunchConfig) {
+        let kernel = Kernel {
+            function_name: "gpu_k".to_string(),
+            name_span: None,
+            dimensions: crate::kernel::ExecutionDimensions { grid, block },
+            parameters: Vec::new(),
+        };
+        let declared = check_kernel(&kernel).expect("the declared dimensions are valid");
+        (kernel, declared)
+    }
+
+    fn along(x: usize, y: usize) -> Dim {
+        Dim::XY(Box::new(Dim2d(Nat::Lit(x), Nat::Lit(y))))
+    }
+
+    fn annotated(grid: Dimensions, block: Dimensions) -> DimensionAnnotation {
+        DimensionAnnotation {
+            grid,
+            block,
+            span: None,
+        }
+    }
+
+    #[test]
+    fn an_annotation_matching_the_declaration_is_accepted() {
+        let (kernel, declared) = launch_of(one_dimensional(4), one_dimensional(256));
+        assert!(confirm_dimensions(
+            &kernel,
+            &declared,
+            &annotated(dimensions(4, 1, 1), dimensions(256, 1, 1))
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn a_scalar_annotation_is_compared_against_the_padded_declaration() {
+        let (kernel, declared) = launch_of(one_dimensional(64), one_dimensional(256));
+        let error = confirm_dimensions(
+            &kernel,
+            &declared,
+            &annotated(dimensions(64, 1, 2), dimensions(256, 1, 1)),
+        )
+        .expect_err("a grid z of 2 was not declared");
+        assert!(
+            error.message.contains("grid z dimension of 2"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("evaluates to 1"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn an_annotation_naming_a_different_grid_is_refused_with_both_triples() {
+        let (kernel, declared) = launch_of(one_dimensional(4), one_dimensional(256));
+        let error = confirm_dimensions(
+            &kernel,
+            &declared,
+            &annotated(dimensions(8, 1, 1), dimensions(256, 1, 1)),
+        )
+        .expect_err("the kernel declares a grid of 4");
+        let message = &error.message;
+        assert!(message.contains("grid x dimension of 8"), "{message}");
+        assert!(message.contains("evaluates to 4"), "{message}");
+        assert!(message.contains("grid (8, 1, 1)"), "{message}");
+        assert!(message.contains("grid (4, 1, 1)"), "{message}");
+        assert!(message.contains("`gpu_k`"), "{message}");
+    }
+
+    #[test]
+    fn an_annotation_naming_a_different_block_is_refused() {
+        let (kernel, declared) = launch_of(one_dimensional(4), one_dimensional(256));
+        let error = confirm_dimensions(
+            &kernel,
+            &declared,
+            &annotated(dimensions(4, 1, 1), dimensions(128, 1, 1)),
+        )
+        .expect_err("the kernel declares a block of 256");
+        assert!(
+            error.message.contains("block x dimension of 128"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_two_dimensional_declaration_is_matched_axis_by_axis() {
+        let (kernel, declared) = launch_of(along(16, 16), along(32, 32));
+        assert!(confirm_dimensions(
+            &kernel,
+            &declared,
+            &annotated(dimensions(16, 16, 1), dimensions(32, 32, 1))
+        )
+        .is_ok());
+
+        let error = confirm_dimensions(
+            &kernel,
+            &declared,
+            &annotated(dimensions(16, 1, 1), dimensions(32, 32, 1)),
+        )
+        .expect_err("the second grid axis is declared, not 1");
+        assert!(
+            error.message.contains("grid y dimension of 1"),
+            "{}",
+            error.message
+        );
     }
 }

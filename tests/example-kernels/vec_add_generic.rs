@@ -17,7 +17,7 @@ descend! {
 
 #[test]
 fn test_vec_add_generic() {
-    let gpu_vec_add = descend_fn!(gpu_vec_add, <N: 16384>);
+    let gpu_vec_add = descend_fn!(gpu_vec_add<<<64, 256>>>, <N: 16384>);
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
 

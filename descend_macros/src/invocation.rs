@@ -1,5 +1,6 @@
 use crate::diag::MacroError;
-use proc_macro2::{Group, Ident, Literal, TokenStream, TokenTree};
+use crate::nat::Dimensions;
+use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 use std::collections::HashMap;
 
 struct Cursor {
@@ -53,6 +54,31 @@ impl Cursor {
                 matches!(token_tree, TokenTree::Punct(punct) if punct.as_char() == character)
             })
             .is_some()
+    }
+
+    fn count_punct(&mut self, character: char) -> usize {
+        let mut counted = 0;
+        while self
+            .tokens
+            .next_if(|token_tree| {
+                matches!(token_tree, TokenTree::Punct(punct) if punct.as_char() == character)
+            })
+            .is_some()
+        {
+            counted += 1;
+        }
+        counted
+    }
+
+    fn peek_group(&mut self) -> Option<Group> {
+        match self.tokens.peek()? {
+            TokenTree::Group(group) => Some(group.clone()),
+            _ => None,
+        }
+    }
+
+    fn peek_span(&mut self) -> Option<Span> {
+        self.tokens.peek().map(|token_tree| token_tree.span())
     }
 
     fn rest(self) -> TokenStream {
@@ -164,7 +190,242 @@ fn plain_integer(literal: &Literal) -> Option<String> {
 #[derive(Debug)]
 pub struct FunctionInvocation {
     pub kernel: Ident,
+    pub dimension_annotation: Option<DimensionAnnotation>,
     pub bindings: TokenStream,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DimensionAnnotation {
+    pub grid: Dimensions,
+    pub block: Dimensions,
+    pub span: Option<Span>,
+}
+
+impl DimensionAnnotation {
+    pub fn to_token_tree(&self) -> TokenTree {
+        let side = |dimensions: &Dimensions| {
+            TokenTree::Group(Group::new(
+                Delimiter::Parenthesis,
+                [dimensions.x, dimensions.y, dimensions.z]
+                    .into_iter()
+                    .map(|axis| TokenTree::Literal(Literal::u32_unsuffixed(axis)))
+                    .collect(),
+            ))
+        };
+
+        let mut sides = TokenStream::new();
+        sides.extend([side(&self.grid)]);
+        sides.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
+        sides.extend([side(&self.block)]);
+        TokenTree::Group(Group::new(Delimiter::Bracket, sides))
+    }
+
+    pub fn from_token_tree(token: &TokenTree) -> Result<Self, MacroError> {
+        let TokenTree::Group(group) = token else {
+            return Err("expected the launch dimensions as a bracketed group".into());
+        };
+        if group.delimiter() != Delimiter::Bracket {
+            return Err(MacroError::at(
+                "expected the launch dimensions as a bracketed group".to_string(),
+                Some(group.span()),
+            ));
+        }
+
+        let mut sides = group
+            .stream()
+            .into_iter()
+            .filter(|token| !matches!(token, TokenTree::Punct(_)));
+        let Some(grid) = sides.next() else {
+            return Err("the launch dimensions carry no grid".into());
+        };
+        let Some(block) = sides.next() else {
+            return Err("the launch dimensions carry no block".into());
+        };
+        if sides.next().is_some() {
+            return Err("the launch dimensions carry more than a grid and a block".into());
+        }
+
+        Ok(Self {
+            grid: read_axis_triple(&grid, "grid")?,
+            block: read_axis_triple(&block, "block")?,
+            span: Some(group.span()),
+        })
+    }
+}
+
+fn describe(delimiter: Delimiter) -> &'static str {
+    match delimiter {
+        Delimiter::Parenthesis => "`(` … `)`",
+        Delimiter::Brace => "`{` … `}`",
+        Delimiter::Bracket => "`[` … `]`",
+        Delimiter::None => "no delimiter",
+    }
+}
+
+fn read_axis(literal: &Literal, which: &str, axis: &str) -> Result<u32, MacroError> {
+    let spelled = literal.to_string();
+    if !spelled.chars().all(|character| character.is_ascii_digit()) {
+        return Err(MacroError::at(
+            format!("the {which} {axis} dimension must be a plain integer, found `{spelled}`"),
+            Some(literal.span()),
+        ));
+    }
+    spelled
+        .parse::<u32>()
+        .map_err(|_| {
+            MacroError::at(
+                format!(
+                    "the {which} {axis} dimension `{spelled}` is above the largest value a launch \
+                 axis takes"
+                ),
+                Some(literal.span()),
+            )
+        })
+        .and_then(|value| {
+            if value == 0 {
+                return Err(MacroError::at(
+                    format!(
+                    "the {which} {axis} dimension is 0; an axis of 0 runs no work, and no kernel \
+                     declares one"
+                ),
+                    Some(literal.span()),
+                ));
+            }
+            Ok(value)
+        })
+}
+
+fn read_axis_triple(token: &TokenTree, which: &str) -> Result<Dimensions, MacroError> {
+    let TokenTree::Group(group) = token else {
+        return Err(MacroError::at(
+            format!("expected the {which} dimensions as a group of one to three axes"),
+            Some(token.span()),
+        ));
+    };
+
+    let mut axes: Vec<u32> = Vec::new();
+    let names = ["x", "y", "z"];
+    for (index, token) in group
+        .stream()
+        .into_iter()
+        .filter(|token| !matches!(token, TokenTree::Punct(_)))
+        .enumerate()
+    {
+        let Some(name) = names.get(index) else {
+            return Err(MacroError::at(
+                format!("the {which} dimensions declare more than three axes"),
+                Some(token.span()),
+            ));
+        };
+        let TokenTree::Literal(literal) = token else {
+            return Err(MacroError::at(
+                format!("expected the {which} {name} dimension to be a plain integer"),
+                Some(token.span()),
+            ));
+        };
+        axes.push(read_axis(&literal, which, name)?);
+    }
+
+    if axes.is_empty() {
+        return Err(MacroError::at(
+            format!("the {which} dimensions declare no axis at all"),
+            Some(group.span()),
+        ));
+    }
+    while axes.len() < 3 {
+        axes.push(1);
+    }
+
+    Ok(Dimensions {
+        x: axes[0],
+        y: axes[1],
+        z: axes[2],
+    })
+}
+
+fn parse_dimensions_side(
+    cursor: &mut Cursor,
+    which: &str,
+    dimension_annotation_span: Span,
+) -> Result<Dimensions, MacroError> {
+    if let Some(group) = cursor.next_group() {
+        if group.delimiter() != Delimiter::Parenthesis {
+            return Err(MacroError::at(
+                format!(
+                    "expected the {which} dimensions as a single number or as `(x, y, z)`, found \
+                     a group with {}",
+                    describe(group.delimiter())
+                ),
+                Some(group.span()),
+            ));
+        }
+        let token = TokenTree::Group(group);
+        return read_axis_triple(&token, which);
+    }
+
+    let Some(literal) = cursor.next_literal() else {
+        return Err(MacroError::at(
+            format!("expected the {which} dimensions of `<<<grid, block>>>`, found something else"),
+            Some(dimension_annotation_span),
+        ));
+    };
+
+    let mut axes = [1u32; 3];
+    axes[0] = read_axis(&literal, which, "x")?;
+    Ok(Dimensions {
+        x: axes[0],
+        y: axes[1],
+        z: axes[2],
+    })
+}
+
+fn parse_dimension_annotation(
+    cursor: &mut Cursor,
+) -> Result<Option<DimensionAnnotation>, MacroError> {
+    let Some(dimension_annotation_span) = cursor.peek_span() else {
+        return Ok(None);
+    };
+
+    let opened = cursor.count_punct('<');
+    if opened < 2 {
+        return Ok(None);
+    }
+    if opened != 3 {
+        return Err(MacroError::at(
+            format!(
+                "expected the launch dimensions as `<<<grid, block>>>`, found {opened} `<` \
+                 before the grid"
+            ),
+            Some(dimension_annotation_span),
+        ));
+    }
+
+    let grid = parse_dimensions_side(cursor, "grid", dimension_annotation_span)?;
+
+    if !cursor.eat_punct(',') {
+        return Err(MacroError::at(
+            "expected `,` between the grid and the block of `<<<grid, block>>>`".to_string(),
+            Some(dimension_annotation_span),
+        ));
+    }
+
+    let block = parse_dimensions_side(cursor, "block", dimension_annotation_span)?;
+
+    let closed = cursor.count_punct('>');
+    if closed != 3 {
+        return Err(MacroError::at(
+            format!(
+                "expected `>>>` to close the launch dimensions, found {closed} `>` after the block"
+            ),
+            Some(dimension_annotation_span),
+        ));
+    }
+
+    Ok(Some(DimensionAnnotation {
+        grid,
+        block,
+        span: Some(dimension_annotation_span),
+    }))
 }
 
 pub fn check_kernel_name(kernel: &Ident) -> Result<(), MacroError> {
@@ -185,9 +446,15 @@ pub fn parse_function_invocation(input: TokenStream) -> Result<FunctionInvocatio
     let mut cursor = Cursor::new(input);
 
     let Some(kernel) = cursor.next_ident() else {
-        return Err("expected a kernel name, as in `descend_fn!(gpu_vec_add, <N: 16384>)`".into());
+        return Err(
+            "expected a kernel name, as in `descend_fn!(gpu_vec_add, <N: 16384>)` or \
+             `descend_fn!(gpu_vec_add<<<64, 256>>>, <N: 16384>)`"
+                .into(),
+        );
     };
     check_kernel_name(&kernel)?;
+
+    let dimension_annotation = parse_dimension_annotation(&mut cursor)?;
 
     let bindings = if cursor.eat_punct(',') {
         cursor.rest()
@@ -202,13 +469,18 @@ pub fn parse_function_invocation(input: TokenStream) -> Result<FunctionInvocatio
         rest
     };
 
-    Ok(FunctionInvocation { kernel, bindings })
+    Ok(FunctionInvocation {
+        kernel,
+        dimension_annotation,
+        bindings,
+    })
 }
 
 #[derive(Debug)]
 pub struct FunctionInternalArguments {
     pub source_token_stream: TokenStream,
     pub kernel: Ident,
+    pub dimension_annotation: Option<DimensionAnnotation>,
     pub bindings: TokenStream,
 }
 
@@ -236,9 +508,25 @@ pub fn parse_function_internal_arguments(
         ));
     }
 
+    let dimension_annotation = match cursor.peek_group() {
+        Some(group) if group.delimiter() == Delimiter::Bracket => {
+            let token = cursor.next().expect("the peeked token is still next");
+            let dimension_annotation = DimensionAnnotation::from_token_tree(&token)?;
+            if !cursor.eat_punct(',') {
+                return Err(MacroError::at(
+                    "expected `,` after the launch dimensions".to_string(),
+                    dimension_annotation.span,
+                ));
+            }
+            Some(dimension_annotation)
+        }
+        _ => None,
+    };
+
     Ok(FunctionInternalArguments {
         source_token_stream: source_group.stream(),
         kernel,
+        dimension_annotation,
         bindings: cursor.rest(),
     })
 }
@@ -432,5 +720,127 @@ mod tests {
             .unwrap_err()
             .message
             .contains("expected the Descend source block"));
+    }
+
+    fn dimensions(x: u32, y: u32, z: u32) -> Dimensions {
+        Dimensions { x, y, z }
+    }
+
+    fn annotated(source: &str) -> DimensionAnnotation {
+        invocation(source)
+            .expect("the invocation must parse")
+            .dimension_annotation
+            .expect("a dimension annotation must be read")
+    }
+
+    #[test]
+    fn a_scalar_dimension_annotation_pads_both_sides_to_one() {
+        let parsed = annotated("gpu_vec_add<<<64, 256>>>");
+        assert_eq!(parsed.grid, dimensions(64, 1, 1));
+        assert_eq!(parsed.block, dimensions(256, 1, 1));
+    }
+
+    #[test]
+    fn a_tuple_dimension_annotation_reads_each_axis_it_lists() {
+        let parsed = annotated("gpu_matmul<<<(16, 16), (32, 32)>>>");
+        assert_eq!(parsed.grid, dimensions(16, 16, 1));
+        assert_eq!(parsed.block, dimensions(32, 32, 1));
+    }
+
+    #[test]
+    fn a_dimension_annotation_reads_three_axes() {
+        let parsed = annotated("gpu<<<(2, 3, 4), (5, 6, 7)>>>");
+        assert_eq!(parsed.grid, dimensions(2, 3, 4));
+        assert_eq!(parsed.block, dimensions(5, 6, 7));
+    }
+
+    #[test]
+    fn a_dimension_annotation_keeps_the_bindings_that_follow_it() {
+        let parsed = invocation("gpu_vec_add<<<64, 256>>>, <N: 16384>").unwrap();
+        assert!(parsed.dimension_annotation.is_some());
+        assert_eq!(parsed.bindings.to_string(), "< N : 16384 >");
+    }
+
+    #[test]
+    fn an_invocation_without_dimensions_is_read_exactly_as_before() {
+        let parsed = invocation("gpu_vec_add, <N: 16384>").unwrap();
+        assert!(parsed.dimension_annotation.is_none());
+        assert_eq!(parsed.bindings.to_string(), "< N : 16384 >");
+    }
+
+    #[test]
+    fn a_lone_angle_bracket_is_not_read_as_dimensions() {
+        let error = invocation("gpu_vec_add <N: 256>").unwrap_err();
+        assert!(error.contains("expected `,` after the kernel"), "{error}");
+    }
+
+    #[test]
+    fn an_unclosed_dimension_annotation_is_refused() {
+        let error = invocation("gpu_vec_add<<<64, 256>>").unwrap_err();
+        assert!(
+            error.contains("expected `>>>` to close the launch dimensions"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_dimension_annotation_needs_both_a_grid_and_a_block() {
+        let error = invocation("gpu_vec_add<<<64>>>").unwrap_err();
+        assert!(
+            error.contains("expected `,` between the grid and the block"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_dimension_annotation_refuses_more_than_three_axes() {
+        let error = invocation("gpu<<<(1, 2, 3, 4), (1)>>>").unwrap_err();
+        assert!(error.contains("more than three axes"), "{error}");
+    }
+
+    #[test]
+    fn a_dimension_annotation_refuses_an_axis_of_zero() {
+        let error = invocation("gpu<<<0, 256>>>").unwrap_err();
+        assert!(error.contains("an axis of 0 runs no work"), "{error}");
+    }
+
+    #[test]
+    fn a_dimension_annotation_refuses_an_axis_that_is_not_a_number() {
+        let error = invocation("gpu<<<block, 256>>>").unwrap_err();
+        assert!(error.contains("expected the grid dimensions"), "{error}");
+    }
+
+    #[test]
+    fn a_dimension_annotation_survives_the_carrier_round_trip() {
+        let parsed = annotated("gpu<<<(2, 3), (256, 1, 1)>>>");
+        let token = parsed.to_token_tree();
+        let read_back =
+            DimensionAnnotation::from_token_tree(&token).expect("the routed group must parse");
+        assert_eq!(read_back.grid, parsed.grid);
+        assert_eq!(read_back.block, parsed.block);
+    }
+
+    #[test]
+    fn the_internal_arguments_read_a_routed_dimension_annotation() {
+        let routed = TokenStream::from_str(
+            "{ fn gpu_k() {} }, gpu_k, [(64, 1, 1), (256, 1, 1)], <N: 16384>",
+        )
+        .expect("must tokenize");
+        let parsed = parse_function_internal_arguments(routed).expect("the routed call must parse");
+        let annotated = parsed
+            .dimension_annotation
+            .expect("a dimension annotation must be read");
+        assert_eq!(annotated.grid, dimensions(64, 1, 1));
+        assert_eq!(annotated.block, dimensions(256, 1, 1));
+        assert_eq!(parsed.bindings.to_string(), "< N : 16384 >");
+    }
+
+    #[test]
+    fn the_internal_arguments_still_read_a_call_without_dimensions() {
+        let plain =
+            TokenStream::from_str("{ fn gpu_k() {} }, gpu_k, <N: 256>").expect("must tokenize");
+        let parsed = parse_function_internal_arguments(plain).expect("the plain call must parse");
+        assert!(parsed.dimension_annotation.is_none());
+        assert_eq!(parsed.bindings.to_string(), "< N : 256 >");
     }
 }

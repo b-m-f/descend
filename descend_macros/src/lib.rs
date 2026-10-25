@@ -52,19 +52,24 @@ fn declare_kernels(input: TokenStream) -> Result<TokenStream, MacroError> {
 }
 
 fn route_to_carrier(input: TokenStream) -> Result<TokenStream, MacroError> {
-    let FunctionInvocation { kernel, bindings } = invocation::parse_function_invocation(input)?;
-    emit::carrier_invocation(&kernel, bindings)
+    let FunctionInvocation {
+        kernel,
+        dimension_annotation,
+        bindings,
+    } = invocation::parse_function_invocation(input)?;
+    emit::carrier_invocation(&kernel, dimension_annotation.as_ref(), bindings)
 }
 
 fn instantiate_kernel(input: TokenStream) -> Result<TokenStream, MacroError> {
     let FunctionInternalArguments {
         source_token_stream,
         kernel,
+        dimension_annotation,
         bindings,
     } = invocation::parse_function_internal_arguments(input)?;
     let asked_at = kernel.span();
 
-    instantiate(source_token_stream, &kernel, bindings)
+    instantiate(source_token_stream, &kernel, dimension_annotation, bindings)
         .map(|items| emit::block_yielding(items, &kernel))
         .map_err(|error| error.or_span(Some(asked_at)))
 }
@@ -72,6 +77,7 @@ fn instantiate_kernel(input: TokenStream) -> Result<TokenStream, MacroError> {
 fn instantiate(
     source_token_stream: TokenStream,
     kernel: &Ident,
+    dimension_annotation: Option<crate::invocation::DimensionAnnotation>,
     bindings: TokenStream,
 ) -> Result<TokenStream, MacroError> {
     let kernel_name = kernel.to_string();
@@ -85,6 +91,9 @@ fn instantiate(
 
     let declared_at = kernel.name_span;
     let launch_config = check::check_kernel(&kernel)?;
+    if let Some(dimension_annotation) = &dimension_annotation {
+        check::confirm_dimensions(&kernel, &launch_config, dimension_annotation)?;
+    }
     let device_code =
         translate::translate(&code, &mut unit, &kernel_name, kernel.shared_memory_dtys())
             .map_err(|error| error.or_span(declared_at))?;

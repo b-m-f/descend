@@ -29,7 +29,8 @@ descend! {
 
 #[test]
 fn test_matmul() {
-    let matmul_64x128x64 = descend_fn!(gpu_matmul, <bs: 16, m: 64, n: 128, k: 64>);
+    let matmul_64x128x64 =
+        descend_fn!(gpu_matmul<<<(4, 4), (16, 16)>>>, <bs: 16, m: 64, n: 128, k: 64>);
 
     let ctx = Context::new(0).unwrap();
     let stream = ctx.new_stream().unwrap();
