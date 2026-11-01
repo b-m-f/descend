@@ -8,6 +8,8 @@ mod matmul;
 mod shared_mem;
 #[path = "example-kernels/two_kernels.rs"]
 mod two_kernels;
+#[path = "example-kernels/val_and_shared.rs"]
+mod val_and_shared;
 #[path = "example-kernels/val_args.rs"]
 mod val_args;
 #[path = "example-kernels/vec_add.rs"]
