@@ -92,8 +92,7 @@ pub fn generate_launch_function(
             #(#argument_pushes)*
             let launcher = ::descend_host::KernelLauncher::new(stream, PTX_SOURCE)?;
             let launch_result = unsafe { launcher.launch(kernel) };
-            stream.synchronize()?;
-            launch_result
+            launch_result.and(stream.synchronize())
         }
     })
 }

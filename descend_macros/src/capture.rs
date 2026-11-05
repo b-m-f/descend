@@ -9,17 +9,40 @@ fn hold_capture_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub fn with_captured_output<T>(action: impl FnOnce() -> T) -> (T, String) {
+#[derive(Debug)]
+pub enum CapturedOutcome<T> {
+    Completed(T),
+    Panicked(String),
+}
+
+pub fn with_captured_output<T>(action: impl FnOnce() -> T) -> (CapturedOutcome<T>, String) {
     let _held_for_the_whole_redirect = hold_capture_lock();
     capture(action)
 }
 
+pub fn catch_panic<T>(action: impl FnOnce() -> T) -> CapturedOutcome<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)) {
+        Ok(value) => CapturedOutcome::Completed(value),
+        Err(payload) => CapturedOutcome::Panicked(panic_message(payload)),
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "the panic payload carries no message".to_string()
+}
+
 #[cfg(unix)]
-fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
+fn capture<T>(action: impl FnOnce() -> T) -> (CapturedOutcome<T>, String) {
     use std::os::fd::AsRawFd;
 
     let Ok(mut capture_file) = tempfile::tempfile() else {
-        return (action(), String::new());
+        return (catch_panic(action), String::new());
     };
 
     let _ = std::io::stdout().flush();
@@ -28,7 +51,7 @@ fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
     let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
     if saved_stdout < 0 || saved_stderr < 0 {
         close_saved(saved_stdout, saved_stderr);
-        return (action(), String::new());
+        return (catch_panic(action), String::new());
     }
 
     let target = capture_file.as_raw_fd();
@@ -36,10 +59,10 @@ fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
         && unsafe { libc::dup2(target, libc::STDERR_FILENO) } >= 0;
     if !redirected {
         restore(saved_stdout, saved_stderr);
-        return (action(), String::new());
+        return (catch_panic(action), String::new());
     }
 
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
+    let outcome = catch_panic(action);
 
     let _ = std::io::stdout().flush();
     restore(saved_stdout, saved_stderr);
@@ -48,18 +71,16 @@ fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
     let _ = capture_file.seek(SeekFrom::Start(0));
     let _ = capture_file.read_to_string(&mut captured);
 
-    match outcome {
-        Ok(value) => (value, captured),
-        Err(panic) => {
-            eprint!("{}", captured);
-            std::panic::resume_unwind(panic)
-        }
+    if matches!(outcome, CapturedOutcome::Panicked(_)) {
+        eprint!("{}", captured);
     }
+
+    (outcome, captured)
 }
 
 #[cfg(not(unix))]
-fn capture<T>(action: impl FnOnce() -> T) -> (T, String) {
-    (action(), String::new())
+fn capture<T>(action: impl FnOnce() -> T) -> (CapturedOutcome<T>, String) {
+    (catch_panic(action), String::new())
 }
 
 #[cfg(unix)]
@@ -256,9 +277,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_panicking_action_leaves_stdout_redirected_back() {
-        let outcome =
-            std::panic::catch_unwind(|| with_captured_output(|| panic!("the action failed")));
-        assert!(outcome.is_err(), "the panic must be resumed");
+        let (outcome, _) = with_captured_output(|| panic!("the action failed"));
+        assert!(
+            matches!(
+                outcome,
+                CapturedOutcome::Panicked(ref message) if message == "the action failed"
+            ),
+            "the panic must come back as a message: {outcome:?}"
+        );
 
         let (_, captured) = with_captured_output(|| {
             write_to_stdout_descriptor("after the panic");

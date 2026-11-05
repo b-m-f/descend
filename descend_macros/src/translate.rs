@@ -6,10 +6,19 @@ pub fn translate(
     kernel_name: &str,
     shared_memory_dtys: Vec<descend::ast::DataTy>,
 ) -> Result<String, MacroError> {
-    let (checked, captured) = crate::capture::with_captured_output(|| {
+    let (outcome, captured) = crate::capture::with_captured_output(|| {
         descend::ty_check::ext_ty_check_kernel(compilation_unit, kernel_name, &[])
             .map_err(|type_error| type_error.emit(source_code))
     });
+    let checked = match outcome {
+        crate::capture::CapturedOutcome::Completed(checked) => checked,
+        crate::capture::CapturedOutcome::Panicked(message) => {
+            return Err(format!(
+                "Descend's type checker panicked: {message}; its output is printed above"
+            )
+            .into())
+        }
+    };
     if checked.is_err() {
         return Err(crate::capture::descend_message(&captured)
             .unwrap_or_else(|| {
@@ -20,7 +29,7 @@ pub fn translate(
     }
 
     keep_only_type_checked_functions(compilation_unit);
-    let device_code = generate_device_code(compilation_unit, kernel_name, shared_memory_dtys);
+    let device_code = generate_device_code(compilation_unit, kernel_name, shared_memory_dtys)?;
 
     debug!("========== GENERATED CUDA/C++ CODE for {} ==========\n{}\n=====================================================", kernel_name, device_code);
 
@@ -38,16 +47,25 @@ fn generate_device_code(
     compilation_unit: &descend::ast::CompilUnit,
     kernel_name: &str,
     shared_memory_dtys: Vec<descend::ast::DataTy>,
-) -> String {
-    let mut device_code =
-        descend::codegen::ext_gen_kernel(compilation_unit, kernel_name, shared_memory_dtys);
+) -> Result<String, MacroError> {
+    let mut device_code = match crate::capture::catch_panic(|| {
+        descend::codegen::ext_gen_kernel(compilation_unit, kernel_name, shared_memory_dtys)
+    }) {
+        crate::capture::CapturedOutcome::Completed(device_code) => device_code,
+        crate::capture::CapturedOutcome::Panicked(message) => {
+            return Err(format!(
+                "Descend's code generator panicked: {message}; its output is printed above"
+            )
+            .into())
+        }
+    };
 
     device_code = device_code.replace("std::size_t", "size_t");
 
-    device_code.replace(
+    Ok(device_code.replace(
         &format!("__global__ auto {}(", kernel_name),
         &format!("extern \"C\" __global__ auto {}(", kernel_name),
-    )
+    ))
 }
 
 #[cfg(test)]

@@ -107,9 +107,8 @@ impl Kernel {
                 for parameter in &fun_def.param_decls {
                     let parameter_name = &parameter.ident.name;
                     let parameter_span = span_of(&parameter.ident, source);
-                    let ty = parameter.ty.as_ref().unwrap();
 
-                    let Some(kind) = parameter_type(ty) else {
+                    let Some(kind) = parameter.ty.as_ref().and_then(parameter_type) else {
                         return Err(MacroError::at(
                             format!(
                                 "kernel `{function_name}`: parameter `{parameter_name}` has \

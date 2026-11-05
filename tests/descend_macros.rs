@@ -2,6 +2,8 @@
 mod device_calls;
 #[path = "example-kernels/instantiate.rs"]
 mod instantiate;
+#[path = "example-kernels/invocation_completion.rs"]
+mod invocation_completion;
 #[path = "example-kernels/matmul.rs"]
 mod matmul;
 #[path = "example-kernels/shared_mem.rs"]

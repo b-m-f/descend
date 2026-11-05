@@ -5,7 +5,7 @@ descend! {
     fn gpu_vec_add<N: nat, r: prv>(
         a_array: &r uniq gpu.global [i32; N],
         b_array: &r shrd gpu.global [i32; N]
-    ) -[grid: gpu.grid<X<64>, X<256>>]-> () {
+    ) -[grid: gpu.grid<X<N/256>, X<256>>]-> () {
         sched block in grid {
             sched thread in block {
                 let a_ref = &uniq (*a_array).to_view.grp::<256>[[block]][[thread]];

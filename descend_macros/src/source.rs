@@ -84,8 +84,18 @@ impl DescendSource {
 pub fn parse_descend_source<'a>(
     source: &'a descend::parser::SourceCode,
 ) -> Result<descend::ast::CompilUnit<'a>, crate::diag::MacroError> {
-    let (parsed, captured) =
+    let (outcome, captured) =
         crate::capture::with_captured_output(|| descend::parser::parse(source));
+
+    let parsed = match outcome {
+        crate::capture::CapturedOutcome::Completed(parsed) => parsed,
+        crate::capture::CapturedOutcome::Panicked(message) => {
+            return Err(format!(
+                "the Descend parser panicked: {message}; its output is printed above"
+            )
+            .into())
+        }
+    };
 
     parsed.map_err(|_| {
         crate::capture::descend_message(&captured)
@@ -247,9 +257,10 @@ mod tests {
 
     fn parses(text: &str) -> bool {
         let code = descend::parser::SourceCode::new(text.to_string());
-        crate::capture::with_captured_output(|| descend::parser::parse(&code))
-            .0
-            .is_ok()
+        matches!(
+            crate::capture::with_captured_output(|| descend::parser::parse(&code)).0,
+            crate::capture::CapturedOutcome::Completed(Ok(_))
+        )
     }
 
     #[test]
