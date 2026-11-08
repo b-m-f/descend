@@ -92,7 +92,16 @@ pub fn generate_launch_function(
             #(#argument_pushes)*
             let launcher = ::descend_host::KernelLauncher::new(stream, PTX_SOURCE)?;
             let launch_result = unsafe { launcher.launch(kernel) };
-            launch_result.and(stream.synchronize())
+            let synchronize_result = stream.synchronize();
+            match (launch_result, synchronize_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(launch), Ok(())) => Err(launch),
+                (Ok(()), Err(synchronize)) => Err(synchronize),
+                (Err(launch), Err(synchronize)) => Err(::descend_host::error::HostError::combine(
+                    launch,
+                    synchronize,
+                )),
+            }
         }
     })
 }
@@ -112,6 +121,7 @@ fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> 
         "kernel",
         "launcher",
         "launch_result",
+        "synchronize_result",
         "PTX_SOURCE",
     ];
 
@@ -216,6 +226,7 @@ mod tests {
             "kernel",
             "launcher",
             "launch_result",
+            "synchronize_result",
             "PTX_SOURCE",
         ] {
             let error = rust_parameter_name(name, "gpu_k").unwrap_err();
