@@ -56,15 +56,12 @@ impl<T: DescendType> GpuBuffer<T> {
             .dev_buf
             .to_host_vec(&stream.inner)
             .map_err(|e| HostError::driver(e, "device-to-host transfer"))?;
-        let actual_len = host.len();
-        let host: Box<[DescendTypeWrapper<T>; 1]> = host
-            .into_boxed_slice()
-            .try_into()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "DeviceBuffer::to_host_vec returned {actual_len} values for a GpuBuffer; expected exactly 1"
+        let host: Box<[DescendTypeWrapper<T>; 1]> =
+            host.into_boxed_slice().try_into().map_err(|_| {
+                HostError::InvalidSize(
+                    "DeviceBuffer::to_host_vec did not return exactly one value for a GpuBuffer",
                 )
-            });
+            })?;
 
         let host = Box::into_raw(host).cast::<T>();
         Ok(unsafe { Box::from_raw(host) })
@@ -126,6 +123,21 @@ mod tests {
 
         let res = buf.to_host(&stream1);
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn readback_length_violation_is_reported_rather_than_panicking() {
+        let ctx = Context::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+
+        let uploaded = [DescendTypeWrapper([1i32; 4]), DescendTypeWrapper([2i32; 4])];
+        let dev_buf = DeviceBuffer::from_host(&stream.inner, &uploaded).unwrap();
+        let buffer: GpuBuffer<[i32; 4]> = GpuBuffer { dev_buf };
+
+        assert!(matches!(
+            buffer.to_host(&stream),
+            Err(HostError::InvalidSize(_))
+        ));
     }
 
     #[test]

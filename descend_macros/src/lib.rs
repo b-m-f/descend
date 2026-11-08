@@ -57,7 +57,7 @@ fn route_to_carrier(input: TokenStream) -> Result<TokenStream, MacroError> {
         dimension_annotation,
         bindings,
     } = invocation::parse_function_invocation(input)?;
-    emit::carrier_invocation(&kernel, dimension_annotation.as_ref(), bindings)
+    emit::invocation(&kernel, dimension_annotation.as_ref(), bindings)
 }
 
 fn instantiate_kernel(input: TokenStream) -> Result<TokenStream, MacroError> {
@@ -136,7 +136,7 @@ fn declare(
                     ));
                 }
                 declared_names.push(kernel_name.clone());
-                output.extend(emit::carrier_macro(&kernel_name, source_token_stream));
+                output.extend(emit::invocation_macro(&kernel_name, source_token_stream));
             }
             descend::ast::Item::StructDecl(struct_decl) => {
                 debug!(

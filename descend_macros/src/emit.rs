@@ -132,12 +132,12 @@ fn rust_parameter_name(name: &str, kernel_name: &str) -> Result<String, String> 
     Ok(name.to_string())
 }
 
-fn carrier_name(kernel_name: &str) -> Ident {
+fn invocation_macro_name(kernel_name: &str) -> Ident {
     format_ident!("__descend_kernel_{}", kernel_name)
 }
 
-pub fn carrier_macro(kernel_name: &str, source_token_stream: &TokenStream) -> TokenStream {
-    let carrier = carrier_name(kernel_name);
+pub fn invocation_macro(kernel_name: &str, source_token_stream: &TokenStream) -> TokenStream {
+    let carrier = invocation_macro_name(kernel_name);
 
     quote! {
         #[allow(unused_macros)]
@@ -151,25 +151,28 @@ pub fn carrier_macro(kernel_name: &str, source_token_stream: &TokenStream) -> To
     }
 }
 
-pub fn carrier_invocation(
+pub fn invocation(
     kernel: &Ident,
     dimension_annotation: Option<&DimensionAnnotation>,
     bindings: TokenStream,
 ) -> Result<TokenStream, MacroError> {
-    let mut carrier_args = TokenStream::from_str("@fn ")
+    let mut invocation_args = TokenStream::from_str("@fn ")
         .map_err(|error| format!("malformed instantiation: {error}"))?;
-    carrier_args.extend([TokenTree::Ident(kernel.clone())]);
-    carrier_args.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
+    invocation_args.extend([TokenTree::Ident(kernel.clone())]);
+    invocation_args.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
     if let Some(dimension_annotation) = dimension_annotation {
-        carrier_args.extend([dimension_annotation.to_token_tree()]);
-        carrier_args.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
+        invocation_args.extend([dimension_annotation.to_token_tree()]);
+        invocation_args.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
     }
-    carrier_args.extend(bindings);
+    invocation_args.extend(bindings);
 
-    let mut invocation = format!("{}!", carrier_name(&kernel.to_string()))
+    let mut invocation = format!("{}!", invocation_macro_name(&kernel.to_string()))
         .parse::<TokenStream>()
-        .expect("the carrier's name is an identifier");
-    invocation.extend([TokenTree::Group(Group::new(Delimiter::Brace, carrier_args))]);
+        .expect("the invocation macro's name is an identifier");
+    invocation.extend([TokenTree::Group(Group::new(
+        Delimiter::Brace,
+        invocation_args,
+    ))]);
     Ok(invocation)
 }
 
