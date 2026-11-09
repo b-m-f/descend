@@ -17,4 +17,6 @@ unsafe impl<T: DescendType, const N: usize> DescendType for [T; N] {}
 #[derive(Copy, Clone)]
 pub(crate) struct DescendTypeWrapper<T>(pub T);
 
+// SAFETY: `DescendTypeWrapper<T>` is `#[repr(transparent)]` over `T`, so it has `T`'s layout
+// exactly, and implementors of `DescendType` undertake to keep that layout valid on a device.
 unsafe impl<T: DescendType> crate::backend::DeviceCopy for DescendTypeWrapper<T> {}

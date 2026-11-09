@@ -117,6 +117,9 @@ impl<'a> KernelLauncher<'a> {
 
         let mut ptrs = kernel.param_ptrs();
 
+        // SAFETY: `ptrs` addresses the argument storage borrowed by `kernel`, which outlives
+        // this call, and the entry name was proven nul-free before `f` was loaded from the
+        // module this launcher owns.
         unsafe {
             crate::backend::launch_kernel_on_stream(
                 &f,

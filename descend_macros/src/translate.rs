@@ -48,7 +48,7 @@ fn generate_device_code(
     kernel_name: &str,
     shared_memory_dtys: Vec<descend::ast::DataTy>,
 ) -> Result<String, MacroError> {
-    let mut device_code = match crate::capture::catch_panic(|| {
+    let device_code = match crate::capture::catch_panic(|| {
         descend::codegen::ext_gen_kernel(compilation_unit, kernel_name, shared_memory_dtys)
     }) {
         crate::capture::CapturedOutcome::Completed(device_code) => device_code,
@@ -59,8 +59,6 @@ fn generate_device_code(
             .into())
         }
     };
-
-    device_code = device_code.replace("std::size_t", "size_t");
 
     Ok(device_code.replace(
         &format!("__global__ auto {}(", kernel_name),

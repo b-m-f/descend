@@ -32,6 +32,8 @@ impl<T: DescendType> GpuBuffer<T> {
             .bind_to_thread()
             .map_err(|e| HostError::driver(e, "bind context for from_host"))?;
 
+        // SAFETY: `DescendTypeWrapper<T>` is `#[repr(transparent)]` over `T`, so both types
+        // share layout and alignment, and `data` is a live `&T` for the whole call.
         let source: &DescendTypeWrapper<T> =
             unsafe { &*std::ptr::from_ref(data).cast::<DescendTypeWrapper<T>>() };
 
@@ -63,6 +65,8 @@ impl<T: DescendType> GpuBuffer<T> {
                 )
             })?;
 
+        // SAFETY: `into_raw` consumes the boxed slice, so this pointer has exactly one owner,
+        // and `#[repr(transparent)]` gives the two boxes the same layout and allocator.
         let host = Box::into_raw(host).cast::<T>();
         Ok(unsafe { Box::from_raw(host) })
     }
