@@ -10,6 +10,10 @@ pub struct Stream {
 use crate::error::HostError;
 
 impl Stream {
+    pub fn context(&self) -> Context {
+        self.context.clone()
+    }
+
     pub fn synchronize(&self) -> Result<(), HostError> {
         self.inner
             .synchronize()
