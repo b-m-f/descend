@@ -1,0 +1,34 @@
+error[E0308]: arguments to this function are incorrect
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:29:13
+   |
+29 |     let _ = arithmetic_200(&stream, &mut a_gpu, &b_gpu);
+   |             ^^^^^^^^^^^^^^
+   |
+note: expected an array with a size of 200, found one with a size of 100
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:29:37
+   |
+29 |     let _ = arithmetic_200(&stream, &mut a_gpu, &b_gpu);
+   |                                     ^^^^^^^^^^
+   = note: expected mutable reference `&mut GpuBuffer<[i32; 200]>`
+              found mutable reference `&mut GpuBuffer<[i32; 100]>`
+note: expected an array with a size of 200, found one with a size of 100
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:29:49
+   |
+29 |     let _ = arithmetic_200(&stream, &mut a_gpu, &b_gpu);
+   |                                                 ^^^^^^
+   = note: expected reference `&GpuBuffer<[i32; 200]>`
+              found reference `&GpuBuffer<[i32; 100]>`
+note: function defined here
+  --> tests/macro_compiler_safety/bad_arithmetic_size.rs:5:5
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_bad_arithmetic<N: nat, M: nat, r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; (N * M)],
+ 8 | |             b_array: &r shrd gpu.global [i32; (N * M)]
+...  |
+17 | |     }
+   | |_____^
+18 |
+19 |       let arithmetic_200 = descend_fn!(gpu_bad_arithmetic, <N: 10, M: 20>);
+   |                            ----------------------------------------------- in this macro invocation
+   = note: this error originates in the macro `::descend_macros::__descend_fn_internal` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

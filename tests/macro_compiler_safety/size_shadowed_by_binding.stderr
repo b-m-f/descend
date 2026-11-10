@@ -1,0 +1,10 @@
+error: kernel `gpu_shadowed` binds `N`, which is also one of its sizes; rename the binding, or the size would be replaced by its value here
+  --> tests/macro_compiler_safety/size_shadowed_by_binding.rs:11:21
+   |
+11 |                 let N = 3;
+   |                     ^
+...
+20 |     let _shadowed = descend_fn!(gpu_shadowed, <N: 256>);
+   |                     ----------------------------------- in this macro invocation
+   |
+   = note: this error originates in the macro `__descend_kernel_gpu_shadowed` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

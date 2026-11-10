@@ -1,0 +1,5 @@
+error: size `N` is bound twice; one value would silently win, so the instantiation would not be the one written here
+  --> tests/macro_compiler_safety/duplicate_size_binding.rs:19:48
+   |
+19 |     let _ = descend_fn!(gpu_dup_size, <N: 256, N: 512>);
+   |                                                ^

@@ -1,0 +1,24 @@
+error[E0061]: this function takes 3 arguments but 2 arguments were supplied
+  --> tests/macro_compiler_safety/wrong_arg_count.rs:26:13
+   |
+26 |     let _ = gpu_arg_count(&stream, &mut a_gpu);
+   |             ^^^^^^^^^^^^^--------------------- argument #3 of type `&GpuBuffer<[i32; 100]>` is missing
+   |
+note: function defined here
+  --> tests/macro_compiler_safety/wrong_arg_count.rs:5:5
+   |
+ 5 | /     descend! {
+ 6 | |         fn gpu_arg_count<r: prv>(
+ 7 | |             a_array: &r uniq gpu.global [i32; 100],
+ 8 | |             b_array: &r shrd gpu.global [i32; 100]
+...  |
+17 | |     }
+   | |_____^
+18 |
+19 |       let gpu_arg_count = descend_fn!(gpu_arg_count);
+   |                           -------------------------- in this macro invocation
+   = note: this error originates in the macro `::descend_macros::__descend_fn_internal` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: provide the argument
+   |
+26 |     let _ = gpu_arg_count(&stream, &mut a_gpu, /* &GpuBuffer<[i32; 100]> */);
+   |                                              ++++++++++++++++++++++++++++++

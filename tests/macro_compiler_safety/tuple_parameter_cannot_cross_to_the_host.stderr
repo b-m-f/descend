@@ -1,0 +1,10 @@
+error: kernel `gpu_tuple_param`: parameter `values` has a type that cannot cross to the host; only the basic Descend types and arrays of them can
+  --> tests/macro_compiler_safety/tuple_parameter_cannot_cross_to_the_host.rs:6:13
+   |
+ 6 |             values: &r uniq gpu.global [(i32, f32); 64]
+   |             ^^^^^^
+...
+21 |     let _ = descend_fn!(gpu_tuple_param);
+   |             ---------------------------- in this macro invocation
+   |
+   = note: this error originates in the macro `__descend_kernel_gpu_tuple_param` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)

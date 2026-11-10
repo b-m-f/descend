@@ -1,0 +1,9 @@
+error: this `descend!` block declares nothing. A kernel is declared by an execution annotation `-[grid: gpu.grid<.., ..>]->`; a `struct` emits nothing, because custom types are not supported yet
+ --> tests/macro_compiler_safety/struct_declaration_emits_nothing.rs:3:1
+  |
+3 | / descend! {
+4 | |     struct Point { x: i32, y: i32 }
+5 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `descend` (in Nightly builds, run with -Z macro-backtrace for more info)

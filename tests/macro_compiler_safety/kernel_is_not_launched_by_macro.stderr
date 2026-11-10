@@ -1,0 +1,5 @@
+error: cannot find macro `gpu_generic_add` in this scope
+  --> tests/macro_compiler_safety/kernel_is_not_launched_by_macro.rs:28:13
+   |
+28 |     let _ = gpu_generic_add!(&stream, <N: 1024>, &mut a_gpu, &b_gpu);
+   |             ^^^^^^^^^^^^^^^

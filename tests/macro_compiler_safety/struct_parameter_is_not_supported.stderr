@@ -1,0 +1,10 @@
+error: kernel `gpu_struct_param`: parameter `points` has the custom type `Point`, which cannot cross to the device: Descend's code generator spells a struct by name and emits no definition for it
+  --> tests/macro_compiler_safety/struct_parameter_is_not_supported.rs:8:13
+   |
+ 8 |             points: &r uniq gpu.global [Point; 64]
+   |             ^^^^^^
+...
+18 |     let _ = descend_fn!(gpu_struct_param);
+   |             ----------------------------- in this macro invocation
+   |
+   = note: this error originates in the macro `__descend_kernel_gpu_struct_param` which comes from the expansion of the macro `descend_fn` (in Nightly builds, run with -Z macro-backtrace for more info)
