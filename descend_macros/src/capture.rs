@@ -129,19 +129,7 @@ pub fn descend_message(captured: &str) -> Option<String> {
     }
 
     eprint!("{}", captured);
-    Some(condense(&unprefixed.join("; ")))
-}
-
-fn condense(message: &str) -> String {
-    const LIMIT: usize = 300;
-
-    if message.chars().count() <= LIMIT {
-        return message.to_string();
-    }
-
-    let mut truncated: String = message.chars().take(LIMIT).collect();
-    truncated.push_str(" [..] (the Descend compiler printed the full diagnostic above)");
-    truncated
+    Some(unprefixed.join("; "))
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -200,20 +188,19 @@ mod tests {
     }
 
     #[test]
-    fn an_ast_dump_is_cut_short_rather_than_reported_whole() {
+    fn a_long_ast_dump_is_reported_whole() {
         let dump = format!("ConflictingBorrow(PlaceExpr {{ {} }})", "x".repeat(4000));
         let message = descend_message(&dump).expect("the diagnostic must not be lost");
-        assert!(message.starts_with("ConflictingBorrow"), "{message}");
-        assert!(message.ends_with("full diagnostic above)"), "{message}");
+        assert_eq!(message, dump);
         assert!(
-            message.chars().count() < 400,
-            "a compile_error! this long is unreadable: {} chars",
+            message.chars().count() > 4000,
+            "{}",
             message.chars().count()
         );
     }
 
     #[test]
-    fn a_short_unprefixed_diagnostic_is_not_cut() {
+    fn an_unprefixed_diagnostic_is_returned_verbatim() {
         let message = descend_message("ConflictingAccess\n").unwrap();
         assert_eq!(message, "ConflictingAccess");
     }

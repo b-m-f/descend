@@ -8,6 +8,7 @@ const SUCCESS: c_int = 0;
 const FLAGS_ENVIRONMENT_VARIABLE: &str = "DESCEND_NVRTC_FLAGS";
 const HEADER_NAME: &str = "descend.cuh";
 const PROGRAM_NAME: &str = "descend_kernel.cu";
+const DEFAULT_DEVICE_OPTION: &str = "-default-device";
 
 const TOOLKIT_ENVIRONMENT_VARIABLES: [&str; 2] = ["CUDA_TOOLKIT_PATH", "CUDA_HOME"];
 const MINIMUM_CUDA_VERSION: u32 = 13000;
@@ -189,7 +190,7 @@ fn resolve_options(
 ) -> Result<Vec<String>, MacroError> {
     let mut options = mandatory_flags(lookup)?;
 
-    options.push("-default-device".to_string());
+    options.push(DEFAULT_DEVICE_OPTION.to_string());
 
     options.push(format!(
         "-I{}",
@@ -680,5 +681,154 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    fn probe_toolchain() -> Toolchain {
+        discover().expect(
+            "these probes compile with the real NVRTC, so the toolkit and its flags must be \
+             reachable through the environment the development shell sets",
+        )
+    }
+
+    fn options_with_default_device_mode(toolchain: &Toolchain, enabled: bool) -> Vec<String> {
+        toolchain
+            .options
+            .iter()
+            .filter(|option| enabled || option.as_str() != DEFAULT_DEVICE_OPTION)
+            .cloned()
+            .collect()
+    }
+
+    const NOT_ALLOWED_IN_JIT_MODE: &str = "not allowed in JIT mode";
+
+    #[test]
+    fn an_unannotated_helper_is_compilable_only_under_the_default_device_mode() {
+        let toolchain = probe_toolchain();
+        let device_code = "int add_one(int value) {\n    return value + 1;\n}\n\
+             extern \"C\" __global__ void probe_entry(int *out) {\n    *out = add_one(*out);\n}\n";
+
+        let under_the_mode = toolchain.nvrtc.compile(
+            device_code,
+            HEADER_NAME,
+            "",
+            &options_with_default_device_mode(&toolchain, true),
+        );
+        assert!(
+            under_the_mode.is_ok(),
+            "under the mode an unannotated helper is device code, so the whole unit is \
+             device code: {:?}",
+            under_the_mode.as_ref().err().map(|error| &error.message)
+        );
+
+        let error = toolchain
+            .nvrtc
+            .compile(
+                device_code,
+                HEADER_NAME,
+                "",
+                &options_with_default_device_mode(&toolchain, false),
+            )
+            .expect_err("without the mode an unannotated helper is host code by default, which NVRTC refuses");
+        let diagnostic = &error.message;
+        assert!(
+            diagnostic.contains("NVRTC rejected the generated device code"),
+            "{error}"
+        );
+        assert!(diagnostic.contains("add_one"), "{error}");
+        assert!(
+            diagnostic.contains(NOT_ALLOWED_IN_JIT_MODE),
+            "NVRTC should say that host functions are refused, not fail for some other reason: {error}"
+        );
+        assert!(
+            diagnostic.contains(DEFAULT_DEVICE_OPTION),
+            "NVRTC should name the flag that resolves it: {error}"
+        );
+    }
+
+    #[test]
+    fn the_default_device_mode_does_not_make_a_host_annotated_helper_compilable() {
+        let toolchain = probe_toolchain();
+        let device_code = "__host__ int host_helper(int value) {\n    return value + 1;\n}\n\
+             extern \"C\" __global__ void probe_entry(int *out) {\n    *out = host_helper(*out);\n}\n";
+
+        let error = toolchain
+            .nvrtc
+            .compile(
+                device_code,
+                HEADER_NAME,
+                "",
+                &options_with_default_device_mode(&toolchain, true),
+            )
+            .expect_err("moving the default to device does not admit a helper that is explicitly marked host");
+
+        let diagnostic = &error.message;
+        assert!(
+            diagnostic.contains("NVRTC rejected the generated device code"),
+            "{error}"
+        );
+        assert!(diagnostic.contains("host_helper"), "{error}");
+        assert!(
+            diagnostic.contains(NOT_ALLOWED_IN_JIT_MODE),
+            "NVRTC should refuse the explicit host annotation rather than reclassify it: {error}"
+        );
+    }
+
+    #[test]
+    fn the_default_device_mode_does_not_supply_the_host_side_runtime_library() {
+        let toolchain = probe_toolchain();
+        let device_code = "int host_library_helper(int *out) {\n    cudaEvent_t event;\n    \
+             cudaEventCreate(&event);\n    return 0;\n}\n\
+             extern \"C\" __global__ void probe_entry(int *out) {\n    \
+             *out = host_library_helper(out);\n}\n";
+
+        let error = toolchain
+            .nvrtc
+            .compile(
+                device_code,
+                HEADER_NAME,
+                "",
+                &options_with_default_device_mode(&toolchain, true),
+            )
+            .expect_err("reclassifying the helper as device code does not bring the host runtime API into the translation unit");
+
+        let diagnostic = &error.message;
+        assert!(
+            diagnostic.contains("NVRTC rejected the generated device code"),
+            "{error}"
+        );
+        assert!(diagnostic.contains("cudaEventCreate"), "{error}");
+    }
+
+    #[test]
+    fn the_embedded_descend_header_compiles_only_under_the_default_device_mode() {
+        let toolchain = probe_toolchain();
+        let device_code = "#include \"descend.cuh\"\n";
+
+        let under_the_mode = toolchain.nvrtc.compile(
+            device_code,
+            HEADER_NAME,
+            descend::DESCEND_CUH,
+            &options_with_default_device_mode(&toolchain, true),
+        );
+        assert!(
+            under_the_mode.is_ok(),
+            "the header this work embeds is device code throughout under the mode: {:?}",
+            under_the_mode.as_ref().err().map(|error| &error.message)
+        );
+
+        let error = toolchain
+            .nvrtc
+            .compile(
+                device_code,
+                HEADER_NAME,
+                descend::DESCEND_CUH,
+                &options_with_default_device_mode(&toolchain, false),
+            )
+            .expect_err("the unannotated gpu_device in the header is host code without the mode");
+        assert!(error.message.contains("gpu_device"), "{error}");
+        assert!(
+            error.message.contains(NOT_ALLOWED_IN_JIT_MODE),
+            "the header should be refused for being host code, not for something else: {error}"
+        );
     }
 }
