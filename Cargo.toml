@@ -34,4 +34,4 @@ version = "0.4.27"
 version = "0.11.7"
 
 [workspace]
-members = ["descend_derive", "descend_host"]
+members = ["descend_derive", "descend_macros", "descend_host"]

@@ -1,0 +1,16 @@
+[package]
+name = "descend_macros"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+
+[dependencies]
+descend = { path = "../" }
+proc-macro2 = "1.0"
+quote = "1.0"
+libc = "0.2"
+libloading = "0.8"
+tempfile = "3"
