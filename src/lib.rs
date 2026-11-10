@@ -17,3 +17,6 @@ pub fn compile(file_path: &str) -> Result<String, ErrorReported> {
     ty_check::ty_check(&mut compil_unit)?;
     Ok(codegen::gen(&compil_unit))
 }
+
+/// Expose the C++ header for the procedural macro to use during NVRTC compilation
+pub const DESCEND_CUH: &str = include_str!("../cuda-examples/descend.cuh");
