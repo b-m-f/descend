@@ -15,7 +15,7 @@ impl<T: DescendType> GpuBuffer<T> {
         }
     }
 
-    pub fn validate_buffer_params() -> Result<(), HostError> {
+    pub(crate) fn validate_buffer_params() -> Result<(), HostError> {
         let size = std::mem::size_of::<T>();
         if size == 0 {
             return Err(HostError::InvalidSize("Zero-sized types are not supported"));
